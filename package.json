@@ -13,6 +13,7 @@
     "test": "vitest run",
     "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "check:embed-independence": "node scripts/check-embed-independence.mjs",
+    "check:postgrest": "node scripts/check-postgrest-anon.mjs",
     "supabase:start": "npx --no-install supabase start",
     "supabase:stop": "npx --no-install supabase stop"
   },

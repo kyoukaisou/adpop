@@ -46,8 +46,17 @@ alter default privileges in schema public revoke all on functions from anon, aut
 --
 -- ⚠ **グローバル側は「postgres が作るオブジェクト」全部に効く**(スキーマを問わない)。
 --   このリポジトリのマイグレーションは postgres が流し、public にしか作らないので影響は同じ。
---   ⚠ 将来 `create extension` を migration で行うと、その関数群も PUBLIC から実行できなくなる。
---     そのときは (f-3) が**適用時に落ちて人に判断させる**(黙って壊れない)。
+--
+-- 🔴 **将来 `create extension` を migration で行ったときに何が起きるか(正確に)**
+--   (Codex 1巡目 Medium。⚠ ここには当初「そのときは (f-3) が適用時に落ちて人に判断させる」と
+--    書いていたが、**実装はそうなっていなかった** = 説明が実装より広い約束をしていた):
+--   ・**起きること**: その extension の関数は **PUBLIC から実行できない状態で作られる**
+--     (グローバルの既定privilege は全スキーマに効くため)。
+--   ・**関門は検知しない**: (c)(c2) が見るのは **public スキーマの関数だけ**で、
+--     extension は普通 `extensions` スキーマに入る。(f-3) が測るのは
+--     **「新しい関数が実行できないこと」= 合格側**なので、こちらも鳴らない。
+--   ・**したがって**: extension を足すマイグレーションでは、**必要な EXECUTE を明示的に配ること**。
+--     配り忘れは「その機能が動かない」で気づく(黙って全公開になる向きではない)。
 alter default privileges revoke all on tables from anon, authenticated, service_role, public;
 alter default privileges revoke all on sequences from anon, authenticated, service_role, public;
 alter default privileges revoke all on functions from anon, authenticated, service_role, public;
@@ -86,17 +95,53 @@ grant usage on schema public to authenticated;
 -- PR1 では **空**。配信エンドポイント(サイトキー → 設定 JSON)が入る PR2 で、
 -- **この関数を `create or replace` して署名を1本だけ足す**。
 -- ⚠ 足したら、その関数が fail-closed(未登録の Origin には返さない)であることを別に検査する。
-create or replace function public.adpop_anon_callable_functions()
-returns text[]
-language sql
-immutable
-as $$
-  -- 例(PR2): array['public.adpop_site_config(text, text)']
-  select '{}'::text[];
-$$;
+/*
+  🔴🔴 **`create or replace` では書かない。「無ければ作る」にする**(2026-09-08。自分の再実行テストが捕まえた)。
+    0001 は**流し直せる**ことを条件にしているが、`create or replace` で空に戻すと、
+    **後のマイグレーションが宣言した allow-list を、流し直した瞬間に全部消す**。
+    そのあと関門(c)が「配ってあるのに宣言に無い」で落ちる = **流し直した人が理由の分からない赤を見る。**
+  ⚠ したがって **allow-list の初期値を作るのはこの1回だけ**で、
+    更新は**配る側のマイグレーションが `create or replace` で行う**(0002 がそうしている)。
+*/
+do $$
+begin
+  if to_regprocedure('public.adpop_anon_callable_functions()') is null then
+    execute $q$
+      create function public.adpop_anon_callable_functions()
+      returns text[] language sql immutable as
+      -- 例(PR2): array['public.adpop_site_config(text, text)']
+      $body$ select '{}'::text[] $body$;
+    $q$;
+  end if;
+end $$;
 
 comment on function public.adpop_anon_callable_functions() is
   'anon が EXECUTE を持ってよい public スキーマの関数(regprocedure の文字列)。ここに無い関数を anon が呼べたら 0001 の関門が落ちる。';
+
+/*
+  🔴🔴 **authenticated 側にも同じ allow-list を置く**(Codex 1巡目 High)。
+    最初は関門(c)の対象を anon / service_role / PUBLIC の3つにしていた。
+    それだと **`security definer` の関数を1本足して authenticated に EXECUTE を配るだけで、
+    RLS も課金の関門も通らない書き込み口を作れる**(その関数は表の所有者の権限で走る)。
+    ⚠ **anon より authenticated のほうが危ない** —— 誰でも無料で登録できるようにすれば、
+      その口は事実上だれでも叩ける。
+  → **authenticated が EXECUTE を持ってよい関数も、ここに宣言した分だけ**にする。
+  ⚠ **PR1 の時点で空ではない。** 0002 が CHECK 制約から呼ぶ述語3本を
+    `create or replace` でここへ足す(**配る側と宣言する側を同じマイグレーションに置く**)。
+*/
+-- ⚠ 上と同じ理由で「無ければ作る」(流し直しで 0002 の宣言を消さない)
+do $$
+begin
+  if to_regprocedure('public.adpop_authenticated_callable_functions()') is null then
+    execute $q$
+      create function public.adpop_authenticated_callable_functions()
+      returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+    $q$;
+  end if;
+end $$;
+
+comment on function public.adpop_authenticated_callable_functions() is
+  'authenticated が EXECUTE を持ってよい public スキーマの関数(regprocedure の文字列)。配るマイグレーションが同時にここへ足す。';
 
 -- ══════════════════════════════════════════════════════════════════════
 -- ⑤ 関門: 権限の実効値を毎回測る
@@ -125,12 +170,38 @@ declare
   extra_privs  text[] := case when is_pg17
                           then array['TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']
                           else array['TRUNCATE','REFERENCES','TRIGGER'] end;
-  allowed     constant text[] := public.adpop_anon_callable_functions();
+  allowed      constant text[] := public.adpop_anon_callable_functions();
+  allowed_auth constant text[] := public.adpop_authenticated_callable_functions();
+  /*
+    🔴 **allow-list は文字列ではなく OID で突き合わせる**(2026-09-08 実測)。
+      `oid::regprocedure::text` は **search_path 依存**で、public が search_path に在ると
+      `public.` が落ちて `adpop_is_https_url(text)` になる。
+      文字列で比べると、**流す環境の search_path で allow-list が黙って効かなくなる。**
+    ⚠ 解決できない署名(誤記・消した関数)は**その場で落とす**。
+      放っておくと「allow-list が空になった」= 一見 fail-closed だが、
+      **なぜ落ちたのかが誰にも分からない**形で関門が鳴る。
+  */
+  allowed_oids      oid[];
+  allowed_auth_oids oid[];
+  unresolved        text[];
   offenders   text[];
   probe_tbl   constant text := 'zz_adpop_privilege_probe_tbl';
   probe_seq   constant text := 'zz_adpop_privilege_probe_seq';
   probe_fn    constant text := 'zz_adpop_privilege_probe_fn';
 begin
+  -- (0) allow-list の署名を OID に解決する。解決できないものが1つでもあれば落とす。
+  select coalesce(array_agg(sig order by sig), '{}') into unresolved
+  from unnest(allowed || allowed_auth) as sig
+  where to_regprocedure(sig) is null;
+  if array_length(unresolved, 1) is not null then
+    raise exception 'ADPOP 権限の関門(0): allow-list に、実在しない関数の署名があります: %',
+      array_to_string(unresolved, ', ');
+  end if;
+  select coalesce(array_agg(to_regprocedure(sig)::oid), '{}') into allowed_oids
+  from unnest(allowed) as sig;
+  select coalesce(array_agg(to_regprocedure(sig)::oid), '{}') into allowed_auth_oids
+  from unnest(allowed_auth) as sig;
+
   -- (a) public の表・ビューに、anon / service_role / PUBLIC は権限を1つも持たない
   --     ⚠ 表単位と列単位の両方で測る。
   select coalesce(array_agg(format('%s|%s|%s', rel, grantee, priv) order by 1), '{}')
@@ -189,20 +260,47 @@ begin
       array_to_string(offenders, ', ');
   end if;
 
-  -- (c) public の関数の EXECUTE。anon は allow-list の分だけ、service_role / PUBLIC は0本。
+  -- (c) public の関数の EXECUTE。**4ロールとも allow-list の分だけ**(service_role / PUBLIC は空のまま)。
+  --     🔴 **authenticated を外していたのが穴だった**(Codex 1巡目 High)。
+  --       `security definer` の関数を1本足して authenticated に配れば、
+  --       RLS を通らない書き込み口ができる。**anon より広く使われる口なので、こちらのほうが危ない。**
   select coalesce(array_agg(format('%s|%s', fn, grantee) order by 1), '{}')
     into offenders
   from (
     select p.oid::regprocedure::text as fn, ro.g as grantee
     from pg_catalog.pg_proc p
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-    cross join (values ('anon'), ('service_role'), ('public')) ro(g)
+    cross join (values ('anon'), ('authenticated'), ('service_role'), ('public')) ro(g)
     where n.nspname = 'public'
       and has_function_privilege(ro.g, p.oid, 'EXECUTE')
-      and not (ro.g = 'anon' and p.oid::regprocedure::text = any (allowed))
+      and not (ro.g = 'anon' and p.oid = any (allowed_oids))
+      and not (ro.g = 'authenticated' and p.oid = any (allowed_auth_oids))
   ) s;
   if array_length(offenders, 1) is not null then
-    raise exception 'ADPOP 権限の関門(c): allow-list に無い関数を anon / service_role / PUBLIC が実行できます: %',
+    raise exception 'ADPOP 権限の関門(c): allow-list に無い関数を実行できるロールがあります: %',
+      array_to_string(offenders, ', ');
+  end if;
+
+  /*
+    (c2) 🔴 **`security definer` の関数は、`search_path` が固定されていなければ通さない。**
+      定義者の権限で走る関数の `search_path` が呼び出し側任せだと、
+      **呼ぶ側が自分のスキーマに同名の表や関数を置いて、中身をすり替えられる**。
+    ⚠ **所有者を問わない**(誰が作ったかではなく、`prosecdef` が真かどうかで見る)。
+    ⚠ 見ているのは「**固定されているか**」だけで、**中身が安全かは1つも見ていない**。
+      安全側の値(`''` か `pg_catalog` で始まる形)にするのは書く人の責任。
+  */
+  select coalesce(array_agg(p.oid::regprocedure::text order by 1), '{}')
+    into offenders
+  from pg_catalog.pg_proc p
+  join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and p.prosecdef
+    and not exists (
+      select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) as cfg
+      where cfg like 'search_path=%'
+    );
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(c2): security definer の関数に search_path の固定がありません: %',
       array_to_string(offenders, ', ');
   end if;
 

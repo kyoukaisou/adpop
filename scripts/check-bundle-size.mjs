@@ -7,27 +7,14 @@
     守り始めるのは PR2 で本体が入ってから。**判定そのもの**が正しいことは
     `tests/bundle-size.test.ts` が両側(超える / 超えない)で固定している。
 */
-import { build } from "esbuild";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { BUNDLES, evaluateSizes, formatReport, gzipSizeOf } from "./bundle-size.mjs";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+import { buildEmbedBundle, REPO_ROOT as ROOT } from "./embed-build.mjs";
 
 const measured = {};
 for (const bundle of BUNDLES) {
-  const result = await build({
-    entryPoints: [path.join(ROOT, bundle.entry)],
-    bundle: true,
-    minify: true,
-    format: "iife",
-    // ⚠ 埋め込み先のブラウザで動く。古い端末を落とさない範囲に寄せる。
-    target: ["es2019"],
-    write: false,
-    logLevel: "silent",
-  });
-  const code = result.outputFiles[0].text;
+  const { code } = await buildEmbedBundle(bundle);
   const outPath = path.join(ROOT, bundle.out);
   mkdirSync(path.dirname(outPath), { recursive: true });
   writeFileSync(outPath, code);

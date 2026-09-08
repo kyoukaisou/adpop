@@ -119,6 +119,11 @@ create table public.popups (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (id, owner_id),
+  /*
+    🔴 **`events` が「サイト → ポップ → バリアント」の階層まで見るために要る**(Codex 1巡目 High)。
+      owner の一致だけでは、**同じ owner の別サイト配下のポップ**を指すイベントが保存できてしまう。
+  */
+  unique (id, site_id),
   foreign key (site_id, owner_id) references public.sites (id, owner_id) on delete cascade
 );
 /*
@@ -164,6 +169,8 @@ create table public.variants (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (id, owner_id),
+  -- 🔴 events が「そのポップ配下のバリアントか」を見るために要る(上の popups と同じ理由)
+  unique (id, popup_id),
   foreign key (popup_id, owner_id) references public.popups (id, owner_id) on delete cascade
 );
 /*
@@ -196,9 +203,20 @@ create table public.chatbot_nodes (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (id, owner_id),
+  -- 🔴 親が**別のバリアントのノード**でもよい状態を塞ぐ(Codex 1巡目 Low)。
+  --   owner の一致だけでは、同じ owner の別のシナリオのノードを親にできる。
+  unique (id, variant_id),
   foreign key (variant_id, owner_id) references public.variants (id, owner_id) on delete cascade,
-  foreign key (parent_node_id, owner_id) references public.chatbot_nodes (id, owner_id) on delete cascade
+  foreign key (parent_node_id, variant_id) references public.chatbot_nodes (id, variant_id) on delete cascade
 );
+/*
+  🕐 **v1.1 へ送るもの(書き込みを開けるときに、同じ場所で決める)**:
+    ・**循環**(A の親が B、B の親が A)は、この複合外部キーでは塞げない
+    ・**深さ5階層・ノード数30**(要件書 §4-3 の仮置き)
+    ・`depth` が親の `depth + 1` であること
+  ⚠ v1 は**書き込み権限を1つも配っていない**ので、いまはどれも実害が無い。
+    **開ける PR で、この3つを同時に入れること。**
+*/
 
 -- ── 計測イベント ───────────────────────────────────────────────
 /*
@@ -224,7 +242,18 @@ create table public.events (
   visitor_hash text null check (visitor_hash is null or visitor_hash ~ '^[0-9a-f]{32}$'),
   device     public.device_kind not null,
   close_reason public.close_reason null,
-  page_url   text null check (page_url is null or length(page_url) <= 2048),
+  /*
+    🔴 **クエリ文字列とフラグメントを保存しない**(Codex 1巡目 High → 本部裁定・要件書 §6 裁定4)。
+      LP の URL には `?email=…` `?tel=…` が普通に載る。そのまま保存すると
+      **「個人情報を1件も集めない」(要件書 §5-4)が、送信側の作りに依存して崩れる。**
+      → 保存するのは **origin + path だけ**。
+    ⚠ **ここは「入ってきたものを弾く」だけで、削ってはいない。**
+      **query / fragment を削り落とすのは投入関数(PR2)の仕事**で、この CHECK はその検算。
+      片方だけだと、投入関数が削り忘れた日に黙って通る(2か所で見る)。
+  */
+  page_url   text null check (
+    page_url is null or (length(page_url) <= 2048 and page_url !~ '[?#]')
+  ),
   occurred_at timestamptz not null default now(),
 
   /*
@@ -234,11 +263,27 @@ create table public.events (
         **ダッシュボードの分母が「どのポップのものか分からない行」で歪む**
       ・代償: **A/B の履歴は、そのバリアントを消した時点で失われる**
       → 履歴を残したいなら「消す」ではなく `status = 'paused'` を使う設計にする(PR3 で画面に効かせる)。
-      ⚠ この判断を変えるなら PR5(数値ダッシュボード)より前に決める。後からでは行が戻らない。
+      🔴 **本部裁定(要件書 §6 裁定1 / 裁定6・2026-09-08)= v1 は cascade を維持し、
+        PR3 で `archived_at` を入れる。⚠ `popups` だけでなく `variants` にも足す**
+        (バリアントには `status` が無いので、消す以外の引っ込め方がいまは無い)。
   */
   foreign key (site_id, owner_id)    references public.sites (id, owner_id) on delete cascade,
   foreign key (popup_id, owner_id)   references public.popups (id, owner_id) on delete cascade,
   foreign key (variant_id, owner_id) references public.variants (id, owner_id) on delete cascade,
+
+  /*
+    🔴🔴 **owner の一致だけでは「階層」が守れない**(Codex 1巡目 High・両モデル)。
+      上の3本は所有者しか見ないので、**同じ owner の
+      「サイト S1・S2 配下のポップ P2・P3 配下のバリアント V3」**という
+      **どこにも実在しない組み合わせ**が保存できてしまう(3行とも FK は満たす)。
+      → **階層そのものを2本の複合外部キーで縛る。**
+    ⚠ **複合外部キーは MATCH SIMPLE**(既定)なので、**列のどれかが null なら制約ごと素通りする**。
+      `variant_id is not null and popup_id is null` は下の CHECK が塞ぐ
+      (これを書かないと、階層の縛りを null 1つで外せる)。
+  */
+  foreign key (popup_id, site_id)    references public.popups (id, site_id) on delete cascade,
+  foreign key (variant_id, popup_id) references public.variants (id, popup_id) on delete cascade,
+  constraint events_variant_needs_popup check (variant_id is null or popup_id is not null),
 
   /*
     🔴 **`kind` ごとに、埋まっていなければならない列が違う**(§4-7)。
@@ -436,6 +481,28 @@ revoke all on function public.adpop_is_origin_list(text[]) from public, anon, se
 grant execute on function public.adpop_is_https_url(text)     to authenticated;
 grant execute on function public.adpop_is_origin(text)        to authenticated;
 grant execute on function public.adpop_is_origin_list(text[]) to authenticated;
+
+/*
+  🔴 **配る側と宣言する側を同じマイグレーションに置く。**
+    0001 の関門(c)は「authenticated が EXECUTE を持ってよいのは、ここに宣言した分だけ」を見る。
+    → **grant を書いた migration が、同じファイルで allow-list を更新する。**
+    ⚠ 別のファイルに分けると、片方だけ流れた瞬間に**関門が適用を止める**(= 適用が2段になる)。
+  ⚠ 3本とも **immutable な述語で、表を1つも読まない**(CHECK 制約から呼ばれるだけ)。
+    ⚠ **`security definer` ではない**ので、呼べても呼んだ人の権限を1ミリも超えない。
+*/
+create or replace function public.adpop_authenticated_callable_functions()
+returns text[]
+language sql
+immutable
+as $$
+  select array[
+    'public.adpop_is_https_url(text)',
+    'public.adpop_is_origin(text)',
+    'public.adpop_is_origin_list(text[])'
+  ]::text[];
+$$;
+revoke all on function public.adpop_authenticated_callable_functions()
+  from public, anon, authenticated, service_role;
 revoke all on function public.adpop_set_updated_at()     from public, anon, authenticated, service_role;
 -- 🔴 `security definer` の関数はとくに配らない(トリガから走るだけ。直接呼ばせない)。
 --   ⚠ トリガの発火に EXECUTE 権限は要らない(権限を見るのは `create trigger` の時点だけ)。

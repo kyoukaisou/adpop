@@ -48,3 +48,38 @@ jobs:
 
       - name: build
         run: npm run build
+
+  # ══════════════════════════════════════════════════════════════════════
+  # 🔴 実物の Supabase(PostgREST + PostgreSQL)を1度だけ通す
+  # ══════════════════════════════════════════════════════════════════════
+  # 上の `test` は PGlite に**手書きで再現した開始ACL**からマイグレーションを流す。
+  # **その再現が Supabase の実物とずれたら、検査は「ずれた前提」を測り続ける**(測る対象の取り違え)。
+  # → anon キーと service_role キーで業務テーブルに当たり、**HTTP と SQLSTATE の両方**を突き合わせる。
+  # ⚠ 接続失敗・鍵が取れない・想定外のコードは**全部不合格**(繋がらないことを緑にしない)。
+  postgrest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Docker は ubuntu-latest に入っている。ここで 0001 → 0002 が適用される。
+      - name: supabase start
+        run: supabase start
+
+      - name: 実物の PostgREST に anon / service_role で当たる
+        run: npm run check:postgrest
+
+      - name: supabase stop
+        if: always()
+        run: supabase stop

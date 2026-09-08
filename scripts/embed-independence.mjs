@@ -7,65 +7,56 @@
     「気をつける」では守れないので、**依存の向き(embed → server)を禁止**して毎 PR 測る。
   🔴 同時に、**依存ライブラリを1つも入れない**(要件書 §5-1)も同じ検査で見る ——
     外部パッケージを1つ入れた瞬間に gzip の上限を超えるため。
+
+  ══════════════════════════════════════════════════════════════════════
+  🔴🔴 **正規表現で import を数えるのをやめた**(2026-09-08 / Codex 1巡目 Medium・両モデル)
+  ══════════════════════════════════════════════════════════════════════
+  最初の版はソースを正規表現で走査していた。**2つの独立した抜け方が実在した**:
+    ・`import{metadata}from"…"`(**空白が1つも無い書き方**)が、こちらの正規表現に当たらない
+    ・集める対象の拡張子に **`.jsx` / `.mts` / `.cts` / `.cjs`** が無く、
+      `loader.ts → ./bridge.jsx → ../../../src/…` が**緑のまま通る**
+  📌 これは「ソース走査は『そう書いた形跡』を測り、『いま何を読んでいるか』を測らない」型そのもの。
+  ✅ **esbuild の metafile(実際に解決された依存グラフ)で判定する。**
+    バンドラが解決した結果なので、**書き方・拡張子・別名の違いを1つも取りこぼさない。**
 */
 
-/** import / export from / dynamic import / require の指定子を全部拾う。 */
-export function importSpecifiers(source) {
-  const specifiers = [];
-  const patterns = [
-    /(?:^|[\s;}])(?:import|export)\s[^;'"]*from\s*['"]([^'"]+)['"]/g,
-    /(?:^|[\s;}(=])import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /(?:^|[\s;}(=])require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    // 副作用だけの import(`import "…";`)
-    /(?:^|[\s;}])import\s*['"]([^'"]+)['"]/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) specifiers.push(match[1]);
-  }
-  return specifiers;
-}
+/** 判定の対象にするディレクトリ(リポジトリのルートからの相対)。 */
+export const EMBED_ROOT = "packages/embed/";
 
 /**
- * 許すのは「`packages/embed/` の中で閉じた相対 import」だけ。
- * ⚠ **禁止の一覧を数え上げない**(数え落とすため)。**通してよい形を1つ指す**
- *   ([[SaaS開発ナレッジ]] 2026-09-08-15 の裏返しの型)。
+ * esbuild の metafile から、**MIT の外へ出ている入力**を挙げる。
  *
- * @param {string} specifier import の指定子
- * @param {string} fileDir  そのファイルの、`packages/embed/` から見た相対ディレクトリ("" か "sub" など)
+ * @param {{ inputs: Record<string, unknown> }} metafile
+ * @param {{ root?: string }} options
+ * @returns {Array<{ input: string, reason: string }>} 空配列 = 違反なし
  */
-export function violationOf(specifier, fileDir) {
-  if (!specifier.startsWith(".")) {
-    // 素の名前 = 外部パッケージ / Node の組み込み / `@/` 別名
-    return specifier.startsWith("@/")
-      ? "AGPL 側(src/)を別名 @/ で読んでいる"
-      : "外部パッケージまたは組み込みモジュールを読んでいる(埋め込みスクリプトは依存ゼロ)";
-  }
-  const segments = [...fileDir.split("/").filter(Boolean), ...specifier.split("/")];
-  const resolved = [];
-  for (const segment of segments) {
-    if (segment === "." || segment === "") continue;
-    if (segment === "..") {
-      if (resolved.length === 0) return "packages/embed/ の外(= AGPL 側)を読んでいる";
-      resolved.pop();
+export function metafileViolations(metafile, options = {}) {
+  const root = options.root ?? EMBED_ROOT;
+  const inputs = Object.keys(metafile?.inputs ?? {});
+  const violations = [];
+  for (const input of inputs) {
+    // esbuild は node_modules の入力を `node_modules/…` の形で並べる
+    if (input.includes("node_modules/")) {
+      violations.push({ input, reason: "外部パッケージを読んでいる(埋め込みスクリプトは依存ゼロ)" });
       continue;
     }
-    resolved.push(segment);
-  }
-  return null;
-}
-
-/**
- * @param {Array<{ path: string, dir: string, source: string }>} files
- *   `path` は表示用、`dir` は `packages/embed/` から見た相対ディレクトリ。
- * @returns {Array<{ file: string, specifier: string, reason: string }>} 空配列 = 違反なし
- */
-export function findViolations(files) {
-  const violations = [];
-  for (const file of files) {
-    for (const specifier of importSpecifiers(file.source)) {
-      const reason = violationOf(specifier, file.dir);
-      if (reason) violations.push({ file: file.path, specifier, reason });
+    if (!input.startsWith(root)) {
+      violations.push({ input, reason: `${root} の外(= AGPL-3.0 側)を読んでいる` });
     }
   }
   return violations;
+}
+
+/**
+ * 🔴 **「違反0件」を、測っていないことと取り違えない。**
+ *   入口が消えた・metafile が空、を合格にしない。
+ *
+ * @returns {string[]} 空配列 = 測れている
+ */
+export function measurementProblems(metafile, entry) {
+  const inputs = Object.keys(metafile?.inputs ?? {});
+  const problems = [];
+  if (inputs.length === 0) problems.push("metafile に入力が1件も無い(何も測っていない)");
+  else if (!inputs.includes(entry)) problems.push(`入口 ${entry} が metafile の入力に無い`);
+  return problems;
 }
