@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同じ枝への push が続いたら、古い実行は打ち切る(Actions の枠を食い潰さないため)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: lint
+        run: npm run lint
+
+      - name: typecheck
+        run: npm run typecheck
+
+      # 🔴 ここに **anon の権限の実測**が入っている(supabase/tests/schema.test.ts)。
+      #   マイグレーションを PGlite へ通しで流し、
+      #   「anon / service_role / PUBLIC が1つも触れないこと」「RLS が有効なこと」を毎 PR 測る。
+      #   ⚠ Docker も Supabase の認証情報も要らない。
+      - name: test
+        run: npm test
+
+      # 埋め込みスクリプトの gzip 上限(要件書 §5-1)。⚠ PR1 では中身が空なので、
+      # まだ何も守っていない(判定そのものは tests/bundle-size.test.ts が両側で固定している)。
+      - name: 埋め込みスクリプトのサイズ上限
+        run: npm run check:bundle-size
+
+      # packages/embed(MIT)が AGPL 側を読んでいないこと(要件書 §5-6)
+      - name: ライセンス分割(依存の向き)
+        run: npm run check:embed-independence
+
+      - name: build
+        run: npm run build
