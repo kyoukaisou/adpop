@@ -10,7 +10,13 @@
   ⚠ **守らないもの**: 認証済み(authenticated)の経路。**まだログインする画面が無い**(PR3)。
 */
 import { execFileSync } from "node:child_process";
-import { coverageProblems, evaluateProbe, TABLES } from "./postgrest-expectations.mjs";
+import {
+  coverageProblems,
+  evaluateProbe,
+  keyProblems,
+  ROLES,
+  TABLES,
+} from "./postgrest-expectations.mjs";
 
 function supabaseStatus() {
   const raw = execFileSync("npx", ["--no-install", "supabase", "status", "-o", "json"], {
@@ -43,6 +49,19 @@ if (typeof apiUrl !== "string" || apiUrl.length === 0) {
   process.exit(1);
 }
 
+/*
+  🔴 **12件を走らせる前に、鍵そのものを確かめる**(Codex 2巡目 Medium)。
+    鍵を取り違えていると「anon の口を1度も叩かないまま12件緑」になる。
+  ⚠ ここで落ちたら**1件も叩かない**(測れていない状態で表を出さない)。
+*/
+const problemsWithKeys = keyProblems(keys);
+if (problemsWithKeys.length > 0) {
+  for (const problem of problemsWithKeys) console.error(`NG  ${problem}`);
+  console.error("\n鍵が期待どおりでないので、1件も叩いていません。");
+  process.exit(1);
+}
+console.log(`OK  鍵は ${ROLES.join(" / ")} の2本で、名乗るロールが一致し、別物です。`);
+
 const probes = [];
 for (const [role, key] of Object.entries(keys)) {
   for (const table of TABLES) {
@@ -61,7 +80,7 @@ for (const [role, key] of Object.entries(keys)) {
 }
 
 let failed = false;
-for (const problem of coverageProblems(probes, Object.keys(keys))) {
+for (const problem of coverageProblems(probes, ROLES)) {
   console.error(`NG  ${problem}`);
   failed = true;
 }

@@ -9,16 +9,20 @@
 //     「**esbuild は解決するのに、こちらの走査が見つけられない**」という差なので、
 //     **本物のビルドを通さないと同じことを測っていない。**
 import { build } from "esbuild";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 import { BUNDLES } from "../scripts/bundle-size.mjs";
-import { buildEmbedBundle } from "../scripts/embed-build.mjs";
+import { buildEmbedBundle, REPO_ROOT } from "../scripts/embed-build.mjs";
+import { collectEmbedFiles, SOURCE_EXTENSIONS } from "../scripts/embed-files.mjs";
 import {
   EMBED_ROOT,
+  fileScanProblems,
   measurementProblems,
   metafileViolations,
+  staticImportViolations,
 } from "../scripts/embed-independence.mjs";
 
 /** 使い捨ての木に、リポジトリと同じ形(`packages/embed/src/...` と `src/...`)を作る。 */
@@ -95,6 +99,75 @@ describe("Codex 1巡目で実在した抜け方(正規表現の版が素通し�
     const metafile = await metafileOf(root, "packages/embed/src/loader.ts");
     expect(metafileViolations(metafile)).toEqual([]);
     expect(Object.keys(metafile.inputs)).toHaveLength(2);
+  });
+});
+
+describe("第2段: metafile に出ないもの(Codex 2巡目 Medium)", () => {
+  it("🔴 `import type` は metafile に出ないが、第2段が捕まえる", async () => {
+    const root = makeTree({
+      "packages/embed/src/loader.ts": `import type { Site } from "../../../src/lib/types";\nexport const v: Site | null = null;\n`,
+      "src/lib/types.ts": `export type Site = { id: string };\n`,
+    });
+    trees.push(root);
+    // 第1段(バンドラ)は**何も見つけない** —— 型だけの import は畳まれて消える
+    const metafile = await metafileOf(root, "packages/embed/src/loader.ts");
+    expect(metafileViolations(metafile)).toEqual([]);
+    // 第2段が捕まえる
+    const violations = staticImportViolations(
+      [{ path: "packages/embed/src/loader.ts", source: readFileSync(path.join(root, "packages/embed/src/loader.ts"), "utf8") }],
+      { ts },
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].specifier).toBe("../../../src/lib/types");
+  });
+
+  it("🔴 入口から到達していないファイルも読む", () => {
+    /*
+      ⚠ 書きかけのファイルは、まだどこからも import されていないので **metafile に1行も出ない**。
+        「いま出荷されていないから安全」ではない —— **次に誰かが import した瞬間に混ざる**。
+    */
+    const files = [
+      { path: "packages/embed/src/loader.ts", source: `export const v = 1;\n` },
+      { path: "packages/embed/src/wip.ts", source: `import { db } from "@/lib/db";\nexport const w = db;\n` },
+    ];
+    const violations = staticImportViolations(files, { ts });
+    expect(violations).toHaveLength(1);
+    expect(violations[0].file).toBe("packages/embed/src/wip.ts");
+    expect(violations[0].reason).toMatch(/AGPL/);
+  });
+
+  it("🔴 triple-slash の参照も見る", () => {
+    const files = [
+      {
+        path: "packages/embed/src/loader.ts",
+        source: `/// <reference path="../../../src/global.d.ts" />\nexport const v = 1;\n`,
+      },
+    ];
+    expect(staticImportViolations(files, { ts })).toHaveLength(1);
+  });
+
+  it("✅ MIT の中で閉じた参照は通る(第2段でも締めすぎていない)", () => {
+    const files = [
+      { path: "packages/embed/src/loader.ts", source: `import type { T } from "./triggers/back";\nexport const v: T | null = null;\n` },
+      { path: "packages/embed/src/triggers/back.ts", source: `export type T = number;\n` },
+    ];
+    expect(staticImportViolations(files, { ts })).toEqual([]);
+  });
+
+  it("🔴 集める対象が0件なら「違反なし」ではなく「測っていない」", () => {
+    expect(fileScanProblems([])).toHaveLength(1);
+    expect(staticImportViolations([], { ts })).toEqual([]);
+  });
+
+  it("実物の packages/embed は第2段でも違反0(かつ0件ではない)", () => {
+    const files = collectEmbedFiles(REPO_ROOT);
+    expect(fileScanProblems(files)).toEqual([]);
+    expect(files.length).toBeGreaterThan(0);
+    expect(staticImportViolations(files, { ts })).toEqual([]);
+  });
+
+  it("集める拡張子に .jsx / .mts / .cts / .cjs が入っている(1巡目の穴)", () => {
+    expect(SOURCE_EXTENSIONS).toEqual([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
   });
 });
 

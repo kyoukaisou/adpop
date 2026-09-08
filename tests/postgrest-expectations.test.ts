@@ -5,11 +5,20 @@
 import { describe, expect, it } from "vitest";
 import {
   coverageProblems,
+  decodeJwtRole,
   evaluateProbe,
   EXPECTED_SQLSTATE,
-  EXPECTED_STATUSES,
+  EXPECTED_STATUS_BY_ROLE,
+  keyProblems,
+  ROLES,
   TABLES,
 } from "../scripts/postgrest-expectations.mjs";
+
+/** テスト用の JWT(署名は見ないので payload だけが意味を持つ)。 */
+function fakeJwt(payload: Record<string, unknown>, salt = ""): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "HS256", typ: "JWT" })}.${encode(payload)}.sig${salt}`;
+}
 
 const base = { role: "anon", table: "sites" };
 
@@ -20,6 +29,21 @@ describe("判定(evaluateProbe)", () => {
 
   it("✅ 403 + 42501 も合格(service_role で実測した形)", () => {
     expect(evaluateProbe({ ...base, role: "service_role", status: 403, body: { code: "42501" } }).ok).toBe(true);
+  });
+
+  it("🔴 ロールごとに状態コードを1つに固定している(取り違えに気づくため)", () => {
+    /*
+      🔴 Codex 2巡目 Medium —— 「401 か 403 のどちらでも合格」だと、
+        **2つの鍵を取り違えても・同じ鍵を2回使っても12件緑**になる。
+    */
+    expect(evaluateProbe({ ...base, role: "anon", status: 403, body: { code: "42501" } }).ok).toBe(false);
+    expect(
+      evaluateProbe({ ...base, role: "service_role", status: 401, body: { code: "42501" } }).ok,
+    ).toBe(false);
+  });
+
+  it("🔴 期待値を決めていないロールは不合格", () => {
+    expect(evaluateProbe({ ...base, role: "postgres", status: 401, body: { code: "42501" } }).ok).toBe(false);
   });
 
   it("🔴 200 は不合格(届いてしまっている)", () => {
@@ -71,10 +95,49 @@ describe("測った範囲(coverageProblems)", () => {
   });
 });
 
+describe("鍵の検査(12件を叩く前)", () => {
+  const anon = fakeJwt({ role: "anon", iss: "supabase-demo" });
+  const service = fakeJwt({ role: "service_role", iss: "supabase-demo" });
+
+  it("✅ 期待どおりの2本なら問題なし", () => {
+    expect(keyProblems({ anon, service_role: service })).toEqual([]);
+  });
+
+  it("🔴 2本が同じ鍵なら不合格(同じ口を2回叩くことになる)", () => {
+    const problems = keyProblems({ anon, service_role: anon });
+    // 「service_role の鍵が anon を名乗る」と「2本が同じ」の両方が出る
+    expect(problems.length).toBeGreaterThanOrEqual(1);
+    expect(problems.join("\n")).toContain("同じ");
+  });
+
+  it("🔴 取り違え(anon の欄に service_role の鍵)を捕まえる", () => {
+    const problems = keyProblems({ anon: service, service_role: anon });
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain("service_role");
+  });
+
+  it("🔴 JWT でない鍵(新形式の sb_publishable_… 等)は不合格", () => {
+    const problems = keyProblems({ anon: "sb_publishable_abc", service_role: service });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("JWT の形");
+  });
+
+  it("🔴 role claim が無ければ不合格", () => {
+    expect(decodeJwtRole(fakeJwt({ iss: "x" }))).toHaveProperty("error");
+    expect(decodeJwtRole("")).toHaveProperty("error");
+    expect(decodeJwtRole("a.b.c")).toHaveProperty("error");
+  });
+
+  it("✅ 読める鍵からはロールを取り出せる", () => {
+    expect(decodeJwtRole(anon)).toEqual({ role: "anon" });
+  });
+});
+
 describe("期待値の宣言", () => {
-  it("6表・42501・401/403", () => {
+  it("6表・42501・anon=401 / service_role=403", () => {
     expect(TABLES).toEqual(["sites", "popups", "popup_triggers", "variants", "chatbot_nodes", "events"]);
     expect(EXPECTED_SQLSTATE).toBe("42501");
-    expect(EXPECTED_STATUSES).toEqual([401, 403]);
+    expect(EXPECTED_STATUS_BY_ROLE).toEqual({ anon: 401, service_role: 403 });
+    expect(ROLES).toEqual(["anon", "service_role"]);
   });
 });

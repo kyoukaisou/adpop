@@ -52,8 +52,8 @@ alter default privileges in schema public revoke all on functions from anon, aut
 --    書いていたが、**実装はそうなっていなかった** = 説明が実装より広い約束をしていた):
 --   ・**起きること**: その extension の関数は **PUBLIC から実行できない状態で作られる**
 --     (グローバルの既定privilege は全スキーマに効くため)。
---   ・**関門は検知しない**: (c)(c2) が見るのは **public スキーマの関数だけ**で、
---     extension は普通 `extensions` スキーマに入る。(f-3) が測るのは
+--   ・**関門は検知しない**: (c)(c2) が見るのは **`adpop_exposed_schemas()` に載っているスキーマだけ**
+--     (いまは `public` の1つ)で、extension は普通 `extensions` スキーマに入る。(f-3) が測るのは
 --     **「新しい関数が実行できないこと」= 合格側**なので、こちらも鳴らない。
 --   ・**したがって**: extension を足すマイグレーションでは、**必要な EXECUTE を明示的に配ること**。
 --     配り忘れは「その機能が動かない」で気づく(黙って全公開になる向きではない)。
@@ -96,12 +96,50 @@ grant usage on schema public to authenticated;
 -- **この関数を `create or replace` して署名を1本だけ足す**。
 -- ⚠ 足したら、その関数が fail-closed(未登録の Origin には返さない)であることを別に検査する。
 /*
+  ══════════════════════════════════════════════════════════════════════
+  ④-0 **関門が見るスキーマの集合**(Codex 2巡目 High)
+  ══════════════════════════════════════════════════════════════════════
+  🔴 **何が起きていたか**: `supabase/config.toml` の `[api] schemas` は既定で
+    `["public", "graphql_public"]` で、**両方が Data API に出ている**。
+    ところが関門は `nspname = 'public'` を直に書いていたので、
+    **`graphql_public` に authenticated 向けの secdef 関数を1本作れば、
+    allow-list も search_path の関門も丸ごと迂回できた。**
+  📌 型: **検査対象の集合が、設定とは別の場所で別々に育つ。**
+    「public だけを見る」は**そのとき正しかった**だけで、**設定が変わった日に黙って穴になる**。
+  ✅ **集合を SQL 側の1か所に置き**、関門(a)(a2)(b)(c)(c2)(d)を**全部この集合で走らせる**。
+  ✅ **`config.toml` の `schemas` がこの集合の部分集合であること**を、テストで機械的に突き合わせる
+    (`supabase/tests/schema.test.ts`)。**設定を広げたら、関門も広げないと落ちる。**
+  ⚠ ここも「無ければ作る」(下の allow-list と同じ理由)。
+    `create or replace` にすると、**後で広げた集合を、0001 の流し直しが元に戻す** =
+    **検査対象が黙って狭まる**(= 緩む向き)。
+*/
+do $$
+begin
+  if to_regprocedure('public.adpop_exposed_schemas()') is null then
+    execute $q$
+      create function public.adpop_exposed_schemas()
+      returns text[] language sql immutable as $body$ select array['public']::text[] $body$;
+    $q$;
+  end if;
+end $$;
+
+comment on function public.adpop_exposed_schemas() is
+  'Data API に出ているスキーマ。関門はこの集合の中だけを見る。supabase/config.toml の [api] schemas と機械で突き合わせる。';
+
+/*
   🔴🔴 **`create or replace` では書かない。「無ければ作る」にする**(2026-09-08。自分の再実行テストが捕まえた)。
     0001 は**流し直せる**ことを条件にしているが、`create or replace` で空に戻すと、
     **後のマイグレーションが宣言した allow-list を、流し直した瞬間に全部消す**。
     そのあと関門(c)が「配ってあるのに宣言に無い」で落ちる = **流し直した人が理由の分からない赤を見る。**
   ⚠ したがって **allow-list の初期値を作るのはこの1回だけ**で、
     更新は**配る側のマイグレーションが `create or replace` で行う**(0002 がそうしている)。
+
+  🔴 **「宣言が残る」だけでは足りない**(Codex 2巡目 Medium)。
+    ② と ③ は流し直すたびに **anon から権限とスキーマの USAGE を剥がす**ので、
+    宣言が残っていても**配信口は止まる**。
+    → **⑥(このファイルの末尾)が、宣言してある分を配り直す。**
+    → **関門(e3)(e4)が「いま実際に配られている」ことを状態として測る。**
+    ⚠ 3つ揃って初めて「流し直しても壊れない」と言える。**宣言・配り直し・状態の検査**。
 */
 do $$
 begin
@@ -170,6 +208,8 @@ declare
   extra_privs  text[] := case when is_pg17
                           then array['TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']
                           else array['TRUNCATE','REFERENCES','TRIGGER'] end;
+  -- 🔴 関門が見るスキーマ。**ここだけが集合を持つ**(catalog を引く検査は全部これを使う)。
+  exposed      constant text[] := public.adpop_exposed_schemas();
   allowed      constant text[] := public.adpop_anon_callable_functions();
   allowed_auth constant text[] := public.adpop_authenticated_callable_functions();
   /*
@@ -212,7 +252,7 @@ begin
     join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     cross join (values ('anon'), ('service_role'), ('public')) ro(g)
     cross join unnest(table_privs) as p
-    where n.nspname = 'public'
+    where n.nspname = any (exposed)
       and case when c.relkind in ('r','v','m','p','f')
                then has_table_privilege(ro.g, c.oid, p)
                  or (p = any (column_privs) and has_any_column_privilege(ro.g, c.oid, p))
@@ -233,7 +273,7 @@ begin
     join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     cross join (values ('anon'), ('service_role'), ('public')) ro(g)
     cross join unnest(array['USAGE','SELECT','UPDATE']) as p
-    where n.nspname = 'public' and c.relkind = 'S'
+    where n.nspname = any (exposed) and c.relkind = 'S'
       and has_sequence_privilege(ro.g, c.oid, p)
   ) s;
   if array_length(offenders, 1) is not null then
@@ -251,7 +291,7 @@ begin
     from pg_catalog.pg_class c
     join pg_catalog.pg_namespace n on n.oid = c.relnamespace
     cross join unnest(extra_privs) as p
-    where n.nspname = 'public'
+    where n.nspname = any (exposed)
       and case when c.relkind in ('r','v','m','p','f')
                then has_table_privilege('authenticated', c.oid, p) else false end
   ) s;
@@ -271,7 +311,7 @@ begin
     from pg_catalog.pg_proc p
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
     cross join (values ('anon'), ('authenticated'), ('service_role'), ('public')) ro(g)
-    where n.nspname = 'public'
+    where n.nspname = any (exposed)
       and has_function_privilege(ro.g, p.oid, 'EXECUTE')
       and not (ro.g = 'anon' and p.oid = any (allowed_oids))
       and not (ro.g = 'authenticated' and p.oid = any (allowed_auth_oids))
@@ -293,7 +333,7 @@ begin
     into offenders
   from pg_catalog.pg_proc p
   join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public'
+  where n.nspname = any (exposed)
     and p.prosecdef
     and not exists (
       select 1 from unnest(coalesce(p.proconfig, '{}'::text[])) as cfg
@@ -311,7 +351,7 @@ begin
     into offenders
   from pg_catalog.pg_class c
   join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public' and c.relkind in ('r','p') and not c.relrowsecurity;
+  where n.nspname = any (exposed) and c.relkind in ('r','p') and not c.relrowsecurity;
   if array_length(offenders, 1) is not null then
     raise exception 'ADPOP 権限の関門(d): RLS が有効でない表があります: %', array_to_string(offenders, ', ');
   end if;
@@ -326,6 +366,39 @@ begin
      or has_schema_privilege('authenticated', 'public', 'CREATE')
      or has_schema_privilege('service_role', 'public', 'CREATE') then
     raise exception 'ADPOP 権限の関門(e2): public スキーマの CREATE が業務ロールに配られています';
+  end if;
+
+  /*
+    (e3) 🔴🔴 **allow-list に載っている関数を、anon が「いま実際に」実行できること**
+      (Codex 2巡目 Medium)。
+      ここまでの検査は全部「**配りすぎていないか**」の向きだった。逆向き ——
+      **配るべきものが配られていない** —— を1つも見ていなかった。
+      🔴 実害: PR2 で配信の関数を開けた後に **0001 を流し直す**と、
+        ② の `revoke all on all functions … from anon` と ③ の schema USAGE の revoke が走り、
+        **配信エンドポイントが黙って 42501 を返すようになる**(LP 側は fail-closed で何も出なくなる)。
+        マイグレーションは緑、テストも緑、**気づくのは訪問者が減ってから**。
+      ✅ 下の ⑥ が**流し直しのたびに配り直す**。ここはその結果を**状態として**測る
+        (「配り直す文を書いた」ではなく「いま配られている」を見る)。
+  */
+  select coalesce(array_agg(sig order by sig), '{}') into offenders
+  from unnest(allowed) as sig
+  where not has_function_privilege('anon', to_regprocedure(sig), 'EXECUTE');
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(e3): allow-list に載っているのに anon が実行できない関数があります: %',
+      array_to_string(offenders, ', ');
+  end if;
+
+  select coalesce(array_agg(distinct ns order by ns), '{}') into offenders
+  from (
+    select n.nspname as ns
+    from unnest(allowed) as sig
+    join pg_catalog.pg_proc p on p.oid = to_regprocedure(sig)::oid
+    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  ) s
+  where not has_schema_privilege('anon', ns, 'USAGE');
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(e4): allow-list の関数が在るスキーマの USAGE を anon が持っていません: %',
+      array_to_string(offenders, ', ');
   end if;
 
   -- (f) **これから作られるもの**に権限が配られない(実際に作って測り、消す)
@@ -383,5 +456,37 @@ comment on function public.adpop_assert_privilege_rules() is
 -- 関門そのものを業務ロールから呼べないようにする(結果を見せる意味も無い)
 revoke all on function public.adpop_assert_privilege_rules() from public, anon, authenticated, service_role;
 revoke all on function public.adpop_anon_callable_functions() from public, anon, authenticated, service_role;
+revoke all on function public.adpop_authenticated_callable_functions() from public, anon, authenticated, service_role;
+revoke all on function public.adpop_exposed_schemas() from public, anon, authenticated, service_role;
+
+-- ══════════════════════════════════════════════════════════════════════
+-- ⑥ allow-list に載っている関数を、anon へ**配り直す**(Codex 2巡目 Medium)
+-- ══════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **なぜ要るか**: ② と ③ は流し直すたびに **anon から全部剥がす**。
+--   PR2 で配信の関数を開けた後にこのファイルを流し直すと、**配信口が黙って止まる**
+--   (マイグレーションは緑・テストも緑・気づくのは訪問者が減ってから)。
+--   → **剥がした後に、宣言してある分だけを配り直す。**
+-- ⚠ **「締める側を先に、開ける側を後に」の並びは崩れていない** ——
+--   ここで開けるのは **allow-list に載っている分だけ**で、
+--   途中で止まっても「宣言より広く開く」ことはない。
+-- ⚠ PR1 では allow-list が空なので、このブロックは**1文も実行しない**。
+--   (= いまは何も配り直していない。効き始めるのは PR2 から。)
+do $$
+declare
+  sig text;
+  ns  text;
+begin
+  foreach sig in array public.adpop_anon_callable_functions() loop
+    select n.nspname into ns
+    from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+    where p.oid = to_regprocedure(sig)::oid;
+    -- 実在しない署名は関門(0)が落とすので、ここでは黙って飛ばす
+    if ns is null then continue; end if;
+    execute format('grant usage on schema %I to anon', ns);
+    execute format('grant execute on function %s to anon', sig);
+  end loop;
+end $$;
 
 select public.adpop_assert_privilege_rules();

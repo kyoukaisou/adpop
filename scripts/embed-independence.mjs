@@ -60,3 +60,81 @@ export function measurementProblems(metafile, entry) {
   else if (!inputs.includes(entry)) problems.push(`入口 ${entry} が metafile の入力に無い`);
   return problems;
 }
+
+/*
+  ══════════════════════════════════════════════════════════════════════
+  第2段: **到達していないファイル**と **`import type`** を見る(Codex 2巡目 Medium)
+  ══════════════════════════════════════════════════════════════════════
+  🔴 **metafile だけでは足りない理由**(2つとも「metafile に出ない」):
+    ・**入口から到達していないファイル**(まだどこからも import されていない書きかけ)
+    ・**`import type { X } from "…"`** —— 型だけの import は**バンドル後に消える**ので、
+      esbuild の依存グラフに現れない。**しかし AGPL 側のコードを参照していることに変わりはない。**
+  ✅ `typescript` の `ts.preProcessFile` で **静的な import 指定子を全部拾う**。
+    ⚠ 正規表現は書かない(空白の有無・拡張子・書き方で漏れたのが1巡目の欠陥)。
+  ⚠ **限界(そのまま README / LICENSING.md に書く)**:
+    **文字列を実行時に組み立てる `import(variable)` は見ない。** 静的に書かれた指定子だけ。
+*/
+
+/** POSIX の相対パス解決。`..` がルートを飛び出したら null を返す。 */
+function resolveRelative(fromDir, specifier) {
+  const segments = [...fromDir.split("/").filter(Boolean), ...specifier.split("/")];
+  const stack = [];
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (stack.length === 0) return null;
+      stack.pop();
+      continue;
+    }
+    stack.push(segment);
+  }
+  return stack.join("/");
+}
+
+/**
+ * @param {Array<{ path: string, source: string }>} files リポジトリのルートからの相対パスと中身
+ * @param {{ ts: typeof import("typescript"), root?: string }} deps
+ *   ⚠ `typescript` は呼ぶ側から渡す(このモジュールを副作用なしに保つため)
+ * @returns {Array<{ file: string, specifier: string, reason: string }>}
+ */
+export function staticImportViolations(files, deps) {
+  const root = deps.root ?? EMBED_ROOT;
+  const ts = deps.ts;
+  const violations = [];
+  for (const file of files) {
+    const info = ts.preProcessFile(file.source, true, true);
+    const specifiers = [
+      ...info.importedFiles.map((f) => f.fileName),
+      // triple-slash の `/// <reference path="…" />` も経路になる
+      ...info.referencedFiles.map((f) => f.fileName),
+      ...info.typeReferenceDirectives.map((f) => f.fileName),
+    ];
+    const dir = file.path.split("/").slice(0, -1).join("/");
+    for (const specifier of specifiers) {
+      if (!specifier.startsWith(".")) {
+        violations.push({
+          file: file.path,
+          specifier,
+          reason: specifier.startsWith("@/")
+            ? "AGPL 側(src/)を別名 @/ で参照している"
+            : "外部パッケージ・組み込みモジュールを参照している(埋め込みスクリプトは依存ゼロ)",
+        });
+        continue;
+      }
+      const resolved = resolveRelative(dir, specifier);
+      if (resolved === null || !resolved.startsWith(root)) {
+        violations.push({
+          file: file.path,
+          specifier,
+          reason: `${root} の外(= AGPL-3.0 側)を参照している`,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+/** 🔴 0件を「違反なし」と読ませない(集める対象が消えたら、それは測れていない)。 */
+export function fileScanProblems(files) {
+  return files.length === 0 ? [`${EMBED_ROOT} に検査対象のソースが1つも無い(何も測っていない)`] : [];
+}

@@ -250,9 +250,18 @@ create table public.events (
     ⚠ **ここは「入ってきたものを弾く」だけで、削ってはいない。**
       **query / fragment を削り落とすのは投入関数(PR2)の仕事**で、この CHECK はその検算。
       片方だけだと、投入関数が削り忘れた日に黙って通る(2か所で見る)。
+
+    🔴🔴 **`?` と `#` の不在を見るだけでは足りなかった**(Codex 2巡目 Medium)。
+      それだと **`taro@example.com` も `email=taro@example.com` もそのまま通る** ——
+      「query が付いていない」と「origin + path の形をしている」は**別のこと**。
+      ✅ **形そのものを書く**: スキーム + ホスト + 任意の path。
+        ホストにも path にも `?` `#` 空白は入れない。
+      ⚠ `https?` にしているのは、埋め込み先が http の LP でも記録は取れるようにするため。
+        **遷移先 URL(`variants.destination_url`)は https のみ**で、あちらとは基準が違う。
   */
   page_url   text null check (
-    page_url is null or (length(page_url) <= 2048 and page_url !~ '[?#]')
+    page_url is null
+    or (length(page_url) <= 2048 and page_url ~ '^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$')
   ),
   occurred_at timestamptz not null default now(),
 

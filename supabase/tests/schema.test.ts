@@ -17,6 +17,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrationsMissingGuard, GUARD_CALL } from "../../scripts/migration-guard.mjs";
 import { TABLES as POSTGREST_TABLES } from "../../scripts/postgrest-expectations.mjs";
+import { readApiSchemas } from "../../scripts/supabase-config.mjs";
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../migrations");
 const USER_A = "11111111-1111-1111-1111-111111111111";
@@ -254,6 +255,33 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         [`public.${table}`],
       );
       expect(r.rows).toEqual([]);
+    });
+
+    it("🔴 Data API に出ているスキーマが、関門の見る集合に収まっている", async () => {
+      /*
+        🔴 **設定と関門が別々に育つのを止める**(Codex 2巡目 High)。
+          `config.toml` の `[api] schemas` は既定で `graphql_public` を含み、
+          そこに作った関数は **allow-list も search_path の関門も迂回できた**。
+        ⚠ 突き合わせは**部分集合**で見る(関門のほうが広いのは安全側)。
+          設定を広げて関門を広げ忘れたら、ここが落ちる。
+      */
+      const parsed = readApiSchemas(
+        readFileSync(path.resolve(__dirname, "../config.toml"), "utf8"),
+      );
+      // 🔴 読めなかったことを「差分なし」と読ませない
+      expect(parsed, `config.toml を読めなかった: ${JSON.stringify(parsed)}`).not.toHaveProperty("error");
+      const exposedInConfig = (parsed as { schemas: string[] }).schemas;
+      expect(exposedInConfig.length).toBeGreaterThan(0);
+
+      const guard = await db.query<{ schemas: string[] }>(
+        `select public.adpop_exposed_schemas() as schemas`,
+      );
+      const guarded = guard.rows[0].schemas;
+      expect(guarded).toEqual(["public"]);
+      expect(
+        exposedInConfig.filter((s) => !guarded.includes(s)),
+        "Data API に出ているのに関門が見ていないスキーマがある",
+      ).toEqual([]);
     });
 
     it("anon は public スキーマの USAGE を持たない(= 入口が無い)", async () => {
@@ -1035,6 +1063,12 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         "https://lp.example.com/a?email=taro%40example.com",
         "https://lp.example.com/a?utm_source=x",
         "https://lp.example.com/a#section",
+        // 🔴 Codex 2巡目 Medium: 「? と # が無い」だけを見ていたので、これらが素通りしていた
+        "taro@example.com",
+        "email=taro@example.com",
+        "lp.example.com/a", // スキームが無い
+        "https://lp.example.com/a b", // 空白入り
+        "https://lp.example.com/a\tb",
       ]) {
         const code = await sqlstateOf(db, () =>
           db.query(
@@ -1047,18 +1081,26 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       }
     });
 
-    it("✅ origin + path だけなら保存できる", async () => {
+    it("✅ origin だけ・origin + path なら保存できる(締めすぎていないこと)", async () => {
       const site = await db.query<{ id: string }>(
         `select id from public.sites where name = '階層S1'`,
       );
-      const code = await sqlstateOf(db, () =>
-        db.query(
-          `insert into public.events (owner_id, site_id, kind, device, page_url)
-           values ($1, $2, 'conversion', 'mobile', 'https://lp.example.com/a/b')`,
-          [site.rows[0] ? USER_A : USER_A, site.rows[0].id],
-        ),
-      );
-      expect(code).toBe("");
+      for (const good of [
+        "https://lp.example.com",
+        "https://lp.example.com/",
+        "https://lp.example.com/a/b",
+        "https://lp.example.com:8443/a",
+        "http://lp.example.com/a", // 埋め込み先が http でも記録は取る
+      ]) {
+        const code = await sqlstateOf(db, () =>
+          db.query(
+            `insert into public.events (owner_id, site_id, kind, device, page_url)
+             values ($1, $2, 'conversion', 'mobile', $3)`,
+            [USER_A, site.rows[0].id, good],
+          ),
+        );
+        expect(code, `${good} が保存できなかった`).toBe("");
+      }
     });
   });
 
@@ -1221,6 +1263,43 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       );
     });
 
+    it("🔴 Data API に出ているスキーマを広げると、そこの secdef も関門の対象になる", async () => {
+      /*
+        🔴 Codex 2巡目 High の逆側の実測 —— **集合を広げれば、広げた分が実際に見られること**。
+          広げた集合で穴を作って、関門が落ちることを確かめる。
+      */
+      await assertGuardRejects(
+        `create schema zz_exposed;
+         create or replace function public.adpop_exposed_schemas()
+           returns text[] language sql immutable as
+           $body$ select array['public','zz_exposed']::text[] $body$;
+         create function zz_exposed.zz_backdoor() returns int
+           language sql security definer as 'select 1';`,
+        `drop function zz_exposed.zz_backdoor();
+         drop schema zz_exposed;
+         create or replace function public.adpop_exposed_schemas()
+           returns text[] language sql immutable as $body$ select array['public']::text[] $body$;`,
+        "広げたスキーマの secdef を関門が見落とした",
+      );
+    });
+
+    it("🔴 allow-list に載っているのに anon へ配られていないと落ちる(配りすぎだけでなく、配り漏れも見る)", async () => {
+      /*
+        🔴 Codex 2巡目 Medium。ここまでの関門は全部「**配りすぎ**」の向きしか見ていなかった。
+          PR2 の配信口が 0001 の流し直しで黙って止まるのは「**配り漏れ**」の向き。
+      */
+      await assertGuardRejects(
+        `create function public.zz_delivery() returns int language sql as 'select 1';
+         create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as
+           $body$ select array['public.zz_delivery()']::text[] $body$;`,
+        `create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+         drop function public.zz_delivery();`,
+        "allow-list に載っているのに配られていない状態を関門が見落とした",
+      );
+    });
+
     it("anon から呼べる関数が0本なのに USAGE だけ開けると落ちる", async () => {
       await assertGuardRejects(
         `grant usage on schema public to anon;`,
@@ -1259,6 +1338,47 @@ describe("0001 の再実行", () => {
       );
       expect(after.rows[0].granted, "0001 を流し直したら 0002 の grant が消えた").toBe(true);
       // 関門も通る
+      await db.query(`select public.adpop_assert_privilege_rules()`);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("🔴 allow-list に1本入れた状態で 0001 を流し直しても、anon はまだ呼べる", async () => {
+    /*
+      🔴 **PR2 の配信口が黙って止まる経路**(Codex 2巡目 Medium)。
+        0001 の ② と ③ は流し直すたびに anon から全部剥がす。
+        剥がしっぱなしだと、**マイグレーションは緑・テストも緑のまま、配信だけが 42501 になる。**
+      ✅ ⑥ が配り直し、関門(e3)(e4)がその**状態**を測る。ここは両方を通しで撃つ。
+    */
+    const db = await createMigratedDb(START_ACLS[0]);
+    try {
+      // PR2 が入った後を模す: 関数を作り、allow-list に載せ、anon へ配る
+      await db.exec(`
+        create function public.zz_delivery(site_key text) returns text
+          language sql security definer set search_path = '' as $body$ select $1 $body$;
+        create or replace function public.adpop_anon_callable_functions()
+          returns text[] language sql immutable as
+          $body$ select array['public.zz_delivery(text)']::text[] $body$;
+        grant usage on schema public to anon;
+        grant execute on function public.zz_delivery(text) to anon;
+      `);
+      await db.query(`select public.adpop_assert_privilege_rules()`);
+
+      const before = await db.query<{ granted: boolean }>(
+        `select has_function_privilege('anon', 'public.zz_delivery(text)', 'EXECUTE') as granted`,
+      );
+      expect(before.rows[0].granted).toBe(true);
+
+      // 0001 を流し直す(② と ③ が anon から剥がし、⑥ が配り直す)
+      await db.exec(readFileSync(path.join(MIGRATIONS_DIR, MIGRATION_FILES[0]), "utf8"));
+
+      const after = await db.query<{ granted: boolean; usage: boolean }>(
+        `select has_function_privilege('anon', 'public.zz_delivery(text)', 'EXECUTE') as granted,
+                has_schema_privilege('anon', 'public', 'USAGE') as usage`,
+      );
+      expect(after.rows[0].granted, "0001 を流し直したら配信口が止まった").toBe(true);
+      expect(after.rows[0].usage, "0001 を流し直したら anon の USAGE が消えた").toBe(true);
       await db.query(`select public.adpop_assert_privilege_rules()`);
     } finally {
       await db.close();

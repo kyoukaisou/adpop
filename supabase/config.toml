@@ -10,7 +10,12 @@ enabled = true
 port = 54521
 # Schemas to expose in your API. Tables, views and stored procedures in this schema will get API
 # endpoints. `public` and `graphql_public` schemas are included by default.
-schemas = ["public", "graphql_public"]
+# 🔴 ADPOP は GraphQL を使わないので `graphql_public` を Data API に出さない(Codex 2巡目 High)。
+#   出したままだと、**そのスキーマに作った関数は 0001 の関門(c)(c2)の外**になり、
+#   allow-list も search_path の関門も迂回できる。
+#   ⚠ ここを増やすときは `adpop_exposed_schemas()`(0001)も同時に増やす。
+#      片方だけ増やすと `supabase/tests/schema.test.ts` の突き合わせが落ちる。
+schemas = ["public"]
 # Extra schemas to add to the search_path of every request.
 extra_search_path = ["public", "extensions"]
 # The maximum number of rows returns from a view, table, or stored procedure. Limits payload size
