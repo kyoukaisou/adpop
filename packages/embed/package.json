@@ -1,0 +1,11 @@
+{
+  "name": "adpop-js",
+  "version": "0.0.0",
+  "license": "MIT",
+  "description": "ADPOP の埋め込みスクリプト(他人の LP に読み込まれる側)。MIT。",
+  "type": "module",
+  "private": true,
+  "files": ["dist", "LICENSE", "README.md"],
+  "dependencies": {},
+  "devDependencies": {}
+}

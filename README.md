@@ -1,5 +1,8 @@
 # ADPOP
 
+**ライセンスはディレクトリで分かれています**: `packages/embed/` = **MIT** / それ以外 = **AGPL-3.0**。
+詳細は **[LICENSING.md](./LICENSING.md)**(ルートの `LICENSE` は AGPL-3.0 の全文だけを置いています)。
+
 **LP に `<script>` を1行貼るだけで、離脱しかけた訪問者にポップを出す**ツール。
 
 いま LP から出ていく人はそのまま消えるだけで、再訪も再提案もできない。ADPOP を入れると
@@ -60,11 +63,20 @@ npm run typecheck
 npm test                       # ⚠ Docker も Supabase も要らない(PGlite にマイグレーションを流す)
 npm run check:bundle-size
 npm run check:embed-independence
+
+# ローカルの Supabase が起動している間だけ動く(実物の PostgREST に当たる)
+npm run check:postgrest
 ```
 
 ⚠ **`npm test` はローカルの Supabase を使いません。** マイグレーションを **PGlite**(WASM の PostgreSQL)へ
-通しで流し、**権限と RLS の実効値をその場で測ります**。`supabase start` は、実物の PostgREST・Auth を
-通して確かめたいときに使います。
+通しで流し、**権限と RLS の実効値をその場で測ります**。
+
+🔴 **ただし PGlite 側の「Supabase の既定privilege」は手書きの再現です。**
+再現が実物とずれたら、検査は**ずれた前提を測り続けます**。
+そのため **CI に実物の Supabase を起動するジョブ**があり、
+`anon` キーと `service_role` キーで6表を叩いて **HTTP と SQLSTATE の両方**を突き合わせます
+(`npm run check:postgrest`)。⚠ このジョブが見ているのは**未ログインの経路だけ**で、
+**ログイン後(authenticated)の経路は実物では1度も通していません**(ログインする画面が PR3 のため)。
 
 ## 自前ホスト
 

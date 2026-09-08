@@ -1,11 +1,3 @@
-ADPOP はディレクトリごとにライセンスが違います。
-  - packages/embed/ (npm: adpop-js) ... MIT License (packages/embed/LICENSE)
-  - それ以外すべて (サーバー・管理画面) ... GNU AGPL-3.0 (このファイルの以下の全文)
-分割の理由と運用は LICENSING.md を参照してください。
-Copyright (c) 2026 kyoukaisou
-
-----------------------------------------------------------------------
-
                     GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 

@@ -22,18 +22,37 @@ Copyright (c) 2026 kyoukaisou
 
 | 検査 | コマンド | 何を見るか |
 |---|---|---|
-| 依存の向き | `npm run check:embed-independence` | `packages/embed/` が `packages/embed/` の外(= AGPL 側)を import していないこと |
+| 依存の向き(第1段) | `npm run check:embed-independence` | **esbuild が入口から実際に解決した依存グラフ**(metafile)の入力が、全部 `packages/embed/` の中にあること |
+| 依存の向き(第2段) | 同上 | `packages/embed/` 配下の **TS/JS 系のファイル**(`.ts .tsx .js .jsx .mjs .cjs .mts .cts`。⚠ **`dist/` と `node_modules/` は除く**)を `typescript` の `ts.preProcessFile` で読み、**静的に書かれた import 指定子**(`import type` と triple-slash の参照を含む)が外を指していないこと |
 | ライセンス本文 | `npm test`(`tests/license-split.test.ts`) | ルート `LICENSE` に AGPL-3.0 の本文が、`packages/embed/LICENSE` に MIT の本文が、それぞれ**そのまま**在ること |
 
+**なぜ2段あるか**(どちらか片方では抜ける):
+
+| 段 | 見えるもの | **見えないもの** |
+|---|---|---|
+| 第1段(metafile) | 入口から実際に読まれるコード。**書き方・拡張子・別名に依存しない** | **入口から到達していないファイル** / **`import type`**(バンドル後に消えるので依存グラフに出ない) |
+| 第2段(静的走査) | 到達していないファイルも含めた、**上の8拡張子のファイル**(`dist/` `node_modules/` を除く)の静的 import・`import type`・triple-slash | **実行時に文字列を組み立てる `import(変数)`**(静的には何を読むか決まらない)/ **8拡張子に無いファイル** |
+
+⚠ **したがって「一切読んでいない」を保証してはいない。** 保証しているのは
+**「入口から到達する依存」+「静的に書かれた import 指定子」**の2つで、
+**動的に組み立てた文字列の import は見ていない**。
 ⚠ 依存の向きは **embed → server を禁止**する片側だけ。逆(server が embed を読む)は
 将来ありうるので禁止していない。
 
-## 未確認(public 化のときに確かめる)
+## GitHub のライセンス自動判定(🟢 実測で決着・2026-09-08)
 
-- ⚠ **ルートの `LICENSE` は冒頭に分割の案内を5行置いてから AGPL-3.0 の全文**を並べている。
-  GitHub のライセンス自動判定(licensee)は本文の一致率で判定するため、
-  **`NOASSERTION`(Other)になる可能性がある**。判定は public 化してからでないと測れない。
-  - 測り方: `gh api repos/kyoukaisou/adpop --jq .license`
-  - `agpl-3.0` にならなかったら、**冒頭の案内をこのファイルへ移して `LICENSE` を全文だけにする**。
-  - ⚠ 「たぶん大丈夫」で放置しない。**要件書 §5-6 は他社の判定結果(Plausible = `agpl-3.0` /
-    PostHog = `NOASSERTION`)を根拠に使っている**ので、こちらの判定も事実として持っておく。
+**実測**: `gh api repos/kyoukaisou/adpop --jq .license` → **`spdx_id: NOASSERTION`**。
+
+- **原因**: ルートの `LICENSE` の**冒頭に置いていた分割の案内**(日本語6行 + 区切り線)。
+  GitHub の判定(licensee)は本文の一致率で見るので、**前置きが混ざると落ちる**。
+- **対応**: **ルートの `LICENSE` は AGPL-3.0 の全文だけ**にした(前置きを削除)。
+  分割の案内は **このファイルと `README.md` の冒頭**へ移した。
+  ⚠ 要件書 §5-6 の「ルート `LICENSE` の冒頭に明記」は、**この実測を理由に外している**。
+  分割が読む人に伝わることは、README の冒頭と `tests/license-split.test.ts` が担保する。
+- ⚠ **まだ確かめていないこと**: **判定は default branch でしか更新されない**ので、
+  **この PR の上では検証できない**。**マージ後に同じコマンドで測り直す**。
+  それでも `agpl-3.0` にならなければ、原因は前置き以外(別 PR で追う)。
+
+⚠ **なぜ放置しなかったか**: 要件書 §5-6 は**他社の判定結果**
+(Plausible = `agpl-3.0` / PostHog = `NOASSERTION`)を根拠に使っている。
+**自分が `NOASSERTION` 側に立ったままだと、その根拠と矛盾する。**
