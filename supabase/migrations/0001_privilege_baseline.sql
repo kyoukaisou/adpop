@@ -9,9 +9,13 @@
 --
 -- 🔴 **並びの規則(2026-09-07 / [[SaaS開発ナレッジ]] の型)**: 締める側を先に、開ける側を後に。
 --   文ごとにコミットされる環境では、このファイルは**どの文の直後でも止まりうる**。
---   ここで「開ける」のは `grant usage on schema public to authenticated` の1文だけで、
---   **スキーマの USAGE 単体では1つの表にも触れない**(オブジェクトの権限は0本のまま)。
---   → **どの文の直後で止まっても、触れる範囲は広がらない。** 表と grant(開ける側)は 0002 に置く。
+--   ここで「開ける」のは2つだけ:
+--     ① `grant usage on schema public to authenticated`(③)
+--     ② **末尾の ⑥ が、allow-list に載っている関数の EXECUTE と、そのスキーマの USAGE を anon へ配り直す**
+--   **どちらも「宣言してある分」だけ**で、**スキーマの USAGE 単体では1つの表にも触れない**
+--   (オブジェクトの権限は、0002 が明示的に配るまで0本のまま)。
+--   → **どの文の直後で止まっても、宣言より広く開くことはない。** 表と grant(開ける側の本体)は 0002 に置く。
+--   ⚠ PR1 では allow-list が空なので ② は1文も実行しない。効き始めるのは PR2 から。
 --
 -- 🔴 **再実行できること**: 途中で止まった人が最初にやるのは「同じファイルを流し直す」。
 --   `create or replace` と `revoke`(冪等)だけで書く。
@@ -242,6 +246,25 @@ begin
   select coalesce(array_agg(to_regprocedure(sig)::oid), '{}') into allowed_auth_oids
   from unnest(allowed_auth) as sig;
 
+  /*
+    (0b) 🔴 **allow-list に載せてよいのは、関門が見ているスキーマの関数だけ**(Codex 3巡目 Medium)。
+      ⑥ は allow-list の関数の**在るスキーマに anon の USAGE を配る**。
+      そこが `adpop_exposed_schemas()` の外だと:
+        ・**そのスキーマの他の関数**(PUBLIC が実行できるもの)が (c) の対象外のまま anon から届く
+        ・**そのスキーマの表**も (a)(d) の対象外
+      = **allow-list に1行足すだけで、関門の届かない入口を開ける**ことになる。
+    ⚠ これは §2026-09-08-51 と同じ型(集合が別の場所で育つ)の3例目。
+  */
+  select coalesce(array_agg(format('%s(%s)', sig, n.nspname) order by sig), '{}') into offenders
+  from unnest(allowed || allowed_auth) as sig
+  join pg_catalog.pg_proc p on p.oid = to_regprocedure(sig)::oid
+  join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  where not (n.nspname = any (exposed));
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(0b): 関門が見ていないスキーマの関数が allow-list に載っています: %',
+      array_to_string(offenders, ', ');
+  end if;
+
   -- (a) public の表・ビューに、anon / service_role / PUBLIC は権限を1つも持たない
   --     ⚠ 表単位と列単位の両方で測る。
   select coalesce(array_agg(format('%s|%s|%s', rel, grantee, priv) order by 1), '{}')
@@ -356,16 +379,28 @@ begin
     raise exception 'ADPOP 権限の関門(d): RLS が有効でない表があります: %', array_to_string(offenders, ', ');
   end if;
 
-  -- (e) スキーマの権限。anon の USAGE は「allow-list が空でないとき」だけ許す。
-  --     ⚠ USAGE 単体では何も触れないが、**入口を開ける理由が無いのに開いている状態**を残さない。
-  if has_schema_privilege('anon', 'public', 'USAGE') and array_length(allowed, 1) is null then
-    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が0本なのに、anon が public スキーマの USAGE を持っています';
+  /*
+    (e) スキーマの権限。anon の USAGE は「allow-list が空でないとき」だけ許す。
+    ⚠ USAGE 単体では何も触れないが、**入口を開ける理由が無いのに開いている状態**を残さない。
+    🔴 **`public` 固定をやめて集合で回す**(Codex 3巡目 Medium)。
+      `adpop_exposed_schemas()` を増やしても、増やしたスキーマの anon USAGE と CREATE を
+      1つも見ていなかった = **2巡目に直した型(集合が別の場所で育つ)の、直し残し**。
+  */
+  select coalesce(array_agg(ns order by ns), '{}') into offenders
+  from unnest(exposed) as ns
+  where has_schema_privilege('anon', ns, 'USAGE') and array_length(allowed, 1) is null;
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が0本なのに、anon が USAGE を持つスキーマがあります: %',
+      array_to_string(offenders, ', ');
   end if;
-  if has_schema_privilege('public', 'public', 'CREATE')
-     or has_schema_privilege('anon', 'public', 'CREATE')
-     or has_schema_privilege('authenticated', 'public', 'CREATE')
-     or has_schema_privilege('service_role', 'public', 'CREATE') then
-    raise exception 'ADPOP 権限の関門(e2): public スキーマの CREATE が業務ロールに配られています';
+
+  select coalesce(array_agg(format('%s|%s', ns, ro.g) order by 1), '{}') into offenders
+  from unnest(exposed) as ns
+  cross join (values ('anon'), ('authenticated'), ('service_role'), ('public')) ro(g)
+  where has_schema_privilege(ro.g, ns, 'CREATE');
+  if array_length(offenders, 1) is not null then
+    raise exception 'ADPOP 権限の関門(e2): スキーマの CREATE が業務ロールに配られています: %',
+      array_to_string(offenders, ', ');
   end if;
 
   /*

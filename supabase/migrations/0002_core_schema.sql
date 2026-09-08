@@ -258,10 +258,17 @@ create table public.events (
         ホストにも path にも `?` `#` 空白は入れない。
       ⚠ `https?` にしているのは、埋め込み先が http の LP でも記録は取れるようにするため。
         **遷移先 URL(`variants.destination_url`)は https のみ**で、あちらとは基準が違う。
+
+    🔴🔴 **ホストから `@` を外す**(Codex 3巡目 Medium)。
+      URL の authority は `userinfo@host` を許すので、
+      **`https://taro@example.com/path` が「origin + path の形」として通っていた** ——
+      **メールアドレスがそのまま入る**(塞ぎたかったものが、塞いだつもりの形で入る)。
+      ⚠ **path 側の `@` は許す** —— `https://example.com/@handle` は普通の URL で、
+        ここを弾くと**まともな LP を記録できなくなる**(締めすぎ)。
   */
   page_url   text null check (
     page_url is null
-    or (length(page_url) <= 2048 and page_url ~ '^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$')
+    or (length(page_url) <= 2048 and page_url ~ '^https?://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$')
   ),
   occurred_at timestamptz not null default now(),
 

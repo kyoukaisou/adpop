@@ -121,19 +121,47 @@ describe("第2段: metafile に出ないもの(Codex 2巡目 Medium)", () => {
     expect(violations[0].specifier).toBe("../../../src/lib/types");
   });
 
-  it("🔴 入口から到達していないファイルも読む", () => {
+  it("🔴 入口から到達していないファイルも読む(**本番の収集処理を通す**)", async () => {
     /*
       ⚠ 書きかけのファイルは、まだどこからも import されていないので **metafile に1行も出ない**。
         「いま出荷されていないから安全」ではない —— **次に誰かが import した瞬間に混ざる**。
+
+      🔴 **手製の配列を渡していたのが弱かった**(Codex 3巡目 Low)。
+        それだと **`collectEmbedFiles()` が未到達ファイルを拾わなくなっても、この検査は緑のまま**
+        (= 判定だけを測って、収集を1ミリも測っていない)。
+      ✅ **一時ディレクトリに実ファイルを書き、`collectEmbedFiles()` から通す。**
     */
-    const files = [
-      { path: "packages/embed/src/loader.ts", source: `export const v = 1;\n` },
-      { path: "packages/embed/src/wip.ts", source: `import { db } from "@/lib/db";\nexport const w = db;\n` },
-    ];
+    const root = makeTree({
+      "packages/embed/src/loader.ts": `export const v = 1;\n`,
+      "packages/embed/src/wip.ts": `import { db } from "@/lib/db";\nexport const w = db;\n`,
+    });
+    trees.push(root);
+
+    // 第1段(バンドラ)は未到達ファイルを1行も見ない
+    const metafile = await metafileOf(root, "packages/embed/src/loader.ts");
+    expect(Object.keys(metafile.inputs)).toEqual(["packages/embed/src/loader.ts"]);
+    expect(metafileViolations(metafile)).toEqual([]);
+
+    // 第2段は、収集処理が拾ったファイルとして捕まえる
+    const files = collectEmbedFiles(root);
+    expect(files.map((f) => f.path).sort()).toEqual([
+      "packages/embed/src/loader.ts",
+      "packages/embed/src/wip.ts",
+    ]);
     const violations = staticImportViolations(files, { ts });
     expect(violations).toHaveLength(1);
     expect(violations[0].file).toBe("packages/embed/src/wip.ts");
     expect(violations[0].reason).toMatch(/AGPL/);
+  });
+
+  it("⚠ 収集は dist と node_modules を見ない(見ると他人のコードで落ちる)", () => {
+    const root = makeTree({
+      "packages/embed/src/loader.ts": `export const v = 1;\n`,
+      "packages/embed/dist/t.js": `import { db } from "@/lib/db";\n`,
+      "packages/embed/node_modules/x/index.js": `import { db } from "@/lib/db";\n`,
+    });
+    trees.push(root);
+    expect(collectEmbedFiles(root).map((f) => f.path)).toEqual(["packages/embed/src/loader.ts"]);
   });
 
   it("🔴 triple-slash の参照も見る", () => {

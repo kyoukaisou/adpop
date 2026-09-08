@@ -1069,6 +1069,10 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         "lp.example.com/a", // スキームが無い
         "https://lp.example.com/a b", // 空白入り
         "https://lp.example.com/a\tb",
+        // 🔴 Codex 3巡目 Medium: URL の authority は `userinfo@host` を許すので、
+        //   **メールアドレスがそのまま「origin + path の形」で入っていた**
+        "https://taro@example.com/path",
+        "https://taro%40example.com@lp.example.com/a",
       ]) {
         const code = await sqlstateOf(db, () =>
           db.query(
@@ -1091,6 +1095,8 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         "https://lp.example.com/a/b",
         "https://lp.example.com:8443/a",
         "http://lp.example.com/a", // 埋め込み先が http でも記録は取る
+        // ⚠ path の `@` は許す(`/@handle` は普通の URL。ここを弾くと締めすぎ)
+        "https://lp.example.com/@handle",
       ]) {
         const code = await sqlstateOf(db, () =>
           db.query(
@@ -1154,12 +1160,31 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
     ⚠ ここは実際に権限を緩めてから関門を呼び、**元へ戻す**。
   */
   describe("関門(adpop_assert_privilege_rules)の実力", () => {
-    async function assertGuardRejects(brokenSql: string, restoreSql: string, hint: string): Promise<void> {
+    /*
+      @param rule 例 `"(a)"`。**どの関門が落としたか**まで突き合わせる。
+        🔴 これを見ないと、「(a) を撃ったつもりで実は (d) が先に落としていた」に気づけない
+          (= テストの名前と、そのテストが観測しているものがずれる型)。
+          関門は最初に違反を見つけた1本で止まるので、**混ざると先に評価されるほうが拾う。**
+    */
+    async function assertGuardRejects(
+      brokenSql: string,
+      restoreSql: string,
+      hint: string,
+      rule?: string,
+    ): Promise<void> {
       await db.exec(brokenSql);
-      const code = await sqlstateOf(db, () => db.query(`select public.adpop_assert_privilege_rules()`));
+      let code = "";
+      let message = "";
+      try {
+        await db.query(`select public.adpop_assert_privilege_rules()`);
+      } catch (e) {
+        code = (e as { code?: string }).code ?? "unknown";
+        message = (e as { message?: string }).message ?? "";
+      }
       await db.exec(restoreSql);
       // raise exception の既定は P0001
       expect(code, hint).toBe("P0001");
+      if (rule) expect(message, `${hint}(落としたのは別の関門)`).toContain(`関門${rule}`);
       // 戻したら通ること(戻し漏れをここで見つける)
       await db.query(`select public.adpop_assert_privilege_rules()`);
     }
@@ -1169,6 +1194,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `grant select on public.sites to anon;`,
         `revoke all on public.sites from anon;`,
         "anon に select を配っても関門が通った",
+        "(a)",
       );
     });
 
@@ -1177,6 +1203,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `grant select (site_key) on public.sites to anon;`,
         `revoke all on public.sites from anon;`,
         "列単位の grant を関門が見落とした",
+        "(a)",
       );
     });
 
@@ -1185,6 +1212,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `alter default privileges in schema public grant select on tables to anon;`,
         `alter default privileges in schema public revoke all on tables from anon;`,
         "既定privilege の緩みを関門が見落とした",
+        "(f-1)",
       );
     });
 
@@ -1193,6 +1221,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `alter table public.events disable row level security;`,
         `alter table public.events enable row level security;`,
         "RLS を切っても関門が通った",
+        "(d)",
       );
     });
 
@@ -1203,6 +1232,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `revoke all on function public.adpop_is_https_url(text) from anon;
          revoke usage on schema public from anon;`,
         "anon に関数を開けても関門が通った",
+        "(c)",
       );
     });
 
@@ -1211,6 +1241,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `grant truncate on public.sites to authenticated;`,
         `revoke truncate on public.sites from authenticated;`,
         "TRUNCATE を配っても関門が通った",
+        "(b)",
       );
     });
 
@@ -1226,6 +1257,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
          grant execute on function public.zz_secdef_backdoor() to authenticated;`,
         `drop function public.zz_secdef_backdoor();`,
         "authenticated に配った secdef 関数を関門が見落とした",
+        "(c)",
       );
     });
 
@@ -1235,6 +1267,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
            language sql security definer as 'select 1';`,
         `drop function public.zz_secdef_no_path();`,
         "search_path を固定していない secdef 関数を関門が見落とした",
+        "(c2)",
       );
     });
 
@@ -1260,26 +1293,140 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
            returns text[] language sql immutable as
            $body$ select array['public.adpop_is_https_url(text)','public.adpop_is_origin(text)','public.adpop_is_origin_list(text[])']::text[] $body$;`,
         "allow-list の誤記を関門が見落とした",
+        "(0)",
       );
     });
 
-    it("🔴 Data API に出ているスキーマを広げると、そこの secdef も関門の対象になる", async () => {
+    /*
+      ────────────────────────────────────────────────────────────────
+      集合を広げたら、**関門の1本1本が**広げた分まで走るか(Codex 3巡目 Low)
+      ────────────────────────────────────────────────────────────────
+      🔴 2巡目は `zz_exposed` に **search_path 未固定の secdef しか置いていなかった**ので、
+        **実証できていたのは (c2) だけ**だった —— (a)(a2)(b)(c)(d)(e)(e2) を
+        `public` 固定に戻しても、あの1本は赤くならない。
+      ✅ **関門ごとに、その関門だけが拾う違反を `zz_exposed` に1つずつ置いて撃つ。**
+      ⚠ 置く違反は**1種類ずつ**にする(混ぜると、先に評価される関門が拾って
+        「どの関門が守っているか」が分からなくなる)。
+    */
+    const widenSchema = (extraSql: string) =>
+      `create schema if not exists zz_exposed;
+       create or replace function public.adpop_exposed_schemas()
+         returns text[] language sql immutable as
+         $body$ select array['public','zz_exposed']::text[] $body$;
+       ${extraSql}`;
+    const restoreSchema = (extraSql: string) =>
+      `${extraSql}
+       drop schema if exists zz_exposed cascade;
+       create or replace function public.adpop_exposed_schemas()
+         returns text[] language sql immutable as $body$ select array['public']::text[] $body$;`;
+
+    it("🔴 (a) 広げたスキーマの表に anon の権限があると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(
+          `create table zz_exposed.zz_tbl (id int);
+           alter table zz_exposed.zz_tbl enable row level security;
+           grant usage on schema zz_exposed to anon;
+           grant select on zz_exposed.zz_tbl to anon;`,
+        ),
+        restoreSchema(`revoke all on schema zz_exposed from anon;`),
+        "広げたスキーマの表の権限を (a) が見落とした",
+        "(a)",
+      );
+    });
+
+    it("🔴 (a2) 広げたスキーマの連番に anon の権限があると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(
+          `create sequence zz_exposed.zz_seq;
+           grant usage on schema zz_exposed to anon;
+           grant usage on sequence zz_exposed.zz_seq to anon;`,
+        ),
+        restoreSchema(`revoke all on schema zz_exposed from anon;`),
+        "広げたスキーマの連番の権限を (a2) が見落とした",
+        "(a2)",
+      );
+    });
+
+    it("🔴 (b) 広げたスキーマの表に authenticated の TRUNCATE があると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(
+          `create table zz_exposed.zz_tbl_b (id int);
+           alter table zz_exposed.zz_tbl_b enable row level security;
+           grant truncate on zz_exposed.zz_tbl_b to authenticated;`,
+        ),
+        restoreSchema(""),
+        "広げたスキーマの TRUNCATE を (b) が見落とした",
+        "(b)",
+      );
+    });
+
+    it("🔴 (c) 広げたスキーマの関数を PUBLIC が実行できると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(
+          `create function zz_exposed.zz_fn() returns int language sql as 'select 1';
+           grant execute on function zz_exposed.zz_fn() to public;`,
+        ),
+        restoreSchema(""),
+        "広げたスキーマの関数の EXECUTE を (c) が見落とした",
+        "(c)",
+      );
+    });
+
+    it("🔴 (c2) 広げたスキーマの secdef に search_path の固定が無いと落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(
+          `create function zz_exposed.zz_secdef() returns int
+             language sql security definer as 'select 1';`,
+        ),
+        restoreSchema(""),
+        "広げたスキーマの secdef を (c2) が見落とした",
+        "(c2)",
+      );
+    });
+
+    it("🔴 (d) 広げたスキーマに RLS 無しの表があると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(`create table zz_exposed.zz_tbl_d (id int);`),
+        restoreSchema(""),
+        "広げたスキーマの RLS を (d) が見落とした",
+        "(d)",
+      );
+    });
+
+    it("🔴 (e) 広げたスキーマに anon の USAGE だけがあると落ちる(allow-list は空)", async () => {
+      await assertGuardRejects(
+        widenSchema(`grant usage on schema zz_exposed to anon;`),
+        restoreSchema(`revoke all on schema zz_exposed from anon;`),
+        "広げたスキーマの USAGE を (e) が見落とした",
+        "(e)",
+      );
+    });
+
+    it("🔴 (e2) 広げたスキーマの CREATE が業務ロールに配られていると落ちる", async () => {
+      await assertGuardRejects(
+        widenSchema(`grant create on schema zz_exposed to authenticated;`),
+        restoreSchema(`revoke all on schema zz_exposed from authenticated;`),
+        "広げたスキーマの CREATE を (e2) が見落とした",
+        "(e2)",
+      );
+    });
+
+    it("🔴 (0b) 関門が見ていないスキーマの関数は allow-list に載せられない", async () => {
       /*
-        🔴 Codex 2巡目 High の逆側の実測 —— **集合を広げれば、広げた分が実際に見られること**。
-          広げた集合で穴を作って、関門が落ちることを確かめる。
+        🔴 Codex 3巡目 Medium。⑥ は allow-list の関数の**在るスキーマに anon の USAGE を配る**ので、
+          そこが集合の外だと、**そのスキーマの他の関数・表が関門の外のまま anon に届く**。
       */
       await assertGuardRejects(
-        `create schema zz_exposed;
-         create or replace function public.adpop_exposed_schemas()
+        `create schema if not exists zz_outside;
+         create function zz_outside.zz_fn() returns int language sql as 'select 1';
+         create or replace function public.adpop_anon_callable_functions()
            returns text[] language sql immutable as
-           $body$ select array['public','zz_exposed']::text[] $body$;
-         create function zz_exposed.zz_backdoor() returns int
-           language sql security definer as 'select 1';`,
-        `drop function zz_exposed.zz_backdoor();
-         drop schema zz_exposed;
-         create or replace function public.adpop_exposed_schemas()
-           returns text[] language sql immutable as $body$ select array['public']::text[] $body$;`,
-        "広げたスキーマの secdef を関門が見落とした",
+           $body$ select array['zz_outside.zz_fn()']::text[] $body$;`,
+        `create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+         drop schema if exists zz_outside cascade;`,
+        "集合の外のスキーマの関数を allow-list に載せられた",
+        "(0b)",
       );
     });
 
@@ -1297,6 +1444,30 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
            returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
          drop function public.zz_delivery();`,
         "allow-list に載っているのに配られていない状態を関門が見落とした",
+        "(e3)",
+      );
+    });
+
+    it("🔴 (e4) EXECUTE はあるのにスキーマの USAGE が無いと落ちる", async () => {
+      /*
+        🔴 Codex 3巡目 Low —— **(e4) を消しても上の負例は通る**。
+          あの負例は EXECUTE も USAGE も欠いているので、**先に (e3) が落としていた**
+          = **(e4) が守っていることを1ミリも測っていなかった。**
+        ✅ **「EXECUTE はあるが USAGE が無い」状態だけ**を作る。
+      */
+      await assertGuardRejects(
+        `create function public.zz_delivery_e4() returns int language sql as 'select 1';
+         create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as
+           $body$ select array['public.zz_delivery_e4()']::text[] $body$;
+         grant execute on function public.zz_delivery_e4() to anon;
+         revoke usage on schema public from anon;`,
+        `create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+         drop function public.zz_delivery_e4();
+         revoke usage on schema public from anon;`,
+        "EXECUTE はあるが USAGE が無い状態を (e4) が見落とした",
+        "(e4)",
       );
     });
 
@@ -1305,6 +1476,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         `grant usage on schema public to anon;`,
         `revoke usage on schema public from anon;`,
         "使い道の無い USAGE を関門が見落とした",
+        "(e)",
       );
     });
   });

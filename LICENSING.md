@@ -23,7 +23,7 @@ Copyright (c) 2026 kyoukaisou
 | 検査 | コマンド | 何を見るか |
 |---|---|---|
 | 依存の向き(第1段) | `npm run check:embed-independence` | **esbuild が入口から実際に解決した依存グラフ**(metafile)の入力が、全部 `packages/embed/` の中にあること |
-| 依存の向き(第2段) | 同上 | `packages/embed/` 配下の **TS/JS 系の全ファイル**を `typescript` の `ts.preProcessFile` で読み、**静的に書かれた import 指定子**(`import type` と triple-slash の参照を含む)が外を指していないこと |
+| 依存の向き(第2段) | 同上 | `packages/embed/` 配下の **TS/JS 系のファイル**(`.ts .tsx .js .jsx .mjs .cjs .mts .cts`。⚠ **`dist/` と `node_modules/` は除く**)を `typescript` の `ts.preProcessFile` で読み、**静的に書かれた import 指定子**(`import type` と triple-slash の参照を含む)が外を指していないこと |
 | ライセンス本文 | `npm test`(`tests/license-split.test.ts`) | ルート `LICENSE` に AGPL-3.0 の本文が、`packages/embed/LICENSE` に MIT の本文が、それぞれ**そのまま**在ること |
 
 **なぜ2段あるか**(どちらか片方では抜ける):
@@ -31,7 +31,7 @@ Copyright (c) 2026 kyoukaisou
 | 段 | 見えるもの | **見えないもの** |
 |---|---|---|
 | 第1段(metafile) | 入口から実際に読まれるコード。**書き方・拡張子・別名に依存しない** | **入口から到達していないファイル** / **`import type`**(バンドル後に消えるので依存グラフに出ない) |
-| 第2段(静的走査) | 到達していないファイルも含めた**全ファイル**の静的 import・`import type`・triple-slash | **実行時に文字列を組み立てる `import(変数)`**(静的には何を読むか決まらない) |
+| 第2段(静的走査) | 到達していないファイルも含めた、**上の8拡張子のファイル**(`dist/` `node_modules/` を除く)の静的 import・`import type`・triple-slash | **実行時に文字列を組み立てる `import(変数)`**(静的には何を読むか決まらない)/ **8拡張子に無いファイル** |
 
 ⚠ **したがって「一切読んでいない」を保証してはいない。** 保証しているのは
 **「入口から到達する依存」+「静的に書かれた import 指定子」**の2つで、
