@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+
+# 秘密情報は1度もコミットに入れない(.env.example だけを追跡する)
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.log

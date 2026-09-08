@@ -1,0 +1,39 @@
+# ライセンスの分割
+
+ADPOP は **ディレクトリでライセンスを分けている**。
+
+| 場所 | ライセンス | 本文 |
+|---|---|---|
+| `packages/embed/` (npm 名 `adpop-js`) | **MIT** | `packages/embed/LICENSE` |
+| **それ以外すべて**(Next.js のサーバー・管理画面・マイグレーション・スクリプト) | **AGPL-3.0** | ルートの `LICENSE` |
+
+Copyright (c) 2026 kyoukaisou
+
+## なぜ分けるか
+
+- `packages/embed/` は **他人の LP に読み込まれるコード**。コピーレフトだと、貼る側が
+  「自分のサイト全体に義務が及ぶのか」を心配して**貼らない理由になる**。ここは摩擦をゼロにする。
+- サーバー・管理画面は AGPL-3.0。**自前ホストは自由**にしつつ、改変してホスティング商売にする
+  第三者にはソース公開義務が及ぶ。
+
+## 分割を機械で効かせている場所
+
+**AGPL-3.0 と MIT は互換ではない**ので、混ざると後から分離できない。次の2つを CI で毎 PR 見る。
+
+| 検査 | コマンド | 何を見るか |
+|---|---|---|
+| 依存の向き | `npm run check:embed-independence` | `packages/embed/` が `packages/embed/` の外(= AGPL 側)を import していないこと |
+| ライセンス本文 | `npm test`(`tests/license-split.test.ts`) | ルート `LICENSE` に AGPL-3.0 の本文が、`packages/embed/LICENSE` に MIT の本文が、それぞれ**そのまま**在ること |
+
+⚠ 依存の向きは **embed → server を禁止**する片側だけ。逆(server が embed を読む)は
+将来ありうるので禁止していない。
+
+## 未確認(public 化のときに確かめる)
+
+- ⚠ **ルートの `LICENSE` は冒頭に分割の案内を5行置いてから AGPL-3.0 の全文**を並べている。
+  GitHub のライセンス自動判定(licensee)は本文の一致率で判定するため、
+  **`NOASSERTION`(Other)になる可能性がある**。判定は public 化してからでないと測れない。
+  - 測り方: `gh api repos/kyoukaisou/adpop --jq .license`
+  - `agpl-3.0` にならなかったら、**冒頭の案内をこのファイルへ移して `LICENSE` を全文だけにする**。
+  - ⚠ 「たぶん大丈夫」で放置しない。**要件書 §5-6 は他社の判定結果(Plausible = `agpl-3.0` /
+    PostHog = `NOASSERTION`)を根拠に使っている**ので、こちらの判定も事実として持っておく。
