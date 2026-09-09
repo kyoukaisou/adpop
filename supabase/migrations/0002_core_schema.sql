@@ -424,7 +424,7 @@ alter table public.events         enable row level security;
   🔴 **ポリシーは「配る権限」と同じ形だけ書く。**
     書き込みを配らない表(chatbot_nodes / events)には **insert / update / delete のポリシーを作らない**。
     → **将来だれかが grant を1文足しても、ポリシーが無いので通らない**(迂回には権限とポリシーの
-      2つが要る = [[SaaS開発ナレッジ]] 2026-09-07-50 の実測)。
+      2つが要る = 2026-09-07 実測)。
   ⚠ `(select auth.uid())` と括るのは Supabase の作法(行ごとに評価されず初期計画で1回になる)。
 */
 create policy sites_select on public.sites for select to authenticated

@@ -4,10 +4,10 @@
 --   Supabase は **既定privilege(default privileges)で、あとから作られる表・連番・関数に
 --   `anon` / `authenticated` / `service_role` の権限を自動で配る**。
 --   マイグレーションに `grant` を1文字も書いていなくても、**新しい表は最初から触れる状態で生まれる**。
---   [[NKARTE]] は 0001 でこれを踏み、0021 まで気づかなかった(= 20本ぶんの表が余分な権限を持っていた)。
+--   同じ構成の別プロダクトで、この既定privilege を踏んだまま、後から剥がすまで気づかなかった実例がある。
 --   → **表を1つも作る前に、既定privilege を止める。**
 --
--- 🔴 **並びの規則(2026-09-07 / [[SaaS開発ナレッジ]] の型)**: 締める側を先に、開ける側を後に。
+-- 🔴 **並びの規則(2026-09-07)**: 締める側を先に、開ける側を後に。
 --   文ごとにコミットされる環境では、このファイルは**どの文の直後でも止まりうる**。
 --   ここで「開ける」のは2つだけ:
 --     ① `grant usage on schema public to authenticated`(③)
@@ -26,7 +26,7 @@
 --
 -- ⚠ **「多い分を引く」ではなく「全部配らない」に倒す。**
 --   開始ACLは環境で違う(素の supabase/postgres イメージと supabase CLI のローカルスタックで
---   実測値が違うことが [[NKARTE]] で分かっている)。差を引く書き方は、**どちらの環境から流したかで
+--   実測値が違うことが分かっている)。差を引く書き方は、**どちらの環境から流したかで
 --   終点が変わる**。配らないに倒せば、どちらから流しても終点が同じになる。
 -- 🔴 代償: **表を足して grant を書き忘れると、その表は管理画面から見えない。**
 --   ⚠ 逆(黙って全公開)より安全だが、黙って壊れることに変わりはない。
@@ -93,8 +93,7 @@ grant usage on schema public to authenticated;
 -- ══════════════════════════════════════════════════════════════════════
 --
 -- 🔴 **「危ないものを数え上げる」ではなく「通してよいものを1つ指す」形にする**
---   ([[SaaS開発ナレッジ]] 2026-09-08: 除外の一覧は必ず数え落とすが、
---    allow-list は数え落としが原理的に無い)。
+--   (除外の一覧は必ず数え落とすが、allow-list は数え落としが原理的に無い)。
 --
 -- PR1 では **空**。配信エンドポイント(サイトキー → 設定 JSON)が入る PR2 で、
 -- **この関数を `create or replace` して署名を1本だけ足す**。
@@ -193,7 +192,7 @@ comment on function public.adpop_authenticated_callable_functions() is
 --   マイグレーションは1度しか流れないので、**書いた時点で正しかったこと**は
 --   **いまも正しいこと**を1ミリも言わない。だから毎回のマイグレーションの末尾で呼ぶ。
 -- 🔴 **カタログ(pg_default_acl)を読まない。** スキーマ限定の既定ACLとグローバルの既定ACLは
---   マージされるので、**カタログの見た目と、実際に作られる表のACLは一致しない**([[NKARTE]] 0021)。
+--   マージされるので、**カタログの見た目と、実際に作られる表のACLは一致しない**(実測で確認済み)。
 --   → **実際に1つ作って測り、すぐ消す**(検算する場所と実効する場所をずらさない)。
 create or replace function public.adpop_assert_privilege_rules()
 returns void
@@ -206,7 +205,7 @@ declare
                           then array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']
                           else array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'] end;
   -- 列単位の grant が在りうる権限。
-  -- ⚠ `has_table_privilege` は**列単位の grant を映さない**([[SaaS開発ナレッジ]] 2026-09-08-07)。
+  -- ⚠ `has_table_privilege` は**列単位の grant を映さない**(2026-09-08 実測)。
   --   `grant select (site_key) on sites to anon` は表単位では偽になるので、両方で測る。
   column_privs constant text[] := array['SELECT','INSERT','UPDATE','REFERENCES'];
   extra_privs  text[] := case when is_pg17

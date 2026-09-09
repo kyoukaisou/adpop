@@ -4,7 +4,7 @@
   🔴 **判定の実装はここ1本だけ。** テスト側にも CI 側にも同じ判定を書き写さない
     (写しを作ると、片方だけ直した日にずれる)。
   🔴 **読み込んでも何も実行しない**(`main()` を呼ばない)。副作用のあるモジュールは
-    `node -e "import(...)"` で確かめた瞬間に走り出す([[SaaS開発ナレッジ]] 2026-09-08-13)。
+    `node -e "import(...)"` で確かめた瞬間に走り出す(2026-09-08 実測)。
 */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
