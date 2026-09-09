@@ -13,3 +13,6 @@ next-env.d.ts
 
 .DS_Store
 *.log
+
+# ビルドの出力(scripts/build-embed.mjs が作る)。ソースは packages/embed/src/
+public/embed/

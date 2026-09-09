@@ -5,8 +5,8 @@
   "license": "AGPL-3.0-only",
   "description": "ADPOP — LP に script を1行貼るだけの離脱ポップ(サーバー・管理画面は AGPL-3.0 / packages/embed は MIT)",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "npm run build:embed && next dev",
+    "build": "npm run build:embed && next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
@@ -15,7 +15,8 @@
     "check:embed-independence": "node scripts/check-embed-independence.mjs",
     "check:postgrest": "node scripts/check-postgrest-anon.mjs",
     "supabase:start": "npx --no-install supabase start",
-    "supabase:stop": "npx --no-install supabase stop"
+    "supabase:stop": "npx --no-install supabase stop",
+    "build:embed": "node scripts/build-embed.mjs"
   },
   "dependencies": {
     "next": "16.3.3",
@@ -24,12 +25,14 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.4",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "esbuild": "^0.25.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "jsdom": "^29.1.1",
     "supabase": "2.111.0",
     "typescript": "^5",
     "vitest": "^4.1.10"

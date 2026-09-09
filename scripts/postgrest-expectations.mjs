@@ -122,3 +122,84 @@ export function coverageProblems(probes, roles) {
   }
   return problems;
 }
+
+/*
+  ══════════════════════════════════════════════════════════════════════
+  配信の口(0003 の RPC 2本)—— **逆向き**の検査
+  ══════════════════════════════════════════════════════════════════════
+  🔴 ここまでは全部「**届いてはいけないものが届いていないか**」だった。
+    0003 で anon から呼べる関数を2本開けたので、**逆向き**も要る:
+      ・**anon から呼べること**(配り漏れ = 静かに何も起きなくなる故障)
+      ・**service_role からは呼べないこと**(開けたのは anon の1本道だけ)
+  ⚠ 実データを作らずに測れるように、**実在しないサイトキー**で叩く。
+    ・`adpop_site_config` → **200 で本文が `null`**(fail-closed の応答)
+    ・`adpop_record_event` → **200 で `{ok:false, reason:"site"}`**
+    どちらも「**関数までは届いた**」ことの証明になる(届いていなければ 401/42501)。
+*/
+
+/** 実在しないサイトキー。⚠ 32桁の16進(形は通り、行は無い)。 */
+export const ABSENT_SITE_KEY = "0".repeat(32);
+const ABSENT_ORIGIN = "https://not-registered.example.com";
+
+export const RPC_PROBES = [
+  {
+    name: "adpop_site_config",
+    args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN },
+    anonBody: null,
+  },
+  {
+    name: "adpop_record_event",
+    args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN, p_event: { kind: "fire" } },
+    anonBody: { ok: false, reason: "site" },
+  },
+];
+
+/**
+ * @param {{ role: string, name: string, status: number, body: unknown, error?: string }} probe
+ * @param {{ anonBody: unknown }} expected
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export function evaluateRpcProbe(probe, expected) {
+  const where = `${probe.role} → rpc/${probe.name}`;
+  if (probe.error) return { ok: false, reason: `${where}: 要求そのものが失敗した(${probe.error})` };
+
+  if (probe.role === "anon") {
+    // 🔴 **配り漏れの検出**。401/403 なら「anon へ配り直せていない」= 配信が静かに止まる
+    if (probe.status !== 200) {
+      return { ok: false, reason: `${where}: HTTP ${probe.status}(期待 200 = anon から呼べる)` };
+    }
+    if (JSON.stringify(probe.body) !== JSON.stringify(expected.anonBody)) {
+      return {
+        ok: false,
+        reason: `${where}: 本文が ${JSON.stringify(probe.body)}(期待 ${JSON.stringify(expected.anonBody)})`,
+      };
+    }
+    return { ok: true, reason: `${where}: HTTP 200 / fail-closed の応答` };
+  }
+
+  // service_role には1つも配っていない(0003 の revoke)
+  if (probe.status !== EXPECTED_STATUS_BY_ROLE[probe.role]) {
+    return {
+      ok: false,
+      reason: `${where}: HTTP ${probe.status}(期待 ${EXPECTED_STATUS_BY_ROLE[probe.role]} = 呼べない)`,
+    };
+  }
+  const code = /** @type {{ code?: unknown }} */ (probe.body ?? {}).code;
+  if (code !== EXPECTED_SQLSTATE) {
+    return { ok: false, reason: `${where}: SQLSTATE が ${String(code)}(期待 ${EXPECTED_SQLSTATE})` };
+  }
+  return { ok: true, reason: `${where}: HTTP ${probe.status} / ${EXPECTED_SQLSTATE}` };
+}
+
+/** 🔴 RPC の側でも「1件も叩いていない」を合格にしない。 */
+export function rpcCoverageProblems(probes, roles) {
+  const problems = [];
+  for (const role of roles) {
+    for (const rpc of RPC_PROBES) {
+      if (!probes.some((p) => p.role === role && p.name === rpc.name)) {
+        problems.push(`${role} → rpc/${rpc.name} を1度も叩いていない`);
+      }
+    }
+  }
+  return problems;
+}

@@ -379,17 +379,32 @@ begin
   end if;
 
   /*
-    (e) スキーマの権限。anon の USAGE は「allow-list が空でないとき」だけ許す。
+    (e) スキーマの権限。anon の USAGE は「**そのスキーマに allow-list の関数が在るとき**」だけ許す。
     ⚠ USAGE 単体では何も触れないが、**入口を開ける理由が無いのに開いている状態**を残さない。
     🔴 **`public` 固定をやめて集合で回す**(Codex 3巡目 Medium)。
       `adpop_exposed_schemas()` を増やしても、増やしたスキーマの anon USAGE と CREATE を
       1つも見ていなかった = **2巡目に直した型(集合が別の場所で育つ)の、直し残し**。
+    🔴🔴 **判定を「allow-list 全体が空か」から「このスキーマに1本でも在るか」に変えた**
+      (2026-09-09 / PR2)。**PR1 の書き方は、allow-list が空でなくなった瞬間に
+      1つのスキーマも落とさなくなる** —— PR2 で配信の関数を2本足したので、
+      `array_length(allowed, 1) is null` は**恒偽**になり、この関門は丸ごと空回りに変わっていた。
+      ⚠ **守りは正しいまま、測る対象が消える**型。テストのコードは1文字も変わらないので、
+        差分レビューにも出ない。
+      ✅ **スキーマごとに「そこに allow-list の関数が在るか」で見る**と、
+        集合が増えても・allow-list が埋まっても、判定の意味が変わらない。
   */
   select coalesce(array_agg(ns order by ns), '{}') into offenders
   from unnest(exposed) as ns
-  where has_schema_privilege('anon', ns, 'USAGE') and array_length(allowed, 1) is null;
+  where has_schema_privilege('anon', ns, 'USAGE')
+    and not exists (
+      select 1
+      from unnest(allowed) as sig
+      join pg_catalog.pg_proc p on p.oid = to_regprocedure(sig)::oid
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = ns
+    );
   if array_length(offenders, 1) is not null then
-    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が0本なのに、anon が USAGE を持つスキーマがあります: %',
+    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が1本も無いのに、anon が USAGE を持つスキーマがあります: %',
       array_to_string(offenders, ', ');
   end if;
 

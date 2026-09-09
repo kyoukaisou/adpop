@@ -12,6 +12,10 @@ import {
   keyProblems,
   ROLES,
   TABLES,
+  ABSENT_SITE_KEY,
+  evaluateRpcProbe,
+  RPC_PROBES,
+  rpcCoverageProblems,
 } from "../scripts/postgrest-expectations.mjs";
 
 /** テスト用の JWT(署名は見ないので payload だけが意味を持つ)。 */
@@ -139,5 +143,93 @@ describe("期待値の宣言", () => {
     expect(EXPECTED_SQLSTATE).toBe("42501");
     expect(EXPECTED_STATUS_BY_ROLE).toEqual({ anon: 401, service_role: 403 });
     expect(ROLES).toEqual(["anon", "service_role"]);
+  });
+});
+
+/*
+  ══════════════════════════════════════════════════════════════════════════
+  配信の口(0003 の RPC 2本)の判定 —— **逆向き**
+  ══════════════════════════════════════════════════════════════════════════
+  🔴 上の12件は全部「**届いていないこと**」を測っている。
+    0003 で anon から呼べる関数を2本開けたので、「**届くこと**」も測らないと、
+    配り漏れ(= 配信が静かに止まる)を1つも検出できない。
+*/
+describe("配信の口の判定(evaluateRpcProbe)", () => {
+  const siteConfig = RPC_PROBES.find((rpc) => rpc.name === "adpop_site_config")!;
+  const recordEvent = RPC_PROBES.find((rpc) => rpc.name === "adpop_record_event")!;
+
+  it("✅ anon が 200 + fail-closed の応答なら合格", () => {
+    expect(
+      evaluateRpcProbe({ role: "anon", name: "adpop_site_config", status: 200, body: null }, siteConfig).ok,
+    ).toBe(true);
+    expect(
+      evaluateRpcProbe(
+        { role: "anon", name: "adpop_record_event", status: 200, body: { ok: false, reason: "site" } },
+        recordEvent,
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("🔴 anon が 401 / 403 なら不合格(**配り漏れ** = 配信が静かに止まる)", () => {
+    for (const status of [401, 403]) {
+      expect(
+        evaluateRpcProbe({ role: "anon", name: "adpop_site_config", status, body: { code: "42501" } }, siteConfig)
+          .ok,
+        `HTTP ${status}`,
+      ).toBe(false);
+    }
+  });
+
+  it("🔴 anon が 200 でも本文が違えば不合格(実在しないサイトに設定を返してはいけない)", () => {
+    expect(
+      evaluateRpcProbe(
+        { role: "anon", name: "adpop_site_config", status: 200, body: { v: 1, popup: {} } },
+        siteConfig,
+      ).ok,
+    ).toBe(false);
+    expect(
+      evaluateRpcProbe(
+        { role: "anon", name: "adpop_record_event", status: 200, body: { ok: true, stored: true } },
+        recordEvent,
+      ).ok,
+      "実在しないサイトのイベントが入った",
+    ).toBe(false);
+  });
+
+  it("🔴 service_role は呼べてはいけない(開けたのは anon の1本道だけ)", () => {
+    expect(
+      evaluateRpcProbe(
+        { role: "service_role", name: "adpop_site_config", status: 403, body: { code: "42501" } },
+        siteConfig,
+      ).ok,
+    ).toBe(true);
+    expect(
+      evaluateRpcProbe({ role: "service_role", name: "adpop_site_config", status: 200, body: null }, siteConfig)
+        .ok,
+      "service_role から呼べてしまった",
+    ).toBe(false);
+  });
+
+  it("要求そのものが失敗したら不合格(繋がらないことを緑にしない)", () => {
+    expect(
+      evaluateRpcProbe(
+        { role: "anon", name: "adpop_site_config", status: 0, body: null, error: "ECONNREFUSED" },
+        siteConfig,
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("🔴 1本でも叩いていなければ不合格", () => {
+    expect(rpcCoverageProblems([], ROLES)).toHaveLength(ROLES.length * RPC_PROBES.length);
+    expect(
+      rpcCoverageProblems(
+        ROLES.flatMap((role) => RPC_PROBES.map((rpc) => ({ role, name: rpc.name }))),
+        ROLES,
+      ),
+    ).toEqual([]);
+  });
+
+  it("⚠ 使うサイトキーは「形は通るが実在しない」ものである(関数まで届くことの証明になる)", () => {
+    expect(ABSENT_SITE_KEY).toMatch(/^[0-9a-f]{32}$/);
   });
 });
