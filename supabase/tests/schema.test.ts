@@ -4,7 +4,7 @@
 // PGlite(WASM の PostgreSQL)に `supabase/migrations/*.sql` を順に適用し、
 // **「いまそうなっている状態」を実際の SQL で測る**。Docker も Supabase の認証情報も要らないので CI で回る。
 //
-// 🔴 **この束がいちばん守りたいもの**(要件書 §5-3 / [[SaaS開発ナレッジ]] の型):
+// 🔴 **この束がいちばん守りたいもの**(要件書 §5-3):
 //   ① **Supabase の既定privilege で `anon` が public スキーマの全表・全関数に触れる**
 //      → マイグレーションは1度しか流れないので、**書いた SQL ではなく実効値を毎 PR 測る**
 //   ② **RLS ポリシーを `to authenticated` で書いても、GRANT で塞いでいなければ意味がない**
@@ -68,9 +68,9 @@ const AUTH_STUB = `
 /**
  * 🔴 **マイグレーションを流す前に、プラットフォーム側が置いた状態を再現する。**
  *   再現しないと「**剥がせているか**」ではなく「**最初から無いか**」を測ることになり、
- *   検査がまるごと空回りする([[NKARTE]] 0021 で分かった型)。
+ *   検査がまるごと空回りする(同じ構成の別プロダクトで実際に起きた型)。
  *
- * ⚠ 開始ACLは環境で違う(実測値は [[SaaS開発ナレッジ]])。**両方から流して同じ終点に着くこと**でしか
+ * ⚠ 開始ACLは環境で違う(実測値は下の `START_ACLS`)。**両方から流して同じ終点に着くこと**でしか
  *   「配らないに倒した」ことは言えないので、2種類とも回す。
  */
 type StartAcl = { name: string; tables: string; sequences: string; functions: string };
@@ -242,7 +242,7 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         [`public.${table}`],
       );
       expect(r.rows[0].table_level, `anon が ${table} に表単位の権限を持っている`).toBe(false);
-      // ⚠ `has_table_privilege` は列単位の grant を映さない([[SaaS開発ナレッジ]] 2026-09-08-07)
+      // ⚠ `has_table_privilege` は列単位の grant を映さない(2026-09-08 実測)
       expect(r.rows[0].column_level, `anon が ${table} に列単位の権限を持っている`).toBe(false);
     });
 

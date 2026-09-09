@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# public リポジトリでは fork からの PR も CI を起こせる。既定の権限を持ち回らないよう
+# 最小(読み取りのみ)を明示する。⚠ いま `GITHUB_TOKEN` を使う step は0本なので、
+# これでジョブの挙動は変わらない。書き込みが要る job ができたら、その job にだけ足す。
+permissions:
+  contents: read
+
 # 同じ枝への push が続いたら、古い実行は打ち切る(Actions の枠を食い潰さないため)
 concurrency:
   group: ci-${{ github.ref }}
