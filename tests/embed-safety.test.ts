@@ -181,6 +181,32 @@ beforeEach(() => {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/**
+ * 条件が満たされるまで待つ。**満たされないまま抜けない**(理由つきで落とす)。
+ *
+ * 🔴 **`flush()` を1回だけ挟むのは、こちらの環境でたまたま足りていただけだった**(2026-09-10・CI が捕まえた)。
+ *   ここの `fetch` は**本物の `Response`** を返すので、`response.json()` は
+ *   マイクロタスクだけでは終わらない(**本文の読み取りがマクロタスクをまたぐ**)。
+ *   ローカルでは1回で間に合い、**CI では間に合わなかった** = 時間に依存した検査だった。
+ * ⚠ 待ち切れなかったときに**黙って先へ進まない** —— 進むと
+ *   「ポップが出ていないのに、汚していないと読む」= 検査が空回りする。
+ */
+async function waitFor(predicate: () => boolean, label: string, ticks = 50): Promise<void> {
+  for (let i = 0; i < ticks; i += 1) {
+    if (predicate()) return;
+    await flush();
+  }
+  expect(predicate(), `${label}(${ticks} 回待っても満たされなかった)`).toBe(true);
+}
+
+/** 離脱を検知させ、**本体が読み込まれる直前まで**進める。 */
+async function driveToRuntime(): Promise<void> {
+  await waitFor(() => {
+    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+    return document.querySelector("script[src*='adpop.js']") !== null;
+  }, "離脱を検知しても本体を取りに行かない");
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -243,15 +269,13 @@ describe("出荷する束ねた出力(t.js)", () => {
     ).toEqual([]);
 
     evaluateBundle(loaderCode);
-    await flush();
-    // 離脱を検知させる(ここで arm → fire → 本体の読み込みまで進む)
-    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
-    await flush();
+    await driveToRuntime();
     evaluateBundle(runtimeCode);
-    await flush();
-
     // 🔴 前提の検算②: **本当に描かれたか**(描かれていないなら draw を1行も通していない)
-    expect(document.querySelector("[data-adpop]"), "ポップが出ていない = draw を測っていない").not.toBeNull();
+    await waitFor(
+      () => document.querySelector("[data-adpop]") !== null,
+      "ポップが出ていない = draw を測っていない",
+    );
 
     expect(diffFingerprint(before, fingerprintOf(window), "window")).toEqual([
       'window: 足された "' + NAMESPACE + '"',
@@ -264,13 +288,13 @@ describe("出荷する束ねた出力(t.js)", () => {
     const before = prototypeFingerprints();
 
     evaluateBundle(loaderCode);
-    await flush();
-    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
-    await flush();
+    await driveToRuntime();
     evaluateBundle(runtimeCode);
-    await flush();
+    await waitFor(
+      () => document.querySelector("[data-adpop]") !== null,
+      "ポップが出ていない = draw を測っていない",
+    );
 
-    expect(document.querySelector("[data-adpop]"), "ポップが出ていない = draw を測っていない").not.toBeNull();
     expect(prototypeChanges(before)).toEqual([]);
   });
 
