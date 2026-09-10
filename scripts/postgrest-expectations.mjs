@@ -125,15 +125,15 @@ export function coverageProblems(probes, roles) {
 
 /*
   ══════════════════════════════════════════════════════════════════════
-  配信の口(0003 の RPC 2本)—— **逆向き**の検査
+  配信の口(0003 の RPC 2本)—— **両向き**
   ══════════════════════════════════════════════════════════════════════
-  🔴 ここまでは全部「**届いてはいけないものが届いていないか**」だった。
-    0003 で anon から呼べる関数を2本開けたので、**逆向き**も要る:
-      ・**anon から呼べること**(配り漏れ = 静かに何も起きなくなる故障)
-      ・**service_role からは呼べないこと**(開けたのは anon の1本道だけ)
+  🔴 0004 で **anon から呼べる構造をやめた**(PostgREST の `/rest/v1/rpc/...` を
+    誰でも直接叩けたので、ルートに置いた守りを迂回できた)。したがって測るのは2つ:
+      ・**anon からは呼べないこと**(= 直接叩く経路が閉じている)
+      ・**service_role からは呼べること**(= 配り漏れると配信だけが静かに止まる)
   ⚠ 実データを作らずに測れるように、**実在しないサイトキー**で叩く。
     ・`adpop_site_config` → **200 で本文が `null`**(fail-closed の応答)
-    ・`adpop_record_event` → **200 で `{ok:false, reason:"site"}`**
+    ・`adpop_record_event` → **200 で `{ok:false, reason:"not_allowed"}`**
     どちらも「**関数までは届いた**」ことの証明になる(届いていなければ 401/42501)。
 */
 
@@ -141,43 +141,49 @@ export function coverageProblems(probes, roles) {
 export const ABSENT_SITE_KEY = "0".repeat(32);
 const ABSENT_ORIGIN = "https://not-registered.example.com";
 
+/** 配信の口を呼べるロール。⚠ ここを増やすと、増やした分だけ関門も広げる必要がある。 */
+export const DELIVERY_ROLE = "service_role";
+
 export const RPC_PROBES = [
   {
     name: "adpop_site_config",
     args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN },
-    anonBody: null,
+    deliveryBody: null,
   },
   {
     name: "adpop_record_event",
     args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN, p_event: { kind: "fire" } },
-    anonBody: { ok: false, reason: "site" },
+    deliveryBody: { ok: false, reason: "not_allowed" },
   },
 ];
 
 /**
  * @param {{ role: string, name: string, status: number, body: unknown, error?: string }} probe
- * @param {{ anonBody: unknown }} expected
+ * @param {{ deliveryBody: unknown }} expected
  * @returns {{ ok: boolean, reason: string }}
  */
 export function evaluateRpcProbe(probe, expected) {
   const where = `${probe.role} → rpc/${probe.name}`;
   if (probe.error) return { ok: false, reason: `${where}: 要求そのものが失敗した(${probe.error})` };
 
-  if (probe.role === "anon") {
-    // 🔴 **配り漏れの検出**。401/403 なら「anon へ配り直せていない」= 配信が静かに止まる
+  if (probe.role === DELIVERY_ROLE) {
+    // 🔴 **配り漏れの検出**。401/403 なら「配り直せていない」= 配信が静かに止まる
     if (probe.status !== 200) {
-      return { ok: false, reason: `${where}: HTTP ${probe.status}(期待 200 = anon から呼べる)` };
+      return { ok: false, reason: `${where}: HTTP ${probe.status}(期待 200 = サーバーから呼べる)` };
     }
-    if (JSON.stringify(probe.body) !== JSON.stringify(expected.anonBody)) {
+    if (JSON.stringify(probe.body) !== JSON.stringify(expected.deliveryBody)) {
       return {
         ok: false,
-        reason: `${where}: 本文が ${JSON.stringify(probe.body)}(期待 ${JSON.stringify(expected.anonBody)})`,
+        reason: `${where}: 本文が ${JSON.stringify(probe.body)}(期待 ${JSON.stringify(expected.deliveryBody)})`,
       };
     }
     return { ok: true, reason: `${where}: HTTP 200 / fail-closed の応答` };
   }
 
-  // service_role には1つも配っていない(0003 の revoke)
+  /*
+    🔴 **anon からは1本も呼べてはいけない**(0004)。
+      ここが 200 になったら、**本文の上限も将来のレート制限も迂回できる経路が開いている**。
+  */
   if (probe.status !== EXPECTED_STATUS_BY_ROLE[probe.role]) {
     return {
       ok: false,

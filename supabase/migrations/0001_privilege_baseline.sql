@@ -194,10 +194,28 @@ comment on function public.adpop_authenticated_callable_functions() is
 -- 🔴 **カタログ(pg_default_acl)を読まない。** スキーマ限定の既定ACLとグローバルの既定ACLは
 --   マージされるので、**カタログの見た目と、実際に作られる表のACLは一致しない**(実測で確認済み)。
 --   → **実際に1つ作って測り、すぐ消す**(検算する場所と実効する場所をずらさない)。
-create or replace function public.adpop_assert_privilege_rules()
+/*
+  🔴🔴 **`create or replace` ではなく「無ければ作る」で書く**(2026-09-10 / Codex 1巡目 Astra Medium)。
+    ここは 0001 = **いちばん古いマイグレーション**。`create or replace` で書くと、
+    **後のマイグレーションが直した関門を、0001 を流し直した人が古い版へ戻してしまう**
+    (しかも戻ったことは誰にも見えない = 静かに緩む)。
+    → **初期値を作るのはこの1回だけ**にし、**更新は新しいマイグレーションが `create or replace` で行う**。
+  📌 allow-list に対して同じ結論を出したのと同じ理由(2026-09-08)。
+    **「後から足していく / 直していく宣言」の初期化は、冪等ではなく "無ければ作る" で書く。**
+  ⚠ **いまの正は最も新しいマイグレーション**(0004)。ここに在るのは**最初の版**で、
+    以降の巡で足した検査は入っていない。
+  ⚠ **0001 を流し直したら、最新のマイグレーションも流し直すこと。**
+    ② と ③ が業務ロールから権限を剥がし、⑥ は **anon の allow-list ぶんしか配り直さない**ので、
+    0004 が配った分は戻らない。**忘れたら関門が止める**(静かには壊れない)。
+*/
+do $install_rules$
+begin
+if to_regprocedure('public.adpop_assert_privilege_rules()') is not null then return; end if;
+execute $rules_ddl$
+create function public.adpop_assert_privilege_rules()
 returns void
 language plpgsql
-as $$
+as $rules$
 declare
   -- MAINTAIN は PostgreSQL 17 で追加された。16 以下に渡すと引数エラーになるので版で切り替える。
   is_pg17    constant boolean := current_setting('server_version_num')::int >= 170000;
@@ -456,7 +474,7 @@ begin
   --       ⚠ 並べ替えるときはここを読むこと(順序が意味を持っている)。
   execute format('create table public.%I (id integer)', probe_tbl);
   execute format('create sequence public.%I', probe_seq);
-  execute format('create function public.%I() returns integer language sql as $q$select 1$q$', probe_fn);
+  execute format('create function public.%I() returns integer language sql as $probe$select 1$probe$', probe_fn);
 
   select coalesce(array_agg(format('table|%s|%s', grantee, priv) order by 1), '{}')
     into offenders
@@ -497,7 +515,10 @@ begin
   execute format('drop sequence public.%I', probe_seq);
   execute format('drop table public.%I', probe_tbl);
 end;
-$$;
+$rules$
+$rules_ddl$;
+end
+$install_rules$;
 
 comment on function public.adpop_assert_privilege_rules() is
   'すべてのマイグレーションの末尾で呼ぶ関門。書いた SQL ではなく、実効の権限を測る。';

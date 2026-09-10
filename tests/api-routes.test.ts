@@ -14,7 +14,7 @@ import { POST as postEvent } from "@/app/api/v1/events/route";
 const SITE_KEY = "0123456789abcdef0123456789abcdef";
 const ORIGIN = "https://lp.example.com";
 const SUPABASE_URL = "https://project.supabase.test";
-const ANON_KEY = "anon-key-for-test";
+const SERVICE_KEY = "service-role-key-for-test";
 
 type UpstreamCall = { url: string; headers: Record<string, string>; body: unknown };
 let calls: UpstreamCall[];
@@ -71,7 +71,7 @@ function expectNoCors(response: Response): void {
 beforeEach(() => {
   calls = [];
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", SUPABASE_URL);
-  vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", ANON_KEY);
+  vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", SERVICE_KEY);
   // 上流の失敗をログに出すのは正しい挙動なので、出力だけ黙らせる(呼ばれたことは測る)
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -97,15 +97,19 @@ describe("GET /api/v1/config", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("🔴 上流には anon の鍵だけを付け、Origin をそのまま渡す", async () => {
+  it("🔴 上流にはサーバー専用の鍵を付け、Origin をそのまま渡す", async () => {
+    /*
+      ⚠ **`NEXT_PUBLIC_` の付いた鍵を使わない。** 付いた鍵はクライアントのバンドルへ入るので、
+        **やめたばかりの「誰でも直接叩ける」に戻る**(0004)。
+    */
     stubUpstream({ json: { v: 1, popup: {} } });
 
     await getConfig(configRequest());
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${SUPABASE_URL}/rest/v1/rpc/adpop_site_config`);
-    expect(calls[0].headers.apikey).toBe(ANON_KEY);
-    expect(calls[0].headers.authorization).toBe(`Bearer ${ANON_KEY}`);
+    expect(calls[0].headers.apikey).toBe(SERVICE_KEY);
+    expect(calls[0].headers.authorization).toBe(`Bearer ${SERVICE_KEY}`);
     expect(calls[0].body).toEqual({ p_site_key: SITE_KEY, p_origin: ORIGIN });
   });
 
@@ -163,7 +167,7 @@ describe("GET /api/v1/config", () => {
   });
 
   it("🔴 環境変数が無ければ 503(「許可されていない」と混ぜない)", async () => {
-    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "");
     stubUpstream({ json: null });
 
     const response = await getConfig(configRequest());
@@ -212,27 +216,47 @@ describe("POST /api/v1/events", () => {
     expect(calls).toEqual([]);
   });
 
-  it("🔴 サイト / Origin で断られたら 403 で、CORS を付けない", async () => {
-    for (const reason of ["site", "origin"]) {
-      calls = [];
-      stubUpstream({ json: { ok: false, reason } });
+  it("🔴 サイト / Origin で断られたら 403(理由は統一されている)", async () => {
+    /*
+      ⚠ 関数側が `site` と `origin` を撃ち分けなくなった(0004)ので、ここも1つ。
+        撃ち分けると**サイトキーの実在を判別できる**(総当たりで実在キーを選り分けられる)。
+    */
+    stubUpstream({ json: { ok: false, reason: "not_allowed" } });
 
-      const response = await postEvent(eventRequest(event));
+    const response = await postEvent(eventRequest(event));
 
-      expect(response.status, reason).toBe(403);
-      expect(await response.json()).toEqual({ ok: false, reason: "not_allowed" });
-      expectNoCors(response);
-    }
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ ok: false, reason: "not_allowed" });
+    expectNoCors(response);
   });
 
-  it("形で断られたら 400 + 理由。⚠ ここは Origin を通った後なので CORS を付ける", async () => {
+  it("形で断られたら 400 + 理由。⚠ **断るときは CORS を1つも付けない**", async () => {
+    /*
+      🔴 当初は「Origin を通った後の形の不正だけ CORS を付ける」にしていたが、
+        **「断るときは付けない」という説明と食い違っていた**(Codex 1巡目の文言指摘)。
+        → **説明のほうに実装を合わせた。** 分岐を持たないほうが、次に読む人が間違えない。
+    */
     stubUpstream({ json: { ok: false, reason: "pageUrl" } });
 
     const response = await postEvent(eventRequest(event));
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ ok: false, reason: "pageUrl" });
-    expect(response.headers.get("access-control-allow-origin")).toBe(ORIGIN);
+    expectNoCors(response);
+  });
+
+  it("🔴 関数側の上限に当たったら 413(ルートで数え切れなかった分)", async () => {
+    /*
+      ⚠ ルートは**回線を流れるバイト**を数え、関数は**正規化した JSON のバイト**を数える。
+        値は同じ 4096 でも**境界は一致しない**ので、両方から返りうる。
+    */
+    stubUpstream({ json: { ok: false, reason: "too_large" } });
+
+    const response = await postEvent(eventRequest(event));
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ ok: false, reason: "body_too_large" });
+    expectNoCors(response);
   });
 
   it("Origin が無ければ 403 で、上流を1度も叩かない", async () => {

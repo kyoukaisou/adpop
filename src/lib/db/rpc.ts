@@ -1,8 +1,18 @@
 /*
-  Supabase の Data API(PostgREST)へ **anon の鍵で** RPC を1本投げるだけのモジュール。
+  Supabase の Data API(PostgREST)へ RPC を1本投げるだけのモジュール。
 
-  🔴 **`service_role` の鍵を使わない。** 認可は DB(0003 の `security definer` 関数)に委ねる。
-    ⚠ `.env.example` にも service_role の欄を作っていない —— **バイパスの置き場を作らない**。
+  🔴🔴 **鍵を `anon` から `service_role` へ変えた**(0004。Codex 1巡目 Astra High / sol High)。
+    ⚠ **理由は「強い鍵が要るから」ではない。逆で、「誰でも呼べる状態をやめるため」**:
+      `anon` に EXECUTE を配っていると **PostgREST の `/rest/v1/rpc/...` を誰でも直接叩ける**ので、
+      **このルートに置いた守り(本文 4KB の上限・将来のレート制限)を丸ごと迂回できた**。
+    🔴 **`service_role` の実効権限は、0004 の allow-list に宣言した関数2本だけ**:
+      ・6つの業務テーブルには権限が1つも無い(関門(a)(a2)(b) と、CI の実物 PostgREST が毎回測る)
+      ・EXECUTE を持ってよい関数は宣言した分だけ(関門(c))
+      → **鍵が漏れても届くのはその2本**で、2本とも自分で認可をする。**RLS を迂回して表に届く経路は無い。**
+    ⚠ **認可は引き続き DB に在る。** この鍵は「認可の代わり」ではなく「関数に届くための切符」。
+    ⚠ **Origin の偽造はこの変更でも防げない**(そもそも `curl` に対しては何も守っていない)。
+      直ったのは「限界がルートにしか無い」ほうだけ。
+
   🔴 **クライアントライブラリを入れない。**
     ・要件書 §7 の実装制約「Supabase 固有の機能に食い込みすぎない(後で剥がせる程度に)」
     ・依存を1つ増やすと、剥がすときに剥がす対象が増える
@@ -34,8 +44,14 @@ export const RPC_TIMEOUT_MS = 5_000;
 
 type Env = { url?: string; key?: string };
 
+/**
+ * 🔴 **サーバー専用の鍵**。`NEXT_PUBLIC_` を付けない ——
+ *   付けるとクライアントのバンドルへ埋め込まれ、**やめたばかりの「誰でも呼べる」に戻る**。
+ * ⚠ このモジュールは `src/`(サーバー側)からしか import されない。
+ *   `packages/embed/` から読めないことは `npm run check:embed-independence` が毎 PR 測る。
+ */
 function readEnv(env: NodeJS.ProcessEnv): Env {
-  return { url: env.NEXT_PUBLIC_SUPABASE_URL, key: env.NEXT_PUBLIC_SUPABASE_ANON_KEY };
+  return { url: env.NEXT_PUBLIC_SUPABASE_URL, key: env.SUPABASE_SERVICE_ROLE_KEY };
 }
 
 export async function callRpc<T>(
@@ -49,7 +65,7 @@ export async function callRpc<T>(
       ok: false,
       kind: "config",
       // ⚠ 値そのものを混ぜない(ログに残る)
-      detail: `NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY が設定されていません`,
+      detail: `NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が設定されていません`,
     };
   }
   const doFetch = options.fetchImpl ?? fetch;

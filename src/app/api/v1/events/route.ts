@@ -29,15 +29,14 @@ export const dynamic = "force-dynamic";
 type RecordResult = { ok: boolean; stored?: boolean; reason?: string };
 
 /**
- * 🔴 **Origin かサイトキーで断ったときは CORS のヘッダを付けない。**
- *   付けると「この Origin は許可されている」と言ってしまう。
- *   逆に**形が悪いだけ**(JSON が壊れている等)なら、DB が Origin を通した後なので付けてよい。
+ * 🔴 **断るときは CORS のヘッダを1つも付けない**(理由を問わず)。
+ *   ⚠ 当初は「Origin を通った後の形の不正だけ付ける」にしていたが、
+ *     **「断るときは付けない」という説明と食い違っていた**(Codex 1巡目の文言指摘)。
+ *     → **説明のほうに実装を合わせた。** 分岐を持たないほうが、次に読む人が間違えない。
+ *   ⚠ 代償はゼロ: 埋め込みスクリプトは `sendBeacon` で送るので**応答を1バイトも読まない**。
  */
-function deny(status: number, reason: string, origin?: string): NextResponse {
-  return NextResponse.json(
-    { ok: false, reason },
-    { status, headers: { ...(origin ? corsHeaders(origin) : {}), "cache-control": NO_STORE } },
-  );
+function deny(status: number, reason: string): NextResponse {
+  return NextResponse.json({ ok: false, reason }, { status, headers: { "cache-control": NO_STORE } });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -69,9 +68,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   const outcome = result.data;
   if (!outcome?.ok) {
     const reason = outcome?.reason ?? "unknown";
-    // 🔴 サイト・Origin で断られたときだけ、CORS を付けずに 403
-    if (reason === "site" || reason === "origin") return deny(403, "not_allowed");
-    return deny(400, reason, origin as string);
+    /*
+      🔴 **サイトキーの実在を判別させない**(Codex 1巡目 Astra Medium)。
+        関数は `not_allowed` の1つにまとめて返す(0004)ので、ここは 403 に写すだけ。
+      ⚠ `too_large` は関数側の上限に当たった場合。**ルートで数え切れなかった**ことを意味する
+        (ルートは回線のバイト、関数は正規化した JSON のバイトを数えるので、値が同じでも境界が違う)。
+    */
+    if (reason === "not_allowed") return deny(403, "not_allowed");
+    if (reason === "too_large") return deny(413, "body_too_large");
+    return deny(400, reason);
   }
 
   /*

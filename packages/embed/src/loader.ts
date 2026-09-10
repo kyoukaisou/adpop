@@ -299,7 +299,13 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
 
   const send = ctx.bridge.send as (event: EventPayload) => void;
 
-  function fire(kind: TriggerKind): void {
+  /**
+   * @returns **これから出す**と決まったら true。
+   *   ⚠ 「出さない」には *抑制された* / *既に出した* / *出せるバリアントが無い* / *早すぎる* が全部入る。
+   *   🔴 呼ぶ側(戻るトリガ)は、false のときに**利用者の「戻る」を通し直す**必要がある。
+   */
+  function fire(kind: TriggerKind): boolean {
+    let willShow = false;
     quiet(() => {
       // 🔴 1ページの表示は最大1回(要件書 §4-2)。**最初に条件を満たしたトリガだけ**を記録する
       if (fired) return;
@@ -342,6 +348,7 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
           });
         });
       };
+      willShow = true;
       loadRuntime(ctx, {
         popupKey: popup.key,
         variant,
@@ -352,6 +359,7 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
         impressionId: uuid(ctx.win),
       });
     });
+    return willShow;
   }
 
   /*
@@ -360,10 +368,35 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
       ⚠ 自前で `history` を使う SPA では干渉しうる(README に明記)。
   */
   if (enabled.indexOf("back") >= 0) {
-    quiet(() => {
-      ctx.win.history.pushState({ [NAMESPACE]: 1 }, "", ctx.win.location.href);
-      ctx.win.addEventListener("popstate", () => fire("back"), { passive: true });
-    });
+    /*
+      🔴🔴 **2つとも直した**(Codex 1巡目・両モデル):
+
+      ① **最短表示待ちの間に戻ると、以後まったく発火しなくなっていた**(sol)
+         読み込み直後に履歴を1枚積んでいたので、**待ちの間の「戻る」がその1枚を食い**、
+         `fire()` は早すぎるので何もせず、**もう積み直さない**ので二度と発火しない。
+         ✅ **積むのを待ちが明けてからにした。** 待ちの間の「戻る」は**普通の離脱**として通す
+           (そもそもその時間帯は出さないと決めているので、履歴に触る理由が無い)。
+
+      ② **出さないと決まった後でも、「戻る」を1回吸収していた**(Astra)
+         抑制された・出せるバリアントが無い・既に別のトリガで出した —— どの場合でも
+         積んだ1枚が消費され、**利用者は「戻る」を押したのに何も起きない**。
+         🔴 これは「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
+         ✅ **出さないと決めたら `history.back()` で利用者の意図を通し直す。**
+           ⚠ 先に listener を外してから呼ぶ(外さないと popstate が再入して**履歴を遡り続ける**)。
+    */
+    const onPopState = (): void => {
+      quiet(() => ctx.win.removeEventListener("popstate", onPopState));
+      if (!fire("back")) quiet(() => ctx.win.history.back());
+    };
+    const armBack = (): void =>
+      quiet(() => {
+        // 既に別のトリガで出したなら、埋め込み先の履歴に1ミリも触らない
+        if (fired) return;
+        ctx.win.history.pushState({ [NAMESPACE]: 1 }, "", ctx.win.location.href);
+        ctx.win.addEventListener("popstate", onPopState, { passive: true });
+      });
+    if (minDelayMs > 0) ctx.win.setTimeout(armBack, minDelayMs);
+    else armBack();
   }
 
   /*

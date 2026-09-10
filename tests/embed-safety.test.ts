@@ -32,7 +32,30 @@ const SITE_KEY = "0123456789abcdef0123456789abcdef";
  *   「元から在ったもの」に見え、**汚染を1つも検出できなくなる**(2026-09-09 に実際にそうなっていた:
  *   ローダに `window.adpopDebug = 1` を足す変異を当てても、この束は緑のままだった)。
  */
-const PRISTINE_KEYS = new Set(Object.keys(window));
+const PRISTINE_KEYS = new Set(Object.getOwnPropertyNames(window));
+
+/** 設定の応答。⚠ **発火・描画まで通す**ために、実際に出せる中身にする。 */
+const CONFIG_BODY = JSON.stringify({
+  v: 1,
+  popup: {
+    key: "p".repeat(32),
+    minDisplayDelaySeconds: 0,
+    frequency: { suppressDays: 0, sessionImpressions: 1, postConversionDays: 0 },
+    triggers: [
+      { kind: "back", threshold: null },
+      { kind: "exit_intent", threshold: null },
+    ],
+    variants: [
+      {
+        key: "v".repeat(32),
+        kind: "text",
+        weight: 100,
+        content: { headline: "まだ間に合います", buttonLabel: "確認する" },
+        destinationUrl: "https://offer.example.com/a",
+      },
+    ],
+  },
+});
 
 type Trap = { calls: string[] };
 
@@ -50,11 +73,78 @@ function installTag(): void {
   document.head.appendChild(script);
 }
 
-/** プロトタイプに1つも足していないことを見るための指紋。 */
-function prototypeFingerprint(): string {
-  return [Object.prototype, Array.prototype, Function.prototype, String.prototype]
-    .map((proto) => Object.getOwnPropertyNames(proto).sort().join(","))
-    .join("|");
+/*
+  ══════════════════════════════════════════════════════════════════════════
+  グローバルの指紋 —— **名前だけでなく、中身の同一性まで**
+  ══════════════════════════════════════════════════════════════════════════
+  🔴 **`Object.keys` では足りない**(Codex 1巡目 sol Medium)。3つ取りこぼす:
+    ① **非 enumerable** な own property(`Object.defineProperty` で足されたもの)
+    ② **既存メンバーの差し替え**(`window.fetch = ...` / `History.prototype.pushState = ...`)
+    ③ **プロトタイプのメソッドの差し替え**(名前の一覧は1文字も変わらない)
+  ✅ `getOwnPropertyNames` + **記述子の同一性**(データなら `value`、アクセサなら `get`/`set`)で撮る。
+  ⚠ **ゲッタを呼ばない**(`getOwnPropertyDescriptor` は呼ばない)。呼ぶと副作用が出る窓のプロパティがある。
+*/
+type Fingerprint = { names: string[]; slots: Map<string, unknown> };
+
+const WATCHED_PROTOTYPES: Array<[string, object]> = [
+  ["Object", Object.prototype],
+  ["Array", Array.prototype],
+  ["Function", Function.prototype],
+  ["String", String.prototype],
+  ["EventTarget", EventTarget.prototype],
+  ["Document", Document.prototype],
+  ["Element", Element.prototype],
+  ["History", History.prototype],
+  ["Storage", Storage.prototype],
+];
+
+function fingerprintOf(target: object): Fingerprint {
+  const names = Object.getOwnPropertyNames(target).sort();
+  const slots = new Map<string, unknown>();
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+    if (!descriptor) continue;
+    // アクセサはゲッタを呼ばずに関数の同一性だけ見る
+    slots.set(name, "value" in descriptor ? descriptor.value : [descriptor.get, descriptor.set]);
+  }
+  return { names, slots };
+}
+
+/** @returns 変わったところ(空なら1つも触っていない)。 */
+function diffFingerprint(before: Fingerprint, after: Fingerprint, label: string): string[] {
+  const changes: string[] = [];
+  for (const name of after.names) {
+    if (!before.slots.has(name)) {
+      changes.push(`${label}: 足された "${name}"`);
+      continue;
+    }
+    const a = before.slots.get(name);
+    const b = after.slots.get(name);
+    /*
+      ⚠ **`===` ではなく `Object.is`。** jsdom の `window.NaN` は `NaN !== NaN` なので、
+        `===` で比べると**毎回「差し替えられた」**になり、この検査が常に赤くなる(2026-09-10 実測)。
+    */
+    const same = Array.isArray(a) && Array.isArray(b)
+      ? Object.is(a[0], b[0]) && Object.is(a[1], b[1])
+      : Object.is(a, b);
+    if (!same) changes.push(`${label}: 差し替えられた "${name}"`);
+  }
+  for (const name of before.names) {
+    if (!after.slots.has(name)) changes.push(`${label}: 消された "${name}"`);
+  }
+  return changes;
+}
+
+function prototypeChanges(before: Map<string, Fingerprint>): string[] {
+  const changes: string[] = [];
+  for (const [label, proto] of WATCHED_PROTOTYPES) {
+    changes.push(...diffFingerprint(before.get(label)!, fingerprintOf(proto), `${label}.prototype`));
+  }
+  return changes;
+}
+
+function prototypeFingerprints(): Map<string, Fingerprint> {
+  return new Map(WATCHED_PROTOTYPES.map(([label, proto]) => [label, fingerprintOf(proto)]));
 }
 
 let loaderCode = "";
@@ -82,10 +172,14 @@ beforeEach(() => {
   document.head.innerHTML = "";
   document.body.innerHTML = "";
   // 🔴 **前のテストが生やした鍵を全部消してから始める**(基準を毎回きれいにする)
-  for (const key of Object.keys(window)) {
+  for (const key of Object.getOwnPropertyNames(window)) {
     if (!PRISTINE_KEYS.has(key)) delete (window as unknown as Record<string, unknown>)[key];
   }
+  window.localStorage.clear();
+  window.sessionStorage.clear();
 });
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -130,31 +224,89 @@ describe("出荷する束ねた出力(t.js)", () => {
     expect(opens).toEqual([]);
   });
 
-  it("③ `window` に生やす鍵は1つだけ", () => {
-    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  it("🔴 ③ 発火して描画まで通しても、`window` に生やす鍵は1つだけ(非 enumerable と差し替えも見る)", async () => {
+    /*
+      🔴 **PR2 の最初の版は、ここで3つ取りこぼしていた**(Codex 1巡目・両モデル):
+        ① `Object.keys` は**非 enumerable** な own property を見ない
+        ② **既存メンバーの差し替え**(`window.fetch = …`)を見ない
+        ③ **`arm` / `fire` / `draw` が一度も実行されていない**状態で測っていた
+           = 汚しうるコードの大半を通していなかった
+      ✅ 記述子の同一性で撮り、**離脱を検知させて本体を描くところまで通してから**測る。
+    */
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(CONFIG_BODY, { status: 200 }))));
     installTag();
     // 🔴 前提の検算: この時点で既に汚れていたら、下の比較は何も測っていない
+    const before = fingerprintOf(window);
     expect(
-      Object.keys(window).filter((key) => !PRISTINE_KEYS.has(key)),
+      before.names.filter((key) => !PRISTINE_KEYS.has(key)),
       "測り始める前から window が汚れている",
     ).toEqual([]);
 
     evaluateBundle(loaderCode);
+    await flush();
+    // 離脱を検知させる(ここで arm → fire → 本体の読み込みまで進む)
+    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+    await flush();
     evaluateBundle(runtimeCode);
+    await flush();
 
-    const added = Object.keys(window).filter((key) => !PRISTINE_KEYS.has(key));
-    expect(added).toEqual([NAMESPACE]);
+    // 🔴 前提の検算②: **本当に描かれたか**(描かれていないなら draw を1行も通していない)
+    expect(document.querySelector("[data-adpop]"), "ポップが出ていない = draw を測っていない").not.toBeNull();
+
+    expect(diffFingerprint(before, fingerprintOf(window), "window")).toEqual([
+      'window: 足された "' + NAMESPACE + '"',
+    ]);
   });
 
-  it("③ プロトタイプを1つも触らない", () => {
-    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  it("🔴 ③ 発火して描画まで通しても、プロトタイプを1つも触らない(メソッドの差し替えも見る)", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(CONFIG_BODY, { status: 200 }))));
     installTag();
-    const before = prototypeFingerprint();
+    const before = prototypeFingerprints();
 
     evaluateBundle(loaderCode);
+    await flush();
+    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+    await flush();
     evaluateBundle(runtimeCode);
+    await flush();
 
-    expect(prototypeFingerprint()).toBe(before);
+    expect(document.querySelector("[data-adpop]"), "ポップが出ていない = draw を測っていない").not.toBeNull();
+    expect(prototypeChanges(before)).toEqual([]);
+  });
+
+  it("🔴 この指紋は、実際に汚したら気づく(検査そのものの前提)", () => {
+    /*
+      🔴 **「差分が空だった」を「汚していない」と読む前に、汚したら赤くなることを見る。**
+        3つの汚し方を1件ずつ撃つ —— どれか1つでも拾えないなら、上の2本は嘘をつく。
+    */
+    const beforeWindow = fingerprintOf(window);
+    const beforeProtos = prototypeFingerprints();
+    const originalPush = History.prototype.pushState;
+    const originalFetch = Object.getOwnPropertyDescriptor(window, "fetch");
+    try {
+      // ① 非 enumerable な own property
+      Object.defineProperty(window, "zzHidden", { value: 1, configurable: true, enumerable: false });
+      expect(diffFingerprint(beforeWindow, fingerprintOf(window), "window")).toEqual([
+        'window: 足された "zzHidden"',
+      ]);
+      delete (window as unknown as Record<string, unknown>).zzHidden;
+
+      // ② 既存メンバーの差し替え
+      Object.defineProperty(window, "fetch", { value: () => {}, configurable: true, writable: true });
+      expect(diffFingerprint(beforeWindow, fingerprintOf(window), "window")).toEqual([
+        'window: 差し替えられた "fetch"',
+      ]);
+
+      // ③ プロトタイプのメソッドの差し替え(名前の一覧は1文字も変わらない)
+      History.prototype.pushState = function () {};
+      expect(prototypeChanges(beforeProtos)).toEqual([
+        'History.prototype: 差し替えられた "pushState"',
+      ]);
+    } finally {
+      History.prototype.pushState = originalPush;
+      if (originalFetch) Object.defineProperty(window, "fetch", originalFetch);
+      delete (window as unknown as Record<string, unknown>).zzHidden;
+    }
   });
 
   it("② タグが1つも無くても例外を投げない(貼り方を間違えた LP を壊さない)", () => {

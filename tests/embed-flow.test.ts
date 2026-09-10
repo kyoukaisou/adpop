@@ -212,6 +212,111 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     expect(sent).toEqual([]);
   });
 
+  it("🔴 最短表示待ちの間は、履歴に1枚も積まない(積むと、その間の「戻る」が食われる)", async () => {
+    /*
+      🔴 **元の穴**(Codex 1巡目 sol Medium): 読み込み直後に履歴を積んでいたので、
+        **待ちの間の「戻る」がその1枚を食い**、`fire()` は早すぎるので何もせず、
+        **もう積み直さない**ので**以後まったく発火しなくなっていた**。
+      ✅ 積むのを待ちが明けてからにした。待ちの間の「戻る」は**普通の離脱**として通す。
+    */
+    const pushState = vi.spyOn(win.history, "pushState");
+    stubNetwork({ config: configBody({ minDisplayDelaySeconds: 30 }) });
+    installTag();
+    await bootLoader();
+
+    expect(pushState, "待ちの間に履歴を積んでいる").not.toHaveBeenCalled();
+
+    // 待ちの間の「戻る」は、こちらの listener に届かない(積んでいないので何も起きない)
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+    expect(sent).toEqual([]);
+  });
+
+  it("✅ 待ちが明けたら履歴を積み、そこからは戻るで発火する", async () => {
+    vi.useFakeTimers();
+    try {
+      const pushState = vi.spyOn(win.history, "pushState");
+      stubNetwork({ config: configBody({ minDisplayDelaySeconds: 3 }) });
+      installTag();
+      startAdpop(win, doc);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pushState).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(pushState, "待ちが明けても履歴を積んでいない").toHaveBeenCalledTimes(1);
+
+      win.dispatchEvent(new win.PopStateEvent("popstate"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+      expect(sent[0].triggerKind).toBe("back");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("🔴 出さないと決めたら、利用者の「戻る」を通し直す(1回吸収したままにしない)", async () => {
+    /*
+      🔴 **元の穴**(Codex 1巡目 Astra Medium): 抑制された・出せるバリアントが無い —— どの場合でも
+        積んだ1枚が消費され、**利用者は「戻る」を押したのに何も起きなかった**。
+        これは「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
+      ✅ 出さないと決めたら `history.back()` で意図を通し直す。
+      ⚠ 先に listener を外してから呼ぶ(外さないと popstate が再入して**履歴を遡り続ける**)。
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    win.localStorage.setItem(
+      `adpop:${SITE_KEY}:${POPUP_KEY}`,
+      JSON.stringify({ lastImpressionAt: Date.now() }),
+    );
+    stubNetwork({
+      config: configBody({
+        frequency: { suppressDays: 7, sessionImpressions: 1, postConversionDays: 0 },
+      }),
+    });
+    installTag();
+    await bootLoader();
+
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    expect(sent.map((e) => e.kind)).toEqual(["fire", "suppressed"]);
+    expect(back, "戻るを吸収したままにした").toHaveBeenCalledTimes(1);
+
+    // ⚠ 再入していない(listener を外してから呼んでいる)
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+    expect(back, "popstate が再入して履歴を遡り続けている").toHaveBeenCalledTimes(1);
+  });
+
+  it("✅ 出すと決めたときは、戻るを通し直さない(ポップを見せる)", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it("🔴 別のトリガで既に出した後の「戻る」は、そのまま通す", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    exitIntent();
+    await flush();
+    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    expect(sent.filter((e) => e.kind === "fire"), "2回目の発火を数えた").toHaveLength(1);
+    expect(back, "既に出した後の戻るを吸収した").toHaveBeenCalledTimes(1);
+  });
+
   it("🔴 タッチ端末では exit intent を**登録しない**(誤爆源を作らない)", async () => {
     (win as unknown as { matchMedia: unknown }).matchMedia = () => ({ matches: true });
     stubNetwork();

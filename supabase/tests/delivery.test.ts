@@ -3,8 +3,9 @@
 // 配信の関数2本(0003)の回帰テスト。PGlite にマイグレーションを通しで流して測る。
 //
 // 🔴 **この束がいちばん守りたいもの**:
-//   ① **anon は業務テーブルに1バイトも触れないまま、この2本だけを呼べる**(要件書 §5-3)
-//      → 呼ぶのは全部 `set role anon` から。**postgres で呼んで緑にしない。**
+//   ① **配信の口を呼べるのはサーバー側のロールだけ**(0004)。呼ぶのは全部 `set role service_role` から。
+//      **postgres のまま呼んで緑にしない**(権限が配られているかを1ミリも測らなくなる)。
+//      ⚠ **anon からは呼べない**(0003 のあいだは呼べたので、PostgREST 経由で誰でも直接叩けた)。
 //   ② **fail-closed**(要件書 §5-3 / §6-5): サイトキー・Origin・許可ドメインのどれか1つでも
 //      合わなければ**何も返さない・何も書かない**
 //   ③ **返す情報が最小**: 内部 id・`owner_id`・他サイト・他ポップの情報を**1バイトも返さない**
@@ -80,12 +81,15 @@ async function asOwner(owner: string, sql: string): Promise<void> {
   }
 }
 
+/** 配信の口を呼べるロール(0004)。⚠ サーバーだけが持つ鍵で名乗るロール。 */
+const DELIVERY_ROLE = "service_role";
+
 /**
- * 🔴 **必ず `anon` として呼ぶ。** postgres のまま呼ぶと
+ * 🔴 **必ず配信のロールとして呼ぶ。** postgres のまま呼ぶと
  *   「権限が配られているか」を1ミリも測らないまま緑になる。
  */
-async function callAsAnon<T>(sql: string, params: unknown[]): Promise<T> {
-  await db.exec("set role anon;");
+async function callAsDelivery<T>(sql: string, params: unknown[]): Promise<T> {
+  await db.exec(`set role ${DELIVERY_ROLE};`);
   try {
     const r = await db.query<{ out: T }>(sql, params);
     return r.rows[0].out;
@@ -95,10 +99,10 @@ async function callAsAnon<T>(sql: string, params: unknown[]): Promise<T> {
 }
 
 const config = (siteKey: string, origin: string) =>
-  callAsAnon<Config>(`select public.adpop_site_config($1, $2) as out`, [siteKey, origin]);
+  callAsDelivery<Config>(`select public.adpop_site_config($1, $2) as out`, [siteKey, origin]);
 
 const record = (siteKey: string, origin: string, event: Record<string, unknown>) =>
-  callAsAnon<EventResult>(`select public.adpop_record_event($1, $2, $3::jsonb) as out`, [
+  callAsDelivery<EventResult>(`select public.adpop_record_event($1, $2, $3::jsonb) as out`, [
     siteKey,
     origin,
     JSON.stringify(event),
@@ -193,23 +197,51 @@ afterAll(async () => {
   🔴 これが無いと、下の「断られた」が全部
     「そもそも呼べていないので断られた」でも緑になる(被験体の取り違え)。
 */
-describe("前提: anon から呼べていて、表には1バイトも届かない", () => {
-  it("anon として設定を取得できる(= 権限が配られている)", async () => {
+describe("前提: サーバーのロールからだけ呼べて、表には1バイトも届かない", () => {
+  it("配信のロールとして設定を取得できる(= 権限が配られている)", async () => {
     const c = await config(ref.siteKeyA, ORIGIN_A);
-    expect(c, "anon から設定が取れない = 以下の fail-closed の検査は全部空回りする").not.toBeNull();
+    expect(c, "設定が取れない = 以下の fail-closed の検査は全部空回りする").not.toBeNull();
   });
 
-  it("同じ anon が業務テーブルには届かない(42501)", async () => {
-    for (const table of ["sites", "popups", "variants", "events"]) {
+  it("🔴🔴 anon からは配信の口を呼べない(PostgREST 経由で誰でも直接叩ける構造をやめた)", async () => {
+    /*
+      🔴 Codex 1巡目・両モデルの最重要指摘。0003 のあいだは anon に EXECUTE が在り、
+        **`/rest/v1/rpc/adpop_record_event` を誰でも直接叩けた** ——
+        Next.js のルートに置いた本文 4KB の上限も、将来のレート制限も迂回できた。
+    */
+    for (const [label, sql, params] of [
+      ["adpop_site_config", `select public.adpop_site_config($1, $2)`, [ref.siteKeyA, ORIGIN_A]],
+      [
+        "adpop_record_event",
+        `select public.adpop_record_event($1, $2, $3::jsonb)`,
+        [ref.siteKeyA, ORIGIN_A, JSON.stringify({ kind: "fire" })],
+      ],
+    ] as Array<[string, string, unknown[]]>) {
       await db.exec("set role anon;");
       let code = "";
       try {
-        await db.query(`select * from public.${table} limit 1`);
+        await db.query(sql, params);
       } catch (e) {
         code = (e as { code?: string }).code ?? "unknown";
       }
       await db.exec("reset role;");
-      expect(code, `anon が ${table} を読めた`).toBe("42501");
+      expect(code, `anon が ${label} を呼べてしまった`).toBe("42501");
+    }
+  });
+
+  it("配信のロールも業務テーブルには届かない(42501)", async () => {
+    for (const table of ["sites", "popups", "variants", "events"]) {
+      for (const role of ["anon", DELIVERY_ROLE]) {
+        await db.exec(`set role ${role};`);
+        let code = "";
+        try {
+          await db.query(`select * from public.${table} limit 1`);
+        } catch (e) {
+          code = (e as { code?: string }).code ?? "unknown";
+        }
+        await db.exec("reset role;");
+        expect(code, `${role} が ${table} を読めた`).toBe("42501");
+      }
     }
   });
 });
@@ -488,14 +520,19 @@ describe("投入: adpop_record_event", () => {
 
   describe("🔴 断り(どの理由で断ったかまで固定する)", () => {
     it.each([
-      ["サイトキーの形", () => record("not-a-key", ORIGIN_A, { ...base(), kind: "fire" }), "site"],
-      ["実在しないサイト", () => record("0".repeat(32), ORIGIN_A, { ...base(), kind: "fire" }), "site"],
-      ["許可していない Origin", () => record(ref.siteKeyA, ORIGIN_B, { ...base(), kind: "fire" }), "origin"],
-      ["Origin の形", () => record(ref.siteKeyA, "lp.example.com", { ...base(), kind: "fire" }), "origin"],
+      /*
+        🔴 **サイトと Origin の断りは1つの理由にまとめる**(Codex 1巡目 Astra Medium)。
+          撃ち分けていると、**サイトキーが実在するかどうかを呼んだ側が判別できる**
+          = 総当たりで実在キーだけを選り分けられる。⚠ 4つとも同じ `not_allowed`。
+      */
+      ["サイトキーの形", () => record("not-a-key", ORIGIN_A, { ...base(), kind: "fire" }), "not_allowed"],
+      ["実在しないサイト", () => record("0".repeat(32), ORIGIN_A, { ...base(), kind: "fire" }), "not_allowed"],
+      ["許可していない Origin", () => record(ref.siteKeyA, ORIGIN_B, { ...base(), kind: "fire" }), "not_allowed"],
+      ["Origin の形", () => record(ref.siteKeyA, "lp.example.com", { ...base(), kind: "fire" }), "not_allowed"],
       [
         "許可ドメインが空のサイト",
         () => record(ref.siteKeyEmptyOrigins, ORIGIN_A, { ...base(), kind: "fire" }),
-        "origin",
+        "not_allowed",
       ],
       [
         "実在しないポップ",
@@ -557,7 +594,7 @@ describe("投入: adpop_record_event", () => {
       [
         "イベントが JSON のオブジェクトでない",
         () =>
-          callAsAnon<EventResult>(`select public.adpop_record_event($1, $2, $3::jsonb) as out`, [
+          callAsDelivery<EventResult>(`select public.adpop_record_event($1, $2, $3::jsonb) as out`, [
             ref.siteKeyA,
             ORIGIN_A,
             '"文字列"',
@@ -607,5 +644,212 @@ describe("投入: adpop_record_event", () => {
         expect(row.site_id).toBe(ref.siteIdA);
       }
     });
+  });
+});
+
+/*
+  ══════════════════════════════════════════════════════════════════════════
+  Codex 1巡目で足した守り
+  ══════════════════════════════════════════════════════════════════════════
+*/
+describe("🔴 許可ドメインの配列に NULL を入れさせない(Astra High)", () => {
+  const NULL_ORIGINS = `array['${ORIGIN_A}', null]`;
+  const CHECK_LIST = "sites_allowed_origins_check";      // 0002: adpop_is_origin_list(...)
+  const CHECK_NO_NULL = "sites_allowed_origins_no_null"; // 0004: 列制約
+
+  async function setOrigins(sql: string): Promise<string> {
+    try {
+      await db.query(
+        `update public.sites set allowed_origins = ${sql} where site_key = $1`,
+        [ref.siteKeyA],
+      );
+    } catch (e) {
+      return (e as { code?: string }).code ?? "unknown";
+    }
+    return "";
+  }
+
+  const DROP: Record<string, string> = {
+    [CHECK_LIST]: `alter table public.sites drop constraint ${CHECK_LIST};`,
+    [CHECK_NO_NULL]: `alter table public.sites drop constraint ${CHECK_NO_NULL};`,
+  };
+  const ADD: Record<string, string> = {
+    [CHECK_LIST]: `alter table public.sites add constraint ${CHECK_LIST}
+                     check (public.adpop_is_origin_list(allowed_origins));`,
+    [CHECK_NO_NULL]: `alter table public.sites add constraint ${CHECK_NO_NULL}
+                        check (allowed_origins is not null and array_position(allowed_origins, null) is null);`,
+  };
+
+  /*
+    🔴 **入口の守りは2枚ある。片方ずつ落として、それぞれ単独で効くことを見る。**
+      1枚の負例で2枚とも殺せるなら、**2枚目が要る理由を1ミリも測っていない**。
+  */
+  it.each([
+    [`${CHECK_LIST} だけ`, CHECK_NO_NULL],
+    [`${CHECK_NO_NULL} だけ`, CHECK_LIST],
+  ])("入口: %s でも、NULL 要素を含む配列は保存できない", async (_label, dropped) => {
+    await db.exec(DROP[dropped]);
+    try {
+      expect(await setOrigins(NULL_ORIGINS), "NULL 要素の入った許可ドメインが保存できた").toBe("23514");
+    } finally {
+      await db.exec(ADD[dropped]);
+    }
+  });
+
+  it("🔴 判定: 入口を2枚とも落としても、未許可の Origin は通らない", async () => {
+    /*
+      🔴 **これが元の穴**: `p_origin = any (array[..., null])` は、一致する要素が無いと
+        **false ではなく NULL** を返す。`if not NULL then` は成立しないので、
+        **未許可の Origin にそのまま設定を返していた**(= 誰の LP に貼っても出る)。
+      ⚠ ここは**入口をすり抜けた場合**(DB を直接触られた等)を撃つので、制約を両方外してから入れる。
+    */
+    await db.exec(DROP[CHECK_LIST] + DROP[CHECK_NO_NULL]);
+    try {
+      expect(await setOrigins(NULL_ORIGINS), "前提: NULL 要素を入れられていない").toBe("");
+      expect(await config(ref.siteKeyA, ORIGIN_B), "未許可の Origin に設定を返した").toBeNull();
+      expect(
+        await record(ref.siteKeyA, ORIGIN_B, { popupKey: ref.popupKeyA, device: "mobile", kind: "fire" }),
+        "未許可の Origin のイベントを受けた",
+      ).toEqual({ ok: false, reason: "not_allowed" });
+      // ✅ 許可されている側は通ったまま(締めすぎていない)
+      expect(await config(ref.siteKeyA, ORIGIN_A)).not.toBeNull();
+    } finally {
+      await setOrigins(`array['${ORIGIN_A}']`);
+      await db.exec(ADD[CHECK_LIST] + ADD[CHECK_NO_NULL]);
+    }
+  });
+
+  it("✅ 空の許可ドメインは保存できる(締めすぎていないこと)", async () => {
+    // ⚠ 空配列の `array_ndims` は 1 ではなく **NULL**。ここを取り違えると
+    //   「許可ドメイン未設定のサイトを1件も作れない」になる(2026-09-10 に実際にそうした)
+    let code = "";
+    try {
+      await db.query(`update public.sites set allowed_origins = '{}' where site_key = $1`, [
+        ref.siteKeyEmptyOrigins,
+      ]);
+    } catch (e) {
+      code = (e as { code?: string }).code ?? "unknown";
+    }
+    expect(code).toBe("");
+  });
+});
+
+describe("🔴 重複排除はサイトの中だけ(Astra Medium)", () => {
+  it("他サイトが同じ表示 ID を先に入れても、こちらの表示は落ちない", async () => {
+    /*
+      🔴 **元の穴**: 一意索引が `(impression_id, kind)` で**全サイト共通**だったので、
+        自分のサイト経由で他サイトの表示 ID を先に入れると、
+        **他サイトの正規のイベントが `on conflict do nothing` で黙って落ちた** = 他人の数字を減らせる。
+    */
+    const shared = "dddddddd-0000-0000-0000-000000000001";
+    const mine = {
+      popupKey: ref.popupKeyA,
+      variantKey: ref.variantKeyA,
+      device: "mobile" as const,
+      kind: "impression",
+      triggerKind: "back",
+      impressionId: shared,
+    };
+    expect(await record(ref.siteKeyA, ORIGIN_A, mine)).toEqual({ ok: true, stored: true });
+
+    // 別サイト(B)の持ち主が、同じ表示 ID で自分のサイトへ入れる
+    expect(
+      await record(ref.siteKeyB, ORIGIN_B, {
+        popupKey: ref.popupKeyB,
+        variantKey: ref.variantKeyB,
+        device: "mobile",
+        kind: "impression",
+        triggerKind: "back",
+        impressionId: shared,
+      }),
+      "サイトをまたぐと落とされた = 他人の数字を減らせる",
+    ).toEqual({ ok: true, stored: true });
+
+    const rows = await db.query<{ c: number }>(
+      `select count(*)::int as c from public.events where impression_id = $1 and kind = 'impression'`,
+      [shared],
+    );
+    expect(rows.rows[0].c, "2サイト分そろっていない").toBe(2);
+
+    // ✅ 同じサイトの中では、これまでどおり1回だけ
+    expect(await record(ref.siteKeyA, ORIGIN_A, mine)).toEqual({ ok: true, stored: false });
+  });
+});
+
+describe("🔴 返す中身を名指しする(sol Medium)", () => {
+  it("`content` に無関係な鍵を入れても、配信の応答には出ない", async () => {
+    /*
+      🔴 **元の穴**: `variants.content` を丸ごと返していた。
+        管理画面(PR3)が内部向けのメモを1つ足した日に、それが他人の LP へ配られる。
+      ⚠ **いまの漏洩検査は fixture に在る値しか見つけられない**ので、
+        ここは「**出てよい鍵の集合ちょうど**」で見る。
+    */
+    await db.exec(
+      `update public.variants
+          set content = '{"headline":"見出し","body":"本文","buttonLabel":"押す",
+                          "internalNote":"社外に出してはいけないメモ","ownerEmail":"a@example.test"}'::jsonb
+        where public_key = '${ref.variantKeyA}'`,
+    );
+    const c = (await config(ref.siteKeyA, ORIGIN_A))!;
+    const variant = c.popup.variants.find((v) => v.key === ref.variantKeyA)!;
+    expect(Object.keys(variant.content).sort()).toEqual(["body", "buttonLabel", "headline"]);
+    expect(JSON.stringify(c)).not.toContain("internalNote");
+    expect(JSON.stringify(c)).not.toContain("a@example.test");
+  });
+
+  it("⚠ 空の `content` は空のまま返る(null を詰めない)", async () => {
+    await db.exec(
+      `update public.variants set content = '{}'::jsonb where public_key = '${ref.variantKeyA}'`,
+    );
+    const c = (await config(ref.siteKeyA, ORIGIN_A))!;
+    expect(c.popup.variants.find((v) => v.key === ref.variantKeyA)!.content).toEqual({});
+  });
+});
+
+describe("🔴 投入エンドポイントの入口の防御(sol High / sol Low)", () => {
+  const ok = { popupKey: "", device: "mobile" as const, kind: "fire" };
+
+  it("本文が 4KB を超えたら断る(ルートを通さずに呼ばれても効く)", async () => {
+    /*
+      🔴 **元の穴**: 上限が Next.js のルートにしかなかったので、
+        PostgREST 経由で関数を直接叩けば迂回できた(0004 でその経路も閉じたが、
+        **限界は権威のある層にも置く**)。
+    */
+    const big = await record(ref.siteKeyA, ORIGIN_A, {
+      ...ok,
+      popupKey: ref.popupKeyA,
+      pageUrl: `${ORIGIN_A}/${"a".repeat(5000)}`,
+    });
+    expect(big).toEqual({ ok: false, reason: "too_large" });
+  });
+
+  it("✅ 4KB 以内なら通る(締めすぎていないこと)", async () => {
+    const fine = await record(ref.siteKeyA, ORIGIN_A, {
+      ...ok,
+      popupKey: ref.popupKeyA,
+      pageUrl: `${ORIGIN_A}/${"a".repeat(1000)}`,
+    });
+    expect(fine.ok).toBe(true);
+  });
+
+  it("🔴 値が JSON の文字列でなければ断る(`->>` は数値も text にしてしまう)", async () => {
+    /*
+      🔴 **元の穴**: `{"visitorHash": 12345678901234567890123456789012}` が
+        `->>` で "1234…" になり、**32桁の16進として通っていた**。
+      ⚠ 埋め込みスクリプトは文字列しか送らないので、締めても壊れない。
+    */
+    for (const bad of [
+      { visitorHash: 12345678901234567890123456789012 },
+      { popupKey: 123 },
+      { kind: ["fire"] },
+      { device: null },
+      { pageUrl: { a: 1 } },
+    ]) {
+      const r = await callAsDelivery<EventResult>(
+        `select public.adpop_record_event($1, $2, $3::jsonb) as out`,
+        [ref.siteKeyA, ORIGIN_A, JSON.stringify({ popupKey: ref.popupKeyA, device: "mobile", kind: "fire", ...bad })],
+      );
+      expect(r, `${JSON.stringify(bad)} が通った`).toEqual({ ok: false, reason: "types" });
+    }
   });
 });

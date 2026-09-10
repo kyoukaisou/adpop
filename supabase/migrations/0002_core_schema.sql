@@ -256,7 +256,10 @@ create table public.events (
       「query が付いていない」と「origin + path の形をしている」は**別のこと**。
       ✅ **形そのものを書く**: スキーム + ホスト + 任意の path。
         ホストにも path にも `?` `#` 空白は入れない。
-      ⚠ `https?` にしているのは、埋め込み先が http の LP でも記録は取れるようにするため。
+      ⚠ `https?` を許しているが、**いまの経路では http の LP から記録は取れない**
+        (2026-09-10 訂正)。許可ドメインの判定 `adpop_is_origin` が **https のみ**なので、
+        http の Origin はそもそも認可を通らない。**この CHECK が緩いだけで、到達しない。**
+        → 「http の LP でも記録できる」とは書かない(**実装より広い約束**になる)。
         **遷移先 URL(`variants.destination_url`)は https のみ**で、あちらとは基準が違う。
 
     🔴🔴 **ホストから `@` を外す**(Codex 3巡目 Medium)。

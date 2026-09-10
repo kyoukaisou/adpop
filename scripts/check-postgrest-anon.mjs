@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import {
   coverageProblems,
   evaluateProbe,
+  DELIVERY_ROLE,
   evaluateRpcProbe,
   keyProblems,
   ROLES,
@@ -103,8 +104,9 @@ console.log(`\nOK  ${probes.length} 件すべてが権限で断られました(a
   ══════════════════════════════════════════════════════════════════════
   配信の口(0003 の RPC 2本)—— **逆向き**
   ══════════════════════════════════════════════════════════════════════
-  🔴 表の検査は全部「届いていないこと」だった。ここは「**anon から届くこと**」を測る。
-    配り漏れると **配信が静かに止まる**(LP は fail-closed で無傷なので、誰も気づかない)。
+  🔴 両向きを測る:
+    ・**anon からは届かないこと**(0004 で直接叩ける経路を閉じた。開いていたら本文の上限を迂回できる)
+    ・**service_role からは届くこと**(配り漏れると **配信だけが静かに止まる**)
 */
 const rpcProbes = [];
 for (const [role, key] of Object.entries(keys)) {
@@ -144,11 +146,11 @@ for (const probe of rpcProbes) {
 
 if (rpcFailed) {
   console.error(
-    "\n配信の口が期待どおりではありません。anon へ配り漏れている(= 配信が静かに止まる)か、" +
-      "service_role にまで開いています。0001 の ⑥ と 0003 の grant を見てください。",
+    "\n配信の口が期待どおりではありません。anon にまで開いている(= 本文の上限を迂回できる)か、" +
+      "service_role へ配り漏れている(= 配信が静かに止まる)。0004 の grant を見てください。",
   );
   process.exit(1);
 }
 console.log(
-  `OK  配信の口 ${RPC_PROBES.length} 本は anon から呼べて、service_role からは呼べません。`,
+  `OK  配信の口 ${RPC_PROBES.length} 本は ${DELIVERY_ROLE} から呼べて、anon からは呼べません。`,
 );
