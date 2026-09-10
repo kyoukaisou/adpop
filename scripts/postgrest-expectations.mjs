@@ -125,64 +125,41 @@ export function coverageProblems(probes, roles) {
 
 /*
   ══════════════════════════════════════════════════════════════════════
-  配信の口(0003 の RPC 2本)—— **両向き**
+  配信の口 —— **API キーからは、どのロールでも届かない**
   ══════════════════════════════════════════════════════════════════════
-  🔴 0004 で **anon から呼べる構造をやめた**(PostgREST の `/rest/v1/rpc/...` を
-    誰でも直接叩けたので、ルートに置いた守りを迂回できた)。したがって測るのは2つ:
-      ・**anon からは呼べないこと**(= 直接叩く経路が閉じている)
-      ・**service_role からは呼べること**(= 配り漏れると配信だけが静かに止まる)
-  ⚠ 実データを作らずに測れるように、**実在しないサイトキー**で叩く。
-    ・`adpop_site_config` → **200 で本文が `null`**(fail-closed の応答)
-    ・`adpop_record_event` → **200 で `{ok:false, reason:"not_allowed"}`**
-    どちらも「**関数までは届いた**」ことの証明になる(届いていなければ 401/42501)。
+  🔴 0005 で **PostgREST を経由しない形**にした(配信は専用の Postgres ロールで DB へ直接つなぐ)。
+    ⚠ 経緯: 0004 は `service_role` の鍵で呼んでいて「この鍵で届くのは関数2本だけ」と書いたが、
+      **測っていたのは `/rest/v1` の `public` だけ**で、実際には
+      **Auth Admin API(利用者の作成・削除)にも Storage API にも通っていた**(2026-09-11 実測)。
+  → **いま測るのは「どの API キーからも配信の関数に届かないこと」。**
+    届くこと(逆向き)は `scripts/check-delivery-role.mjs` が**専用ロールで**測る。
 */
 
 /** 実在しないサイトキー。⚠ 32桁の16進(形は通り、行は無い)。 */
 export const ABSENT_SITE_KEY = "0".repeat(32);
 const ABSENT_ORIGIN = "https://not-registered.example.com";
 
-/** 配信の口を呼べるロール。⚠ ここを増やすと、増やした分だけ関門も広げる必要がある。 */
-export const DELIVERY_ROLE = "service_role";
-
 export const RPC_PROBES = [
-  {
-    name: "adpop_site_config",
-    args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN },
-    deliveryBody: null,
-  },
+  { name: "adpop_site_config", args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN } },
   {
     name: "adpop_record_event",
     args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN, p_event: { kind: "fire" } },
-    deliveryBody: { ok: false, reason: "not_allowed" },
   },
 ];
 
 /**
  * @param {{ role: string, name: string, status: number, body: unknown, error?: string }} probe
- * @param {{ deliveryBody: unknown }} expected
  * @returns {{ ok: boolean, reason: string }}
  */
-export function evaluateRpcProbe(probe, expected) {
+export function evaluateRpcProbe(probe) {
   const where = `${probe.role} → rpc/${probe.name}`;
   if (probe.error) return { ok: false, reason: `${where}: 要求そのものが失敗した(${probe.error})` };
 
-  if (probe.role === DELIVERY_ROLE) {
-    // 🔴 **配り漏れの検出**。401/403 なら「配り直せていない」= 配信が静かに止まる
-    if (probe.status !== 200) {
-      return { ok: false, reason: `${where}: HTTP ${probe.status}(期待 200 = サーバーから呼べる)` };
-    }
-    if (JSON.stringify(probe.body) !== JSON.stringify(expected.deliveryBody)) {
-      return {
-        ok: false,
-        reason: `${where}: 本文が ${JSON.stringify(probe.body)}(期待 ${JSON.stringify(expected.deliveryBody)})`,
-      };
-    }
-    return { ok: true, reason: `${where}: HTTP 200 / fail-closed の応答` };
-  }
-
   /*
-    🔴 **anon からは1本も呼べてはいけない**(0004)。
-      ここが 200 になったら、**本文の上限も将来のレート制限も迂回できる経路が開いている**。
+    🔴 **どの API キーからも呼べてはいけない。**
+      200 が返ったら、**HTTP のルートに置いた守り(本文の上限・将来のレート制限)を
+      迂回できる経路が開いている**ということ。
+    ⚠ 期待値を「どちらでも合格」に広げない —— 広げると、構造が戻ったことを検出できなくなる。
   */
   if (probe.status !== EXPECTED_STATUS_BY_ROLE[probe.role]) {
     return {

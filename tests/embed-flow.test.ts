@@ -287,6 +287,103 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     expect(back, "popstate が再入して履歴を遡り続けている").toHaveBeenCalledTimes(1);
   });
 
+  it("🔴🔴 本体の取得に失敗したら、「戻る」を通し直す(Codex 2巡目 Blocker 3)", async () => {
+    /*
+      🔴 **元の穴**: `fire()` が**本体の読み込みが成功する前に**「出す」と答えていたので、
+        **CDN 障害・CSP・広告ブロッカーで本体が落ちたとき**、
+        **ポップも出ないのに「戻る」だけ奪われていた。**
+        = 「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
+      ✅ 「出せなかった」を `loadRuntime` から呼び出し側へ返し、そこで `history.back()` する。
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    // ここまでは「出す」と決まっている(本体を取りに行った)
+    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`);
+    expect(script, "本体を取りに行っていない").not.toBeNull();
+    expect(back, "まだ通し直してはいけない").not.toHaveBeenCalled();
+
+    // 🔴 本体の取得が失敗する(CDN 障害 / CSP / 広告ブロッカー)
+    script!.dispatchEvent(new win.Event("error"));
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]"), "出ていないこと").toBeNull();
+    expect(back, "本体が落ちたのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
+  });
+
+  it("🔴 本体は読み込めたのに描かれなかった場合も、「戻る」を通し直す", async () => {
+    /*
+      ⚠ **読み込みの成否ではなく、描かれたかどうかで決める。**
+        `onload` でも「出せなかった」を判定する(bridge の取り違え等で描けない場合)。
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!;
+    // 本体を動かさないまま onload だけ起こす
+    script.dispatchEvent(new win.Event("load"));
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+    expect(back, "描かれていないのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
+  });
+
+  it("✅ 本体が描けたら、`onload` が来ても「戻る」を通し直さない", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+    await bootRuntime();
+
+    expect(doc.querySelector("[data-adpop]"), "出ていない").not.toBeNull();
+    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("load"));
+    await flush();
+
+    expect(back, "出せているのに戻してしまった").not.toHaveBeenCalled();
+  });
+
+  it("🔴 通し直しは1回だけ(同期の判定と本体の失敗が二重に走らない)", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!;
+    script.dispatchEvent(new win.Event("error"));
+    script.dispatchEvent(new win.Event("load"));
+    script.dispatchEvent(new win.Event("error"));
+    await flush();
+
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠ exit intent では本体が落ちても履歴に触らない(触っていないので戻すものが無い)", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork({ config: configBody({ triggers: [{ kind: "exit_intent", threshold: null }] }) });
+    installTag();
+    await bootLoader();
+
+    exitIntent();
+    await flush();
+    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
+    await flush();
+
+    expect(back, "履歴を触っていないのに戻した").not.toHaveBeenCalled();
+  });
+
   it("✅ 出すと決めたときは、戻るを通し直さない(ポップを見せる)", async () => {
     const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
     stubNetwork();

@@ -271,20 +271,50 @@ function makeSender(ctx: Runtime): (event: EventPayload) => void {
 }
 
 /** 本体(`adpop.js`)を取りに行く。**発火して、抑制もされなかったときだけ**呼ばれる。 */
-function loadRuntime(ctx: Runtime, request: RenderRequest): void {
+/**
+ * 本体(`adpop.js`)を取りに行く。**発火して、抑制もされなかったときだけ**呼ばれる。
+ *
+ * @param onGaveUp **出せなかったと確定したとき**に1度だけ呼ばれる。
+ *   🔴🔴 **これが無いのが欠陥だった**(Codex 2巡目 Blocker 3)。
+ *     `fire()` は**本体の読み込みが成功する前に**「出す」と答えていたので、
+ *     **CDN 障害・CSP・広告ブロッカーで本体が落ちたとき**、
+ *     ポップは出ないのに**戻るトリガが「戻る」を1回吸収したまま**になっていた。
+ *     = **「配信が落ちてもポップが出ないだけ」という約束(要件書 §5-2)を破っていた。**
+ *   ✅ 「出せなかった」を**呼び出し側へ返す**ことで、戻るトリガが `history.back()` で通し直せる。
+ *   ⚠ **`onload` でも呼ぶ** —— 読み込めたのに描かれなかった場合(bridge の取り違え等)も
+ *     「出せなかった」に含める。**読み込みの成否ではなく、描かれたかどうかで決める。**
+ */
+function loadRuntime(ctx: Runtime, request: RenderRequest, onGaveUp?: () => void): void {
   ctx.bridge.request = request;
+  let settled = false;
+  const giveUpOnce = (): void => {
+    quiet(() => {
+      if (settled) return;
+      settled = true;
+      // 🔴 描かれていたら何もしない(出せている)
+      if (ctx.bridge.shown === true) return;
+      onGaveUp?.();
+    });
+  };
+
   // 既に本体が居るなら、そのまま描かせる(多重読み込み耐性)
   if (typeof ctx.bridge.render === "function") {
     quiet(() => ctx.bridge.render?.());
+    giveUpOnce();
     return;
   }
   const script = ctx.doc.createElement("script");
   script.async = true;
   script.src = `${ctx.deliveryOrigin}${RUNTIME_PATH}`;
-  // ⚠ 読み込みに失敗しても何もしない(LP は無傷)
-  script.onerror = () => {};
+  script.onerror = giveUpOnce;
+  script.onload = giveUpOnce;
   const parent = ctx.doc.body ?? ctx.doc.head ?? ctx.doc.documentElement;
-  parent?.appendChild(script);
+  if (parent === null) {
+    // 挿す先が無い = 出せない
+    giveUpOnce();
+    return;
+  }
+  parent.appendChild(script);
 }
 
 function arm(ctx: Runtime, popup: PopupConfig): void {
@@ -304,7 +334,7 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
    *   ⚠ 「出さない」には *抑制された* / *既に出した* / *出せるバリアントが無い* / *早すぎる* が全部入る。
    *   🔴 呼ぶ側(戻るトリガ)は、false のときに**利用者の「戻る」を通し直す**必要がある。
    */
-  function fire(kind: TriggerKind): boolean {
+  function fire(kind: TriggerKind, onGaveUp?: () => void): boolean {
     let willShow = false;
     quiet(() => {
       // 🔴 1ページの表示は最大1回(要件書 §4-2)。**最初に条件を満たしたトリガだけ**を記録する
@@ -349,15 +379,19 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
         });
       };
       willShow = true;
-      loadRuntime(ctx, {
-        popupKey: popup.key,
-        variant,
-        triggerKind: kind,
-        visitorHash: ctx.visitorHash,
-        device: ctx.device,
-        pageUrl,
-        impressionId: uuid(ctx.win),
-      });
+      loadRuntime(
+        ctx,
+        {
+          popupKey: popup.key,
+          variant,
+          triggerKind: kind,
+          visitorHash: ctx.visitorHash,
+          device: ctx.device,
+          pageUrl,
+          impressionId: uuid(ctx.win),
+        },
+        onGaveUp,
+      );
     });
     return willShow;
   }
@@ -386,7 +420,18 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
     */
     const onPopState = (): void => {
       quiet(() => ctx.win.removeEventListener("popstate", onPopState));
-      if (!fire("back")) quiet(() => ctx.win.history.back());
+      /*
+        🔴 **「戻る」を通し直すのは1回だけ。** 同期に決まる場合(抑制・バリアント無し・既に表示済み)と、
+          **非同期に決まる場合(本体の読み込みが落ちた)**の両方から呼ばれる。
+      */
+      let restored = false;
+      const restore = (): void =>
+        quiet(() => {
+          if (restored) return;
+          restored = true;
+          ctx.win.history.back();
+        });
+      if (!fire("back", restore)) restore();
     };
     const armBack = (): void =>
       quiet(() => {

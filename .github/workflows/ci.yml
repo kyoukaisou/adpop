@@ -67,9 +67,11 @@ jobs:
   # → anon キーと service_role キーで業務テーブルに当たり、**HTTP と SQLSTATE の両方**を突き合わせる。
   # ⚠ 接続失敗・鍵が取れない・想定外のコードは**全部不合格**(繋がらないことを緑にしない)。
   #
-  # 🔴 **逆向きも同じジョブで測る**(PR2 から): 配信の関数2本が **anon から呼べること**。
-  #   配り漏れると**配信だけが静かに止まる**(LP は fail-closed で無傷なので誰も気づかない)。
-  #   「届かないこと」だけを測っていると、この故障を1つも検出できない。
+  # 🔴 **両向きを同じジョブで測る**:
+  #   ・どの API キーからも配信の関数に**届かない**こと(PostgREST は経路から外した)
+  #   ・**専用の Postgres ロールからは届く**こと(配り漏れると配信だけが静かに止まる)
+  #   ⚠ 前の版は「service_role の鍵で届くのは関数2本だけ」と書いていたが、
+  #     測っていたのは `/rest/v1` の `public` だけで、**Auth と Storage を1バイトも測っていなかった**。
   postgrest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -91,8 +93,14 @@ jobs:
       - name: supabase start
         run: supabase start
 
-      - name: 実物の PostgREST に anon / service_role で当たる
+      - name: 実物の PostgREST に anon / service_role で当たる(届かないこと)
         run: npm run check:postgrest
+
+      # 🔴 **逆向き**: 配信専用の Postgres ロールで実際につないで、
+      #   できること2件 / できないこと8件(表・auth.users・allow-list 外の関数・set role・create table)を撃つ。
+      #   ⚠ 「届かないこと」だけを測ると、**配り漏れ = 配信だけが静かに止まる**を検出できない。
+      - name: 配信専用ロールで DB へ直接つないで両向きを撃つ
+        run: npm run check:delivery-role
 
       - name: supabase stop
         if: always()

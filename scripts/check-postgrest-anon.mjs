@@ -13,7 +13,6 @@ import { execFileSync } from "node:child_process";
 import {
   coverageProblems,
   evaluateProbe,
-  DELIVERY_ROLE,
   evaluateRpcProbe,
   keyProblems,
   ROLES,
@@ -104,9 +103,8 @@ console.log(`\nOK  ${probes.length} 件すべてが権限で断られました(a
   ══════════════════════════════════════════════════════════════════════
   配信の口(0003 の RPC 2本)—— **逆向き**
   ══════════════════════════════════════════════════════════════════════
-  🔴 両向きを測る:
-    ・**anon からは届かないこと**(0004 で直接叩ける経路を閉じた。開いていたら本文の上限を迂回できる)
-    ・**service_role からは届くこと**(配り漏れると **配信だけが静かに止まる**)
+  🔴 **どの API キーからも配信の関数に届かないこと**を測る(0005)。
+    届くこと(逆向き)は `scripts/check-delivery-role.mjs` が**専用の Postgres ロール**で測る。
 */
 const rpcProbes = [];
 for (const [role, key] of Object.entries(keys)) {
@@ -138,19 +136,18 @@ for (const problem of rpcCoverageProblems(rpcProbes, ROLES)) {
   rpcFailed = true;
 }
 for (const probe of rpcProbes) {
-  const expected = RPC_PROBES.find((rpc) => rpc.name === probe.name);
-  const result = evaluateRpcProbe(probe, expected);
+  const result = evaluateRpcProbe(probe);
   console.log(`${result.ok ? "OK " : "NG "} ${result.reason}`);
   if (!result.ok) rpcFailed = true;
 }
 
 if (rpcFailed) {
   console.error(
-    "\n配信の口が期待どおりではありません。anon にまで開いている(= 本文の上限を迂回できる)か、" +
-      "service_role へ配り漏れている(= 配信が静かに止まる)。0004 の grant を見てください。",
+    "\n配信の関数に API キーから届いています(= HTTP のルートに置いた守りを迂回できる)。" +
+      "0005 の revoke を見てください。",
   );
   process.exit(1);
 }
 console.log(
-  `OK  配信の口 ${RPC_PROBES.length} 本は ${DELIVERY_ROLE} から呼べて、anon からは呼べません。`,
+  `OK  配信の口 ${RPC_PROBES.length} 本は、どの API キーからも呼べません(anon / service_role)。`,
 );

@@ -81,8 +81,12 @@ async function asOwner(owner: string, sql: string): Promise<void> {
   }
 }
 
-/** 配信の口を呼べるロール(0004)。⚠ サーバーだけが持つ鍵で名乗るロール。 */
-const DELIVERY_ROLE = "service_role";
+/**
+ * 配信の口を呼べるロール(0005)。
+ * ⚠ 0004 までは `service_role` だったが、**その鍵は Auth Admin API と Storage にも通っていた**
+ *   (2026-09-11 実測)。**PostgREST を経路から外し、専用の Postgres ロール**にした。
+ */
+const DELIVERY_ROLE = "adpop_delivery";
 
 /**
  * 🔴 **必ず配信のロールとして呼ぶ。** postgres のまま呼ぶと
@@ -203,12 +207,16 @@ describe("前提: サーバーのロールからだけ呼べて、表には1バ�
     expect(c, "設定が取れない = 以下の fail-closed の検査は全部空回りする").not.toBeNull();
   });
 
-  it("🔴🔴 anon からは配信の口を呼べない(PostgREST 経由で誰でも直接叩ける構造をやめた)", async () => {
+  it("🔴🔴 API のロールからは配信の口を呼べない(誰でも直接叩ける構造をやめた)", async () => {
     /*
       🔴 Codex 1巡目・両モデルの最重要指摘。0003 のあいだは anon に EXECUTE が在り、
         **`/rest/v1/rpc/adpop_record_event` を誰でも直接叩けた** ——
         Next.js のルートに置いた本文 4KB の上限も、将来のレート制限も迂回できた。
+      🔴 Codex 2巡目: 0004 は `service_role` へ移したが、**その鍵は Auth Admin API にも通る**
+        (利用者を削除でき、cascade で配下データが全部消える)。→ 0005 で **PostgREST を経路から外した**。
+      ⚠ **anon だけでなく service_role でも撃つ** —— 前回は片方しか見ていなかった。
     */
+    for (const role of ["anon", "service_role"]) {
     for (const [label, sql, params] of [
       ["adpop_site_config", `select public.adpop_site_config($1, $2)`, [ref.siteKeyA, ORIGIN_A]],
       [
@@ -217,7 +225,7 @@ describe("前提: サーバーのロールからだけ呼べて、表には1バ�
         [ref.siteKeyA, ORIGIN_A, JSON.stringify({ kind: "fire" })],
       ],
     ] as Array<[string, string, unknown[]]>) {
-      await db.exec("set role anon;");
+      await db.exec(`set role ${role};`);
       let code = "";
       try {
         await db.query(sql, params);
@@ -225,13 +233,14 @@ describe("前提: サーバーのロールからだけ呼べて、表には1バ�
         code = (e as { code?: string }).code ?? "unknown";
       }
       await db.exec("reset role;");
-      expect(code, `anon が ${label} を呼べてしまった`).toBe("42501");
+      expect(code, `${role} が ${label} を呼べてしまった`).toBe("42501");
+    }
     }
   });
 
   it("配信のロールも業務テーブルには届かない(42501)", async () => {
     for (const table of ["sites", "popups", "variants", "events"]) {
-      for (const role of ["anon", DELIVERY_ROLE]) {
+      for (const role of ["anon", "service_role", DELIVERY_ROLE]) {
         await db.exec(`set role ${role};`);
         let code = "";
         try {
