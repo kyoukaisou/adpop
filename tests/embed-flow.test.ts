@@ -384,6 +384,103 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     expect(back, "履歴を触っていないのに戻した").not.toHaveBeenCalled();
   });
 
+  it("🔴🔴 描画そのものが落ちたら「戻る」を通し直す(shown を先に立てない)", async () => {
+    /*
+      🔴 **元の穴**(Codex 3巡目 Blocker): 本体が `bridge.shown = true` を **`draw()` の前**に立てていた。
+        描画が途中で落ちても「表示済み」になり、ローダは「出せた」と判断して
+        **戻るを吸収したままにしていた。**
+      ✅ `shown` を立てるのは `draw()` が通った後。**失敗したら false のまま**なので、
+        ローダ側が「出せなかった」と判定できる。
+      ⚠ 落とし方は **`document.createElement` を本体の描画中だけ壊す**(実際に起きうるのは
+        CSP・Trusted Types・拡張による DOM の差し替え)。
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    const original = doc.createElement.bind(doc);
+    const spy = vi.spyOn(doc, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "div") throw new Error("blocked by CSP");
+      return original(tag);
+    }) as typeof doc.createElement);
+    try {
+      await bootRuntime();
+    } finally {
+      spy.mockRestore();
+    }
+    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("load"));
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]"), "描けていないこと").toBeNull();
+    expect(back, "描画が落ちたのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
+  });
+
+  it("🔴🔴 script の生成・挿入が同期で落ちても「戻る」を通し直す(Trusted Types の CSP)", async () => {
+    /*
+      🔴 **元の穴**(Codex 3巡目 Blocker): `script.src` への代入が例外になる環境
+        (**Trusted Types を要求する CSP**)では、`onGaveUp` に**1度も到達しなかった**。
+        外側の try/catch が握るだけで、**出せていないのに「出せた」ことになっていた。**
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    const original = doc.createElement.bind(doc);
+    const spy = vi.spyOn(doc, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "script") throw new Error("TrustedScriptURL required");
+      return original(tag);
+    }) as typeof doc.createElement);
+    try {
+      win.dispatchEvent(new win.PopStateEvent("popstate"));
+      await flush();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(doc.querySelector("script[src*='adpop.js']"), "挿せていないこと").toBeNull();
+    expect(back, "同期例外で「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
+  });
+
+  it("🔴🔴 待っている間に SPA が履歴を積んだら、通し直さない(利用者の操作を巻き戻さない)", async () => {
+    /*
+      🔴 **元の穴**(Codex 3巡目 Blocker): 通し直しが「あの時の履歴の位置」に結び付いていなかった。
+        本体の読み込みを待っている間に **埋め込み先の SPA が別の state を push** すると、
+        そのあとの `history.back()` は**こちらが積んだ1枚ではなく SPA の遷移を巻き戻す。**
+      ✅ popstate を受けた時点の `history.length` を覚え、**増えていたら触らない**。
+    */
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+
+    // 埋め込み先の SPA が遷移した
+    win.history.pushState({ spa: 1 }, "", "/spa/next");
+    // そのあとで本体の取得が落ちる
+    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
+    await flush();
+
+    expect(back, "SPA の遷移を巻き戻した").not.toHaveBeenCalled();
+  });
+
+  it("✅ 誰も履歴を積んでいなければ、これまでどおり通し直す(締めすぎていないこと)", async () => {
+    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
+    stubNetwork();
+    installTag();
+    await bootLoader();
+    win.dispatchEvent(new win.PopStateEvent("popstate"));
+    await flush();
+    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
+    await flush();
+
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
   it("✅ 出すと決めたときは、戻るを通し直さない(ポップを見せる)", async () => {
     const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
     stubNetwork();

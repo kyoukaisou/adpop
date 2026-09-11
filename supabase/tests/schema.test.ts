@@ -1412,6 +1412,11 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       ⚠ 置く違反は**1種類ずつ**にする(混ぜると、先に評価される関門が拾って
         「どの関門が守っているか」が分からなくなる)。
     */
+    async function currentDatabase(): Promise<string> {
+      const r = await db.query<{ name: string }>(`select current_database() as name`);
+      return r.rows[0].name;
+    }
+
     const widenSchema = (extraSql: string) =>
       `create schema if not exists zz_exposed;
        create or replace function public.adpop_exposed_schemas()
@@ -1774,6 +1779,57 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
          revoke usage on schema public from anon;`,
         "allow-list に載せて anon へ配り直しても関門が通った",
         "(g7)",
+      );
+    });
+
+    it("🔴 (g8) 配信ロールにデータベースの TEMPORARY を持たせると落ちる", async () => {
+      await assertGuardRejects(
+        `grant temporary on database ${"${db}"} to ${DELIVERY_ROLE};`.replace(
+          "${db}",
+          await currentDatabase(),
+        ),
+        `revoke temporary on database ${await currentDatabase()} from ${DELIVERY_ROLE};`,
+        "データベースの TEMPORARY を (g8) が見落とした",
+        "(g8)",
+      );
+    });
+
+    it("🔴 (g9) PUBLIC にデータベースの TEMPORARY を戻すと落ちる(**閉めた結果を測っている**)", async () => {
+      /*
+        ⚠ 「閉めた」と書くだけにしない。**戻したら赤くなる**ことで、閉まっていることを測る。
+      */
+      const db = await currentDatabase();
+      await assertGuardRejects(
+        `grant temporary on database ${db} to public;`,
+        `revoke temporary on database ${db} from public;`,
+        "PUBLIC のデータベース権限を (g9) が見落とした",
+        "(g9)",
+      );
+    });
+
+    it("🔴 (g10) 配信ロールから statement_timeout の既定を外すと落ちる", async () => {
+      /*
+        🔴 **文の上限はここにしか無い**(2026-09-11 実測: 関数単位の SET は効かない /
+          クライアントの起動時パラメータは pooler で残らない)。**外れたら気づく形にする。**
+      */
+      await assertGuardRejects(
+        `alter role ${DELIVERY_ROLE} reset statement_timeout;`,
+        `alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`,
+        "statement_timeout の消失を (g10) が見落とした",
+        "(g10)",
+      );
+    });
+
+    it("🔴 (g11) 集合の外のスキーマの CREATE を配信ロールへ配ると落ちる", async () => {
+      /*
+        ⚠ (e2) は `adpop_exposed_schemas()` の中しか見ない。**その外**は (g11) の担当。
+      */
+      await assertGuardRejects(
+        `create schema if not exists zz_outside_g11;
+         grant create on schema zz_outside_g11 to ${DELIVERY_ROLE};`,
+        `drop schema if exists zz_outside_g11 cascade;`,
+        "集合の外のスキーマの CREATE を (g11) が見落とした",
+        "(g11)",
       );
     });
 

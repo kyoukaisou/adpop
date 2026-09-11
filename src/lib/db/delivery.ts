@@ -13,14 +13,17 @@
 
   ✅ **いまの形**: **専用の Postgres ロール(`adpop_delivery`)で DB へ直接つなぐ。**
     ・**Auth も Storage も経路に存在しない**(この型の穴が構造ごと消える)
-    ・資格が Postgres のロール1つなので、**権限を全スキーマで数え上げられる**
-      → 0005 の関門 (g1)〜(g6) が毎回測る。**主張の範囲と、測る範囲が一致する。**
+    ・資格が Postgres のロール1つなので、**権限の種別を名指しして測れる**(0006 の関門 (g))
 
-  🔴 **接続文字列が漏れたら何ができるか**: **この2つの関数を呼べるだけ。**
-    表・連番には全スキーマで権限ゼロ / 他のロールのメンバーでない /
-    SUPERUSER・CREATEROLE・CREATEDB・BYPASSRLS・REPLICATION なし。**全部を関門が測る。**
-    ⚠ **残る力**: サイトキーと許可 Origin を知っていれば、**イベントを好きなだけ入れられる**
-      (要件書 §4-7「イベントは誰でも偽造できる」の範囲。レート制限は PR4)。
+  🔴 **接続文字列が漏れたら何ができるか**:
+    **関門が数える権限の種別の範囲では、この2つの関数を呼べるだけ。**
+    ⚠ **「それ以外は何もできない」とは書かない。**
+      数える種別と**数えない種別**は 0006 の (g) の冒頭に名指ししてある
+      (数えない例: 型・ドメイン / 言語 / テーブル空間 / FDW / ラージオブジェクト /
+       パラメータ / **PUBLIC が既に持っている分**。DB の外の TLS・pooler・pg_hba も測っていない)。
+    ⚠ **数えた範囲でも防げないこと**: サイトキーと許可 Origin を知っていれば、
+      **イベントを好きなだけ入れられる**(要件書 §4-7 の範囲。レート制限は PR4)。
+    🔴 **「2関数だけ」と言い切るのは2度覆った。** 3度目は書かない。
 
   ⚠ **関数名を文字列で組み立てない。** 呼び出しは下の2本だけで、名前はここに直に書いてある。
 */
@@ -33,9 +36,43 @@ export type DeliveryResult<T> =
   | { ok: false; kind: "upstream"; detail: string }
   | { ok: true; data: T };
 
-/** DB を待つ上限(秒)。⚠ 埋め込み先の LP を待たせないため、短く切る。 */
+/**
+ * **接続の待ち時間の上限(秒)。クライアント側で保証できるのはこれだけ。**
+ *
+ * 🔴 **文の実行時間の上限は、ここでは保証できない**(2026-09-11 実測):
+ *   ・クライアントが渡す起動時パラメータは、**transaction pooler ではセッションが使い回される**ので残らない
+ *   ・**関数単位の `SET statement_timeout` も効かない** —— 300ms を設定した関数の中で
+ *     2秒の `pg_sleep` が**完走した**(タイマーは最上位の文の開始時に張られ、途中で変えても張り直されない)
+ *   → **文の上限は「ロールの既定」に置いてある**(0006)。**効くことは実測した**
+ *     (同じ sleep が `canceling statement due to statement timeout` で落ちた)。
+ *   ⚠ したがって、ここから「5秒で切れる」とは言い切らない。**言えるのは接続の待ち時間だけ。**
+ */
 export const CONNECT_TIMEOUT_SECONDS = 5;
-export const STATEMENT_TIMEOUT_MS = 5_000;
+
+/**
+ * 🔴 **TLS を明示する**(Codex 3巡目 Blocker)。
+ *   `postgres` の既定は **`ssl: false`** なので、書かないと
+ *   **接続資格とイベントの中身が平文で流れうる**。
+ *
+ * ⚠ **降ろせるのは「ループバック宛て」かつ「URL が明示的に `sslmode=disable` と言っているとき」だけ。**
+ *   ローカルの Supabase は `ssl = off` で動いている(2026-09-11 実測)ので、開発と CI に逃げ道が要る。
+ *   **逃げ道を条件つきにして、本番では絶対に降りないようにする。**
+ * 🔴 **fail-closed**: URL が読めない / ホストがループバックでない / `sslmode` が他の値 —— **全部 `require`**。
+ */
+export function sslModeFor(url: string): "require" | false {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "require";
+  }
+  if (parsed.searchParams.get("sslmode") !== "disable") return "require";
+  // ⚠ IPv6 は `[::1]` の形で入る
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  // 🔴 ループバックでなければ、`sslmode=disable` と書かれていても**降ろさない**
+  return loopback ? false : "require";
+}
 
 let cached: Sql | null = null;
 let cachedUrl = "";
@@ -51,11 +88,12 @@ function client(url: string): Sql {
   cached = postgres(url, {
     max: 1,
     prepare: false,
+    // 🔴 `postgres` の既定は `ssl: false`(平文)。**必ず明示する。**
+    ssl: sslModeFor(url),
     connect_timeout: CONNECT_TIMEOUT_SECONDS,
     idle_timeout: 20,
-    // ⚠ 起動時パラメータ。長いクエリで LP を待たせない
-    // ⚠ 起動時パラメータは数値で渡す(`postgres` の型は number を要求する)
-    connection: { statement_timeout: STATEMENT_TIMEOUT_MS, application_name: "adpop-delivery" },
+    // ⚠ `statement_timeout` はここで渡さない —— pooler では残らない。ロールの既定に置いてある(0006)。
+    connection: { application_name: "adpop-delivery" },
     onnotice: () => {},
   });
   cachedUrl = url;

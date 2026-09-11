@@ -303,18 +303,28 @@ function loadRuntime(ctx: Runtime, request: RenderRequest, onGaveUp?: () => void
     giveUpOnce();
     return;
   }
-  const script = ctx.doc.createElement("script");
-  script.async = true;
-  script.src = `${ctx.deliveryOrigin}${RUNTIME_PATH}`;
-  script.onerror = giveUpOnce;
-  script.onload = giveUpOnce;
-  const parent = ctx.doc.body ?? ctx.doc.head ?? ctx.doc.documentElement;
-  if (parent === null) {
-    // 挿す先が無い = 出せない
+  /*
+    🔴🔴 **生成と挿入そのものが同期で落ちることがある**(Codex 3巡目 Blocker)。
+      代表例は **Trusted Types を要求する CSP** —— `script.src` への代入が例外になる。
+      try/catch が無いと `quiet` が外側で握るだけで、**`onGaveUp` に1度も到達しない**
+      = **出せていないのに「出せた」ことになり、戻るが吸収されたままになる。**
+  */
+  try {
+    const script = ctx.doc.createElement("script");
+    script.async = true;
+    script.src = `${ctx.deliveryOrigin}${RUNTIME_PATH}`;
+    script.onerror = giveUpOnce;
+    script.onload = giveUpOnce;
+    const parent = ctx.doc.body ?? ctx.doc.head ?? ctx.doc.documentElement;
+    if (parent === null) {
+      // 挿す先が無い = 出せない
+      giveUpOnce();
+      return;
+    }
+    parent.appendChild(script);
+  } catch {
     giveUpOnce();
-    return;
   }
-  parent.appendChild(script);
 }
 
 function arm(ctx: Runtime, popup: PopupConfig): void {
@@ -425,10 +435,28 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
           **非同期に決まる場合(本体の読み込みが落ちた)**の両方から呼ばれる。
       */
       let restored = false;
+      /*
+        🔴🔴 **通し直しを「あの時の履歴の位置」に結び付ける**(Codex 3巡目 Blocker)。
+          本体の読み込みを待っている間に **埋め込み先の SPA が別の state を push** すると、
+          そのあとの `history.back()` は**こちらが積んだ1枚ではなく、SPA の遷移を巻き戻す**
+          = **利用者の操作を勝手に取り消す。**
+        ✅ popstate を受けた時点の `history.length` を覚えておき、**増えていたら通し直さない**。
+        ⚠ **限界**: `history.length` は `pushState` でしか増えないので、
+          **`replaceState` だけで動く SPA は見分けられない**(その場合は通し直してしまう)。
+          ⚠ また、**長さが上限(ブラウザ既定で 50 前後)に達していると増えない**ので、同じく見分けられない。
+          🔴 それでも**「触らない側」に倒れる**方向の判定なので、外したときの害は
+            「戻るが1回効かない」で止まる(**LP の履歴を壊すより軽い**)。
+      */
+      let lengthAtPopState = 0;
+      quiet(() => {
+        lengthAtPopState = ctx.win.history.length;
+      });
       const restore = (): void =>
         quiet(() => {
           if (restored) return;
           restored = true;
+          // 🔴 待っている間に誰かが履歴を積んでいたら、触らない
+          if (ctx.win.history.length !== lengthAtPopState) return;
           ctx.win.history.back();
         });
       if (!fire("back", restore)) restore();

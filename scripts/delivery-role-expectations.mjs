@@ -67,7 +67,45 @@ export const DENIED_PROBES = [
   },
   { id: "set_role_postgres", label: "postgres へ set role する", sql: "set role postgres" },
   { id: "create_table", label: "表を作る", sql: "create table public.zz_delivery_probe (id int)" },
+  /*
+    🔴 0006 で閉めた分。**閉めた結果を、実際のロールで叩いて確かめる。**
+    ⚠ 一時表は「資源を食う」以外にも、**関数の探索パスに同名の表を割り込ませる**入口になりうる。
+  */
+  {
+    id: "create_temp_table",
+    label: "一時表を作る(database の TEMPORARY)",
+    sql: "create temporary table zz_delivery_tmp (id int)",
+  },
+  { id: "create_schema", label: "スキーマを作る(database の CREATE)", sql: "create schema zz_delivery_ns" },
 ];
+
+/**
+ * **設定として載っていなければならないもの**。
+ * 🔴 文の上限は**ロールの既定にしか無い**(2026-09-11 実測: 関数単位の SET は効かない /
+ *   クライアントの起動時パラメータは pooler で残らない)。**実際に繋いで `show` で確かめる。**
+ */
+export const SETTING_PROBES = [
+  { id: "statement_timeout", label: "文の上限", sql: "show statement_timeout", expect: "5s" },
+  {
+    id: "idle_in_transaction_session_timeout",
+    label: "トランザクション放置の上限",
+    sql: "show idle_in_transaction_session_timeout",
+    expect: "10s",
+  },
+];
+
+/**
+ * @param {{ id: string, ok: boolean, value?: string, code?: string }} probe
+ */
+export function evaluateSetting(probe) {
+  const spec = SETTING_PROBES.find((p) => p.id === probe.id);
+  if (!spec) return { ok: false, reason: `${probe.id}: 期待値を決めていない検査` };
+  if (!probe.ok) return { ok: false, reason: `${spec.label}: 読めなかった(${probe.code ?? "unknown"})` };
+  if (probe.value !== spec.expect) {
+    return { ok: false, reason: `${spec.label}: ${probe.value}(期待 ${spec.expect})` };
+  }
+  return { ok: true, reason: `${spec.label}: ${probe.value}` };
+}
 
 /**
  * @param {{ id: string, ok: boolean, value?: unknown, code?: string }} probe
@@ -106,8 +144,11 @@ export function evaluateDenied(probe) {
 }
 
 /** 🔴 「1件も測っていない」を合格にしない。 */
-export function coverageProblems(allowed, denied) {
+export function coverageProblems(allowed, denied, settings = []) {
   const problems = [];
+  for (const spec of SETTING_PROBES) {
+    if (!settings.some((p) => p.id === spec.id)) problems.push(`${spec.label} を1度も読んでいない`);
+  }
   for (const spec of ALLOWED_PROBES) {
     if (!allowed.some((p) => p.id === spec.id)) problems.push(`${spec.label} を1度も試していない`);
   }

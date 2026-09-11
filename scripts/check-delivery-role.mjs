@@ -19,6 +19,8 @@ import {
   DENIED_PROBES,
   evaluateAllowed,
   evaluateDenied,
+  evaluateSetting,
+  SETTING_PROBES,
 } from "./delivery-role-expectations.mjs";
 
 /** ⚠ **ローカルの使い捨てスタック専用**。本番のパスワードは運用側が別に設定する(README)。 */
@@ -112,10 +114,24 @@ for (const spec of DENIED_PROBES) {
     await one.end();
   }
 }
+/*
+  ══════════════════════════════════════════════════════════════════════
+  ③ 設定として載っていなければならないもの
+  ══════════════════════════════════════════════════════════════════════
+*/
+const settings = [];
+for (const spec of SETTING_PROBES) {
+  try {
+    const r = await sql.unsafe(spec.sql);
+    settings.push({ id: spec.id, ok: true, value: Object.values(r[0])[0] });
+  } catch (error) {
+    settings.push({ id: spec.id, ok: false, code: error?.code ?? "unknown" });
+  }
+}
 await sql.end();
 
 let failed = false;
-for (const problem of coverageProblems(allowed, denied)) {
+for (const problem of coverageProblems(allowed, denied, settings)) {
   console.error(`NG  ${problem}`);
   failed = true;
 }
@@ -129,6 +145,11 @@ for (const probe of denied) {
   console.log(`${result.ok ? "OK " : "NG "} ${result.reason}`);
   if (!result.ok) failed = true;
 }
+for (const probe of settings) {
+  const result = evaluateSetting(probe);
+  console.log(`${result.ok ? "OK " : "NG "} ${result.reason}`);
+  if (!result.ok) failed = true;
+}
 
 if (failed) {
   console.error(
@@ -137,5 +158,6 @@ if (failed) {
   process.exit(1);
 }
 console.log(
-  `\nOK  配信ロールは ${ALLOWED_PROBES.length} 件を呼べて、${DENIED_PROBES.length} 件は 42501 で断られました。`,
+  `\nOK  配信ロールは ${ALLOWED_PROBES.length} 件を呼べて、${DENIED_PROBES.length} 件は断られ、` +
+    `${SETTING_PROBES.length} 件の設定が載っています。`,
 );

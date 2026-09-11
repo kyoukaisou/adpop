@@ -81,14 +81,28 @@ export function startRuntime(win: Win, doc: Document): boolean {
   // 🔴 ローダより先に読まれた / 別の何かが先に居る = 何もしない(fail-closed)
   if (bridge === undefined) return false;
 
+  let drawing = false;
   const render = (): void => {
     quiet(() => {
-      if (bridge.shown === true) return;
+      if (bridge.shown === true || drawing) return;
       const request = bridge.request;
       if (request === undefined) return;
       if (!isSafeDestination(request.variant?.destinationUrl)) return;
-      bridge.shown = true;
-      draw(win, doc, bridge, request);
+      /*
+        🔴🔴 **`shown` を立てるのは `draw()` が**通った後**(Codex 3巡目 Blocker)。
+          前は先に立てていたので、**描画が途中で落ちても「表示済み」になっていた** ——
+          ローダはそれを見て「出せた」と判断し、**戻るトリガが「戻る」を吸収したままになる**。
+          = ポップも出ないのに操作だけ奪う(要件書 §5-2 の約束を破る)。
+        ⚠ `drawing` は**再入だけ**を止める(`draw` の途中で render がもう一度呼ばれても二重に描かない)。
+          **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
+      */
+      drawing = true;
+      try {
+        draw(win, doc, bridge, request);
+        bridge.shown = true;
+      } finally {
+        drawing = false;
+      }
     });
   };
 
