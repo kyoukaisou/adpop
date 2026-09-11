@@ -22,7 +22,6 @@
 import {
   CONFIG_PATH,
   EVENTS_PATH,
-  NAMESPACE,
   readBridge,
   RUNTIME_PATH,
   writeBridge,
@@ -46,8 +45,20 @@ export const PREVIEW_PARAM = "adpop_preview";
 
 // ⚠ パスは `./bridge`(副作用の無いモジュール)が持つ —— 検査が起動させずに読めるように。
 
-/** PR2 で実装しているトリガ。⚠ ここに無い kind はサーバーが返しても無視する。 */
-const IMPLEMENTED_TRIGGERS: TriggerKind[] = ["back", "exit_intent"];
+/**
+ * PR2 で実装しているトリガ。⚠ ここに無い kind はサーバーが返しても**黙って無視する**。
+ *
+ * 🔴🔴 **「戻る」は PR2 から外した**(2026-09-12 本部裁定)。
+ *   理由: **4巡のうち3巡で、この1機能から Blocker が出続けた**
+ *   (最短表示待ち中の吸収 → 出さないと決めた後の吸収 → 描画失敗・同期例外・SPA 遷移)。
+ *   🔴 しかも壊れ方が**この製品の唯一の約束を破る向き** ——
+ *     「**配信が落ちてもポップが出ないだけ**」(要件書 §5-2)。
+ *     履歴を触る機能は、失敗すると**他人の LP の操作を奪う**。
+ *   → **PR4(トリガ追加の巡)で、実ブラウザの検査を土台ごと用意してから戻す。**
+ *   ⚠ **設定の型は残してある**(`trigger_kind` の enum・`popup_triggers` の行)。
+ *     サーバーは `back` を有効として返しうるが、**ここが無視する**。
+ */
+export const IMPLEMENTED_TRIGGERS: TriggerKind[] = ["exit_intent"];
 
 type Win = Window & typeof globalThis;
 
@@ -274,33 +285,19 @@ function makeSender(ctx: Runtime): (event: EventPayload) => void {
 /**
  * 本体(`adpop.js`)を取りに行く。**発火して、抑制もされなかったときだけ**呼ばれる。
  *
- * @param onGaveUp **出せなかったと確定したとき**に1度だけ呼ばれる。
- *   🔴🔴 **これが無いのが欠陥だった**(Codex 2巡目 Blocker 3)。
- *     `fire()` は**本体の読み込みが成功する前に**「出す」と答えていたので、
- *     **CDN 障害・CSP・広告ブロッカーで本体が落ちたとき**、
- *     ポップは出ないのに**戻るトリガが「戻る」を1回吸収したまま**になっていた。
- *     = **「配信が落ちてもポップが出ないだけ」という約束(要件書 §5-2)を破っていた。**
- *   ✅ 「出せなかった」を**呼び出し側へ返す**ことで、戻るトリガが `history.back()` で通し直せる。
- *   ⚠ **`onload` でも呼ぶ** —— 読み込めたのに描かれなかった場合(bridge の取り違え等)も
- *     「出せなかった」に含める。**読み込みの成否ではなく、描かれたかどうかで決める。**
+ * ⚠ **「出せなかった」を呼び出し側へ返す仕組みは、いまは持たない。**
+ *   🔴 それが要ったのは**「戻る」トリガ**だけ(出せなかったら `history.back()` で通し直すため)で、
+ *     そのトリガは PR2 から外した(2026-09-12 本部裁定)。
+ *     **使う人が居ない配線を、検査されないまま残さない。**
+ *   → **PR4 で「戻る」を戻すときに、実ブラウザの検査と一緒に作り直す**(PR 本文の申し送り)。
+ * ⚠ いま本体が落ちても、起きるのは**ポップが出ないこと**だけ。**LP には何も起きない。**
  */
-function loadRuntime(ctx: Runtime, request: RenderRequest, onGaveUp?: () => void): void {
+function loadRuntime(ctx: Runtime, request: RenderRequest): void {
   ctx.bridge.request = request;
-  let settled = false;
-  const giveUpOnce = (): void => {
-    quiet(() => {
-      if (settled) return;
-      settled = true;
-      // 🔴 描かれていたら何もしない(出せている)
-      if (ctx.bridge.shown === true) return;
-      onGaveUp?.();
-    });
-  };
 
   // 既に本体が居るなら、そのまま描かせる(多重読み込み耐性)
   if (typeof ctx.bridge.render === "function") {
     quiet(() => ctx.bridge.render?.());
-    giveUpOnce();
     return;
   }
   /*
@@ -309,21 +306,21 @@ function loadRuntime(ctx: Runtime, request: RenderRequest, onGaveUp?: () => void
       try/catch が無いと `quiet` が外側で握るだけで、**`onGaveUp` に1度も到達しない**
       = **出せていないのに「出せた」ことになり、戻るが吸収されたままになる。**
   */
+  /*
+    ⚠ **生成と挿入そのものが同期で落ちることがある**(例: Trusted Types を要求する CSP)。
+      **握って何もしない** —— 起きるのは「ポップが出ない」だけで、LP は無傷。
+  */
   try {
     const script = ctx.doc.createElement("script");
     script.async = true;
     script.src = `${ctx.deliveryOrigin}${RUNTIME_PATH}`;
-    script.onerror = giveUpOnce;
-    script.onload = giveUpOnce;
+    // ⚠ 読み込みに失敗しても何もしない(LP は無傷)
+    script.onerror = () => {};
     const parent = ctx.doc.body ?? ctx.doc.head ?? ctx.doc.documentElement;
-    if (parent === null) {
-      // 挿す先が無い = 出せない
-      giveUpOnce();
-      return;
-    }
+    if (parent === null) return;
     parent.appendChild(script);
   } catch {
-    giveUpOnce();
+    /* 出せないだけ */
   }
 }
 
@@ -340,12 +337,11 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
   const send = ctx.bridge.send as (event: EventPayload) => void;
 
   /**
-   * @returns **これから出す**と決まったら true。
-   *   ⚠ 「出さない」には *抑制された* / *既に出した* / *出せるバリアントが無い* / *早すぎる* が全部入る。
-   *   🔴 呼ぶ側(戻るトリガ)は、false のときに**利用者の「戻る」を通し直す**必要がある。
+   * トリガの条件が満たされたときに呼ぶ。
+   * ⚠ 「出さない」で終わる道が4つある: *抑制された* / *既に出した* / *出せるバリアントが無い* / *早すぎる*。
+   *   🔴 どれも **何も起きないだけ**で、埋め込み先には1ミリも影響しない。
    */
-  function fire(kind: TriggerKind, onGaveUp?: () => void): boolean {
-    let willShow = false;
+  function fire(kind: TriggerKind): void {
     quiet(() => {
       // 🔴 1ページの表示は最大1回(要件書 §4-2)。**最初に条件を満たしたトリガだけ**を記録する
       if (fired) return;
@@ -388,89 +384,25 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
           });
         });
       };
-      willShow = true;
-      loadRuntime(
-        ctx,
-        {
-          popupKey: popup.key,
-          variant,
-          triggerKind: kind,
-          visitorHash: ctx.visitorHash,
-          device: ctx.device,
-          pageUrl,
-          impressionId: uuid(ctx.win),
-        },
-        onGaveUp,
-      );
+      loadRuntime(ctx, {
+        popupKey: popup.key,
+        variant,
+        triggerKind: kind,
+        visitorHash: ctx.visitorHash,
+        device: ctx.device,
+        pageUrl,
+        impressionId: uuid(ctx.win),
+      });
     });
-    return willShow;
   }
 
   /*
-    ── ① 戻るボタン(要件書 §4-2 の①)─────────────────────────────
-    🔴 **埋め込み先の履歴を触る唯一のトリガ。** OFF なら `history` に1ミリも触らない。
-      ⚠ 自前で `history` を使う SPA では干渉しうる(README に明記)。
+    ── ① 戻るボタン …… **PR2 には無い**(2026-09-12 本部裁定で PR4 へ)───────
+    🔴 **このファイルは `history` を1バイトも触らない。**
+      `pushState` / `replaceState` / `back` / `forward` / `go` を1度も呼ばない。
+      ⚠ **それを検査で固定してある**(`tests/embed-safety.test.ts`)。
+        PR4 で戻すときは、**その検査を外すところから**始まる = 気づかずには戻せない。
   */
-  if (enabled.indexOf("back") >= 0) {
-    /*
-      🔴🔴 **2つとも直した**(Codex 1巡目・両モデル):
-
-      ① **最短表示待ちの間に戻ると、以後まったく発火しなくなっていた**(sol)
-         読み込み直後に履歴を1枚積んでいたので、**待ちの間の「戻る」がその1枚を食い**、
-         `fire()` は早すぎるので何もせず、**もう積み直さない**ので二度と発火しない。
-         ✅ **積むのを待ちが明けてからにした。** 待ちの間の「戻る」は**普通の離脱**として通す
-           (そもそもその時間帯は出さないと決めているので、履歴に触る理由が無い)。
-
-      ② **出さないと決まった後でも、「戻る」を1回吸収していた**(Astra)
-         抑制された・出せるバリアントが無い・既に別のトリガで出した —— どの場合でも
-         積んだ1枚が消費され、**利用者は「戻る」を押したのに何も起きない**。
-         🔴 これは「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
-         ✅ **出さないと決めたら `history.back()` で利用者の意図を通し直す。**
-           ⚠ 先に listener を外してから呼ぶ(外さないと popstate が再入して**履歴を遡り続ける**)。
-    */
-    const onPopState = (): void => {
-      quiet(() => ctx.win.removeEventListener("popstate", onPopState));
-      /*
-        🔴 **「戻る」を通し直すのは1回だけ。** 同期に決まる場合(抑制・バリアント無し・既に表示済み)と、
-          **非同期に決まる場合(本体の読み込みが落ちた)**の両方から呼ばれる。
-      */
-      let restored = false;
-      /*
-        🔴🔴 **通し直しを「あの時の履歴の位置」に結び付ける**(Codex 3巡目 Blocker)。
-          本体の読み込みを待っている間に **埋め込み先の SPA が別の state を push** すると、
-          そのあとの `history.back()` は**こちらが積んだ1枚ではなく、SPA の遷移を巻き戻す**
-          = **利用者の操作を勝手に取り消す。**
-        ✅ popstate を受けた時点の `history.length` を覚えておき、**増えていたら通し直さない**。
-        ⚠ **限界**: `history.length` は `pushState` でしか増えないので、
-          **`replaceState` だけで動く SPA は見分けられない**(その場合は通し直してしまう)。
-          ⚠ また、**長さが上限(ブラウザ既定で 50 前後)に達していると増えない**ので、同じく見分けられない。
-          🔴 それでも**「触らない側」に倒れる**方向の判定なので、外したときの害は
-            「戻るが1回効かない」で止まる(**LP の履歴を壊すより軽い**)。
-      */
-      let lengthAtPopState = 0;
-      quiet(() => {
-        lengthAtPopState = ctx.win.history.length;
-      });
-      const restore = (): void =>
-        quiet(() => {
-          if (restored) return;
-          restored = true;
-          // 🔴 待っている間に誰かが履歴を積んでいたら、触らない
-          if (ctx.win.history.length !== lengthAtPopState) return;
-          ctx.win.history.back();
-        });
-      if (!fire("back", restore)) restore();
-    };
-    const armBack = (): void =>
-      quiet(() => {
-        // 既に別のトリガで出したなら、埋め込み先の履歴に1ミリも触らない
-        if (fired) return;
-        ctx.win.history.pushState({ [NAMESPACE]: 1 }, "", ctx.win.location.href);
-        ctx.win.addEventListener("popstate", onPopState, { passive: true });
-      });
-    if (minDelayMs > 0) ctx.win.setTimeout(armBack, minDelayMs);
-    else armBack();
-  }
 
   /*
     ── ⑥ exit intent(PC のみ。要件書 §4-2 の⑥)────────────────────

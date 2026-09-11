@@ -1807,6 +1807,32 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       );
     });
 
+    it.each(["0", "0ms", "60s", "10min"])(
+      "🔴 (g10) statement_timeout が %s だと落ちる(**載っているだけでは通さない**)",
+      async (value) => {
+        /*
+          🔴 **`0` は PostgreSQL では「無制限」**(Codex 4巡目)。
+            「載っているか」だけを見ると、**上限が外れている状態が通る**。**値まで比べる。**
+          ⚠ 長すぎる側(60s / 10min)も落とす —— LP を待たせないための上限なので、
+            **上下どちらに外れても意味が無い**。
+        */
+        await assertGuardRejects(
+          `alter role ${DELIVERY_ROLE} set statement_timeout = '${value}';`,
+          `alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`,
+          `statement_timeout = ${value} を (g10) が見落とした`,
+          "(g10)",
+        );
+      },
+    );
+
+    it("✅ (g10) 単位の書き方を変えても通る(締めすぎていないこと)", async () => {
+      for (const value of ["5000ms", "5s", "5000"]) {
+        await db.exec(`alter role ${DELIVERY_ROLE} set statement_timeout = '${value}';`);
+        await db.query(`select public.adpop_assert_privilege_rules()`);
+      }
+      await db.exec(`alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`);
+    });
+
     it("🔴 (g10) 配信ロールから statement_timeout の既定を外すと落ちる", async () => {
       /*
         🔴 **文の上限はここにしか無い**(2026-09-11 実測: 関数単位の SET は効かない /
@@ -1895,7 +1921,7 @@ describe("マイグレーションの再実行", () => {
     }
   });
 
-  it("🔴🔴 0001 を流し直しても、関門は v3 の検査((g5))を持ったまま", async () => {
+  it("🔴🔴 0001 を流し直しても、関門は最新版の検査((g5))を持ったまま", async () => {
     /*
       🔴 **Codex 1巡目 Astra Medium の本体**: 0001 を書き換えても、
         **既に適用した DB には1ミリも届かない**。だから関門の「いまの正」は
@@ -1903,7 +1929,7 @@ describe("マイグレーションの再実行", () => {
       ⚠ **版を comment で測らない** —— 0001 の `comment on function` は
         「無ければ作る」の**外側**にあり、流し直すと**説明文だけ古い版に戻る**(2026-09-11 実測)。
         **説明ではなく、振る舞いで測る。**
-      ✅ v3 でしか存在しない (g5)(配信ロールが強い属性を持たない)を撃つ。
+      ✅ 0001 の版には**存在しない** (g5)(配信ロールが強い属性を持たない)を撃つ。
     */
     const db = await createMigratedDb(START_ACLS[0]);
     try {

@@ -166,7 +166,8 @@ declare
     🔴🔴 **v3(0005)**: 配信の口は **`service_role` の鍵ではなく、専用の Postgres ロール**から呼ぶ。
       ⚠ v2 は「service_role の実効権限は関数2本だけ」と書いたが、**測っていたのは
         `/rest/v1` の `public` だけ**で、**Auth Admin API と Storage には通っていた**(実測で判明)。
-      → **資格を Postgres のロール1つに絞り、その権限を全スキーマで数え上げる**((g1)〜(g6))。
+      → **資格を Postgres のロール1つに絞り、測る権限の種別を名指しする**((g) の冒頭)。
+        ⚠ **「全部数えた」とは書かない**(2026-09-11 に撤回した。数え上げでは終わらないため)。
   */
   delivery_role    constant text   := 'adpop_delivery';
   allowed_delivery constant text[] := public.adpop_delivery_callable_functions();

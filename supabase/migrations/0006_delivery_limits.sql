@@ -86,7 +86,8 @@ declare
     🔴🔴 **v3(0005)**: 配信の口は **`service_role` の鍵ではなく、専用の Postgres ロール**から呼ぶ。
       ⚠ v2 は「service_role の実効権限は関数2本だけ」と書いたが、**測っていたのは
         `/rest/v1` の `public` だけ**で、**Auth Admin API と Storage には通っていた**(実測で判明)。
-      → **資格を Postgres のロール1つに絞り、その権限を全スキーマで数え上げる**((g1)〜(g6))。
+      → **資格を Postgres のロール1つに絞り、測る権限の種別を名指しする**((g) の冒頭)。
+        ⚠ **「全部数えた」とは書かない**(2026-09-11 に撤回した。数え上げでは終わらないため)。
   */
   delivery_role    constant text   := 'adpop_delivery';
   allowed_delivery constant text[] := public.adpop_delivery_callable_functions();
@@ -109,6 +110,8 @@ declare
   probe_seq   constant text := 'zz_adpop_privilege_probe_seq';
   probe_fn    constant text := 'zz_adpop_privilege_probe_fn';
   probe_ns    text;
+  v_timeout      text;
+  v_timeout_ms   bigint;
 begin
   -- (0) allow-list の署名を OID に解決する。解決できないものが1つでもあれば落とす。
   select coalesce(array_agg(sig order by sig), '{}') into unresolved
@@ -581,13 +584,30 @@ begin
     ⚠ **クライアントが渡す起動時パラメータは当てにしない** ——
       transaction pooler では**セッションが使い回される**ので、渡した設定が残る保証が無い。
   */
-  if not exists (
-    select 1
-    from pg_catalog.pg_roles r
-    cross join lateral unnest(coalesce(r.rolconfig, '{}'::text[])) as cfg
-    where r.rolname = delivery_role and cfg like 'statement_timeout=%'
-  ) then
+  select cfg into v_timeout
+  from pg_catalog.pg_roles r
+  cross join lateral unnest(coalesce(r.rolconfig, '{}'::text[])) as cfg
+  where r.rolname = delivery_role and cfg like 'statement_timeout=%';
+  if v_timeout is null then
     raise exception 'ADPOP 権限の関門(g10): 配信ロールに statement_timeout の既定がありません';
+  end if;
+  /*
+    🔴 **「載っている」だけを見ると `0`(= 無制限)も通る**(Codex 4巡目)。
+      `statement_timeout=0` は PostgreSQL では**上限なし**。**値まで比べる。**
+    ⚠ 単位は付けても付けなくてもよい(付けなければミリ秒)。**3つの書き方を同じ土俵に乗せる。**
+  */
+  v_timeout_ms := case
+    when v_timeout ~ '^statement_timeout=[0-9]+ms$'  then substring(v_timeout from '([0-9]+)ms$')::bigint
+    when v_timeout ~ '^statement_timeout=[0-9]+s$'   then substring(v_timeout from '([0-9]+)s$')::bigint * 1000
+    when v_timeout ~ '^statement_timeout=[0-9]+min$' then substring(v_timeout from '([0-9]+)min$')::bigint * 60000
+    when v_timeout ~ '^statement_timeout=[0-9]+$'    then substring(v_timeout from '([0-9]+)$')::bigint
+    else null
+  end;
+  if v_timeout_ms is null then
+    raise exception 'ADPOP 権限の関門(g10): statement_timeout の値を読めません(%)。ms / s / min か、単位なしで書いてください', v_timeout;
+  end if;
+  if v_timeout_ms <= 0 or v_timeout_ms > 30000 then
+    raise exception 'ADPOP 権限の関門(g10): statement_timeout が範囲外です(% = % ms)。0 は無制限なので通しません', v_timeout, v_timeout_ms;
   end if;
 
   /*

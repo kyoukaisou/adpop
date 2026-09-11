@@ -40,7 +40,23 @@ const CONFIG_BODY = JSON.stringify({
   popup: {
     key: "p".repeat(32),
     minDisplayDelaySeconds: 0,
-    frequency: { suppressDays: 0, sessionImpressions: 1, postConversionDays: 0 },
+    /*
+      🔴 **頻度制御を効かせない値にしてある**(2026-09-12 に踏んだ)。
+        この束は jsdom がファイルで1つなので、**前のテストが描いたポップの「表示」記録が、
+        `beforeEach` の後から書き込まれる** ——
+        表示を数えるのは `requestAnimationFrame` の中(約16ms 後)なので、
+        **テストが終わってから走る**ことがある。その書き込みが `sessionStorage` に載ると、
+        **次のテストのローダが「セッション内1回」で抑制され、発火しない。**
+        実測: 全束を並列で走らせると6〜8回に1回ほど「本体への注文が載らない」で落ちた。
+      ⚠ **待ち方の問題ではなかった**(5秒待っても載らない)。**前のテストの非同期の後始末**が原因。
+      ✅ ここで見たいのは「**描くところまで通したときに、周りを汚さないか**」なので、
+        頻度制御は**効かない値**にして、前のテストの記録に左右されないようにする。
+    */
+    frequency: { suppressDays: 0, sessionImpressions: 9999, postConversionDays: 0 },
+    /*
+      ⚠ **`back` も有効として返す。** DB の enum も `popup_triggers` の行も残してあるので、
+        サーバーは `back` を有効として返しうる。**それでも埋め込み側は履歴に触らない**、が見たいこと。
+    */
     triggers: [
       { kind: "back", threshold: null },
       { kind: "exit_intent", threshold: null },
@@ -191,20 +207,46 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
  * ⚠ 待ち切れなかったときに**黙って先へ進まない** —— 進むと
  *   「ポップが出ていないのに、汚していないと読む」= 検査が空回りする。
  */
-async function waitFor(predicate: () => boolean, label: string, ticks = 50): Promise<void> {
-  for (let i = 0; i < ticks; i += 1) {
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 5_000): Promise<void> {
+  /*
+    🔴🔴 **「何回待つか」ではなく「いつまで待つか」で書く**(2026-09-12 に踏んだ)。
+      最初は `for (let i = 0; i < 50; i++) await flush()` と**回数**で書いていた。
+      🔴 **回数は時間ではない** —— 束を全部並列で走らせると、50 回の `setTimeout(0)` が
+        **数ミリ秒で終わってしまい**、まだ解決していない `Response.json()` を待ち切れない。
+      実測: この束だけで走らせると6回とも緑、**全束を走らせると6回に1回赤**になった。
+      ⚠ **落ちた原因を実装だと誤診しかけた**(実装は正しく、待ち方が足りていなかった)。
+    ✅ **締め切り(既定5秒)まで、少しずつ間隔を空けて待つ。**
+  */
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return;
-    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  expect(predicate(), `${label}(${ticks} 回待っても満たされなかった)`).toBe(true);
+  expect(predicate(), `${label}(${timeoutMs}ms 待っても満たされなかった)`).toBe(true);
 }
 
-/** 離脱を検知させ、**本体が読み込まれる直前まで**進める。 */
+/** いま `window` に載っている bridge(**このテストが起動したローダのもの**)。 */
+function currentBridge(): { request?: unknown; shown?: boolean } | undefined {
+  return (window as unknown as Record<string, { request?: unknown; shown?: boolean } | undefined>)[
+    NAMESPACE
+  ];
+}
+
+/**
+ * 離脱を検知させ、**本体が読み込まれる直前まで**進める。
+ *
+ * 🔴 **待つ条件を「script タグが増えたか」にしてはいけない**(2026-09-12 に踏んだ)。
+ *   この束は **jsdom がファイルで1つ**なので、**前のテストが仕掛けた `mouseout` の listener が生きている**。
+ *   そちらが先に反応して script を足すと、**こちらのローダがまだ設定を取り終えていないのに**
+ *   待つのをやめてしまい、**描かれないまま「描画まで通した」と読む**ことになる。
+ * ✅ **いまの bridge に注文が載ったか**で待つ。前のテストのローダは**古い bridge を掴んでいる**ので、
+ *   こちらの条件は満たせない。
+ */
 async function driveToRuntime(): Promise<void> {
   await waitFor(() => {
     document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
-    return document.querySelector("script[src*='adpop.js']") !== null;
-  }, "離脱を検知しても本体を取りに行かない");
+    return currentBridge()?.request !== undefined;
+  }, "離脱を検知しても本体への注文が載らない");
 }
 
 afterEach(() => {
@@ -443,6 +485,79 @@ describe("出荷する束ねた出力(t.js)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(pushState).not.toHaveBeenCalled();
+  });
+});
+
+describe("🔴🔴 埋め込み先の履歴を1バイトも触らない(2026-09-12 本部裁定)", () => {
+  /*
+    🔴 **「戻る」トリガは PR2 から外した。** 4巡のうち3巡で、この1機能から Blocker が出続けたため
+      (最短表示待ち中の吸収 → 出さないと決めた後の吸収 → 描画失敗・同期例外・SPA 遷移)。
+      壊れ方が**この製品の唯一の約束**「配信が落ちてもポップが出ないだけ」を破る向きだった ——
+      履歴を触る機能は、失敗すると**他人の LP の操作を奪う**。
+    ✅ **PR4 で実ブラウザの検査(Playwright)を土台ごと用意してから戻す。**
+    🔴 **それまでの守りがこの束。** ここを外さないと「戻る」は戻せない = **気づかずには戻せない。**
+  */
+  const HISTORY_METHODS = ["pushState", "replaceState", "back", "forward", "go"] as const;
+
+  it("🔴 発火して描画まで通しても、`history` のメソッドを1度も呼ばない", async () => {
+    const calls: string[] = [];
+    for (const name of HISTORY_METHODS) {
+      vi.spyOn(window.history, name).mockImplementation(((...args: unknown[]) => {
+        calls.push(`${name}(${args.map((a) => JSON.stringify(a)).join(", ")})`);
+      }) as never);
+    }
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(CONFIG_BODY, { status: 200 }))));
+    installTag();
+
+    evaluateBundle(loaderCode);
+    await driveToRuntime();
+    evaluateBundle(runtimeCode);
+    await waitFor(
+      () => document.querySelector("[data-adpop]") !== null,
+      "ポップが出ていない = 描画まで通していない",
+    );
+
+    // 🔴 前提の検算: **`back` が有効な設定で**ここまで来ている(無視していることを測れている)
+    expect(CONFIG_BODY).toContain('"back"');
+    expect(calls, "埋め込み先の履歴を触った").toEqual([]);
+  });
+
+  it("🔴 `popstate` が飛んできても何もしない(listener を仕掛けていない)", async () => {
+    const calls: string[] = [];
+    for (const name of HISTORY_METHODS) {
+      vi.spyOn(window.history, name).mockImplementation((() => calls.push(name)) as never);
+    }
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(CONFIG_BODY, { status: 200 }))));
+    installTag();
+    evaluateBundle(loaderCode);
+    await flush();
+
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await flush();
+
+    expect(calls).toEqual([]);
+    expect(document.querySelector("script[src*='adpop.js']"), "戻るで発火した").toBeNull();
+  });
+
+  it("🔴 この検査は、実際に触ったら気づく(検査そのものの前提)", () => {
+    /*
+      🔴 **「呼ばれなかった」を「呼ばない実装だ」と読む前に、呼んだら赤くなることを見る。**
+    */
+    const calls: string[] = [];
+    vi.spyOn(window.history, "pushState").mockImplementation((() => calls.push("pushState")) as never);
+    window.history.pushState({}, "", location.href);
+    expect(calls).toEqual(["pushState"]);
+  });
+
+  it("⚠ 束ねた出力に `history` という識別子が現れない(うっかり戻すのを止める)", () => {
+    /*
+      ⚠ **限界を正確に書く**: これは**出力の字面**を見ているだけなので、
+        `win["hist" + "ory"]` のように書けば抜けられる。**意図的な迂回は止められない。**
+      ✅ 止まるのは「**PR4 を待たずに、うっかり戻す**」ほう。上の2本(実際に呼ばれないこと)が本体で、
+        こちらは**書きかけのコードが混ざったときに早く気づく**ための補助。
+    */
+    expect(loaderCode, "ローダに history が現れた").not.toContain("history");
+    expect(runtimeCode, "本体に history が現れた").not.toContain("history");
   });
 });
 

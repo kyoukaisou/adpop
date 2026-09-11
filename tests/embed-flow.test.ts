@@ -14,7 +14,7 @@
 import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NAMESPACE, type Bridge, type EventPayload } from "../packages/embed/src/bridge";
-import { startAdpop } from "../packages/embed/src/loader";
+import { IMPLEMENTED_TRIGGERS, startAdpop } from "../packages/embed/src/loader";
 import { startRuntime } from "../packages/embed/src/runtime";
 
 const SITE_KEY = "0123456789abcdef0123456789abcdef";
@@ -143,7 +143,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => {
+describe("トリガ(PR2 で動くのは ⑥exit intent の1つだけ)", () => {
+  it("🔴 PR2 で動くトリガは exit intent の1つだけ(2026-09-12 本部裁定)", () => {
+    /*
+      🔴 **「戻る」は PR4 へ送った。** 4巡のうち3巡で、この1機能から Blocker が出続けたため。
+        ⚠ **設定の型は残してある**(DB の enum・`popup_triggers` の行)ので、
+          サーバーは `back` を有効として返しうる。**ここが無視する。**
+      ⚠ ここを増やすだけでは何も起きない(仕掛ける側のコードが無い)が、
+        **増えたことに気づける**ようにしておく —— PR4 で戻すときの入口はここ。
+    */
+    expect([...IMPLEMENTED_TRIGGERS]).toEqual(["exit_intent"]);
+  });
+
   it("⑥ exit intent で発火し、本体を取りに行く", async () => {
     stubNetwork();
     installTag();
@@ -173,27 +184,12 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     expect(sent).toEqual([]);
   });
 
-  it("① 戻るボタンで発火する(履歴に1枚挟んで popstate を見る)", async () => {
-    stubNetwork();
-    installTag();
-    const pushState = vi.spyOn(win.history, "pushState");
-    await bootLoader();
-
-    expect(pushState).toHaveBeenCalledTimes(1);
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
-    expect(sent[0].triggerKind).toBe("back");
-  });
-
   it("🔴 1ページの表示は最大1回(最初に条件を満たしたトリガだけを記録する)", async () => {
     stubNetwork();
     installTag();
     await bootLoader();
 
     exitIntent();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
     exitIntent();
     await flush();
 
@@ -212,305 +208,6 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     expect(sent).toEqual([]);
   });
 
-  it("🔴 最短表示待ちの間は、履歴に1枚も積まない(積むと、その間の「戻る」が食われる)", async () => {
-    /*
-      🔴 **元の穴**(Codex 1巡目 sol Medium): 読み込み直後に履歴を積んでいたので、
-        **待ちの間の「戻る」がその1枚を食い**、`fire()` は早すぎるので何もせず、
-        **もう積み直さない**ので**以後まったく発火しなくなっていた**。
-      ✅ 積むのを待ちが明けてからにした。待ちの間の「戻る」は**普通の離脱**として通す。
-    */
-    const pushState = vi.spyOn(win.history, "pushState");
-    stubNetwork({ config: configBody({ minDisplayDelaySeconds: 30 }) });
-    installTag();
-    await bootLoader();
-
-    expect(pushState, "待ちの間に履歴を積んでいる").not.toHaveBeenCalled();
-
-    // 待ちの間の「戻る」は、こちらの listener に届かない(積んでいないので何も起きない)
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    expect(sent).toEqual([]);
-  });
-
-  it("✅ 待ちが明けたら履歴を積み、そこからは戻るで発火する", async () => {
-    vi.useFakeTimers();
-    try {
-      const pushState = vi.spyOn(win.history, "pushState");
-      stubNetwork({ config: configBody({ minDisplayDelaySeconds: 3 }) });
-      installTag();
-      startAdpop(win, doc);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(pushState).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(3000);
-      expect(pushState, "待ちが明けても履歴を積んでいない").toHaveBeenCalledTimes(1);
-
-      win.dispatchEvent(new win.PopStateEvent("popstate"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(sent.map((e) => e.kind)).toEqual(["fire"]);
-      expect(sent[0].triggerKind).toBe("back");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("🔴 出さないと決めたら、利用者の「戻る」を通し直す(1回吸収したままにしない)", async () => {
-    /*
-      🔴 **元の穴**(Codex 1巡目 Astra Medium): 抑制された・出せるバリアントが無い —— どの場合でも
-        積んだ1枚が消費され、**利用者は「戻る」を押したのに何も起きなかった**。
-        これは「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
-      ✅ 出さないと決めたら `history.back()` で意図を通し直す。
-      ⚠ 先に listener を外してから呼ぶ(外さないと popstate が再入して**履歴を遡り続ける**)。
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    win.localStorage.setItem(
-      `adpop:${SITE_KEY}:${POPUP_KEY}`,
-      JSON.stringify({ lastImpressionAt: Date.now() }),
-    );
-    stubNetwork({
-      config: configBody({
-        frequency: { suppressDays: 7, sessionImpressions: 1, postConversionDays: 0 },
-      }),
-    });
-    installTag();
-    await bootLoader();
-
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    expect(sent.map((e) => e.kind)).toEqual(["fire", "suppressed"]);
-    expect(back, "戻るを吸収したままにした").toHaveBeenCalledTimes(1);
-
-    // ⚠ 再入していない(listener を外してから呼んでいる)
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    expect(back, "popstate が再入して履歴を遡り続けている").toHaveBeenCalledTimes(1);
-  });
-
-  it("🔴🔴 本体の取得に失敗したら、「戻る」を通し直す(Codex 2巡目 Blocker 3)", async () => {
-    /*
-      🔴 **元の穴**: `fire()` が**本体の読み込みが成功する前に**「出す」と答えていたので、
-        **CDN 障害・CSP・広告ブロッカーで本体が落ちたとき**、
-        **ポップも出ないのに「戻る」だけ奪われていた。**
-        = 「**配信が落ちてもポップが出ないだけ**」という約束(要件書 §5-2)を破っている。
-      ✅ 「出せなかった」を `loadRuntime` から呼び出し側へ返し、そこで `history.back()` する。
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    // ここまでは「出す」と決まっている(本体を取りに行った)
-    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`);
-    expect(script, "本体を取りに行っていない").not.toBeNull();
-    expect(back, "まだ通し直してはいけない").not.toHaveBeenCalled();
-
-    // 🔴 本体の取得が失敗する(CDN 障害 / CSP / 広告ブロッカー)
-    script!.dispatchEvent(new win.Event("error"));
-    await flush();
-
-    expect(doc.querySelector("[data-adpop]"), "出ていないこと").toBeNull();
-    expect(back, "本体が落ちたのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
-  });
-
-  it("🔴 本体は読み込めたのに描かれなかった場合も、「戻る」を通し直す", async () => {
-    /*
-      ⚠ **読み込みの成否ではなく、描かれたかどうかで決める。**
-        `onload` でも「出せなかった」を判定する(bridge の取り違え等で描けない場合)。
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!;
-    // 本体を動かさないまま onload だけ起こす
-    script.dispatchEvent(new win.Event("load"));
-    await flush();
-
-    expect(doc.querySelector("[data-adpop]")).toBeNull();
-    expect(back, "描かれていないのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
-  });
-
-  it("✅ 本体が描けたら、`onload` が来ても「戻る」を通し直さない", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    await bootRuntime();
-
-    expect(doc.querySelector("[data-adpop]"), "出ていない").not.toBeNull();
-    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("load"));
-    await flush();
-
-    expect(back, "出せているのに戻してしまった").not.toHaveBeenCalled();
-  });
-
-  it("🔴 通し直しは1回だけ(同期の判定と本体の失敗が二重に走らない)", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    const script = doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!;
-    script.dispatchEvent(new win.Event("error"));
-    script.dispatchEvent(new win.Event("load"));
-    script.dispatchEvent(new win.Event("error"));
-    await flush();
-
-    expect(back).toHaveBeenCalledTimes(1);
-  });
-
-  it("⚠ exit intent では本体が落ちても履歴に触らない(触っていないので戻すものが無い)", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork({ config: configBody({ triggers: [{ kind: "exit_intent", threshold: null }] }) });
-    installTag();
-    await bootLoader();
-
-    exitIntent();
-    await flush();
-    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
-    await flush();
-
-    expect(back, "履歴を触っていないのに戻した").not.toHaveBeenCalled();
-  });
-
-  it("🔴🔴 描画そのものが落ちたら「戻る」を通し直す(shown を先に立てない)", async () => {
-    /*
-      🔴 **元の穴**(Codex 3巡目 Blocker): 本体が `bridge.shown = true` を **`draw()` の前**に立てていた。
-        描画が途中で落ちても「表示済み」になり、ローダは「出せた」と判断して
-        **戻るを吸収したままにしていた。**
-      ✅ `shown` を立てるのは `draw()` が通った後。**失敗したら false のまま**なので、
-        ローダ側が「出せなかった」と判定できる。
-      ⚠ 落とし方は **`document.createElement` を本体の描画中だけ壊す**(実際に起きうるのは
-        CSP・Trusted Types・拡張による DOM の差し替え)。
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    const original = doc.createElement.bind(doc);
-    const spy = vi.spyOn(doc, "createElement").mockImplementation(((tag: string) => {
-      if (tag === "div") throw new Error("blocked by CSP");
-      return original(tag);
-    }) as typeof doc.createElement);
-    try {
-      await bootRuntime();
-    } finally {
-      spy.mockRestore();
-    }
-    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("load"));
-    await flush();
-
-    expect(doc.querySelector("[data-adpop]"), "描けていないこと").toBeNull();
-    expect(back, "描画が落ちたのに「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
-  });
-
-  it("🔴🔴 script の生成・挿入が同期で落ちても「戻る」を通し直す(Trusted Types の CSP)", async () => {
-    /*
-      🔴 **元の穴**(Codex 3巡目 Blocker): `script.src` への代入が例外になる環境
-        (**Trusted Types を要求する CSP**)では、`onGaveUp` に**1度も到達しなかった**。
-        外側の try/catch が握るだけで、**出せていないのに「出せた」ことになっていた。**
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-
-    const original = doc.createElement.bind(doc);
-    const spy = vi.spyOn(doc, "createElement").mockImplementation(((tag: string) => {
-      if (tag === "script") throw new Error("TrustedScriptURL required");
-      return original(tag);
-    }) as typeof doc.createElement);
-    try {
-      win.dispatchEvent(new win.PopStateEvent("popstate"));
-      await flush();
-    } finally {
-      spy.mockRestore();
-    }
-
-    expect(doc.querySelector("script[src*='adpop.js']"), "挿せていないこと").toBeNull();
-    expect(back, "同期例外で「戻る」を吸収したまま").toHaveBeenCalledTimes(1);
-  });
-
-  it("🔴🔴 待っている間に SPA が履歴を積んだら、通し直さない(利用者の操作を巻き戻さない)", async () => {
-    /*
-      🔴 **元の穴**(Codex 3巡目 Blocker): 通し直しが「あの時の履歴の位置」に結び付いていなかった。
-        本体の読み込みを待っている間に **埋め込み先の SPA が別の state を push** すると、
-        そのあとの `history.back()` は**こちらが積んだ1枚ではなく SPA の遷移を巻き戻す。**
-      ✅ popstate を受けた時点の `history.length` を覚え、**増えていたら触らない**。
-    */
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    // 埋め込み先の SPA が遷移した
-    win.history.pushState({ spa: 1 }, "", "/spa/next");
-    // そのあとで本体の取得が落ちる
-    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
-    await flush();
-
-    expect(back, "SPA の遷移を巻き戻した").not.toHaveBeenCalled();
-  });
-
-  it("✅ 誰も履歴を積んでいなければ、これまでどおり通し直す(締めすぎていないこと)", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)!.dispatchEvent(new win.Event("error"));
-    await flush();
-
-    expect(back).toHaveBeenCalledTimes(1);
-  });
-
-  it("✅ 出すと決めたときは、戻るを通し直さない(ポップを見せる)", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
-    expect(back).not.toHaveBeenCalled();
-  });
-
-  it("🔴 別のトリガで既に出した後の「戻る」は、そのまま通す", async () => {
-    const back = vi.spyOn(win.history, "back").mockImplementation(() => {});
-    stubNetwork();
-    installTag();
-    await bootLoader();
-
-    exitIntent();
-    await flush();
-    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
-
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-
-    expect(sent.filter((e) => e.kind === "fire"), "2回目の発火を数えた").toHaveLength(1);
-    expect(back, "既に出した後の戻るを吸収した").toHaveBeenCalledTimes(1);
-  });
-
   it("🔴 タッチ端末では exit intent を**登録しない**(誤爆源を作らない)", async () => {
     (win as unknown as { matchMedia: unknown }).matchMedia = () => ({ matches: true });
     stubNetwork();
@@ -519,12 +216,15 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
 
     exitIntent();
     await flush();
-    expect(sent).toEqual([]);
+    expect(sent, "タッチ端末なのに exit intent が登録されている").toEqual([]);
 
-    // ⚠ 端末の2値は「スマホ」側になっている(要件書 §5-4)
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    expect(sent[0].device).toBe("mobile");
+    /*
+      ⚠ **端末の2値そのものは、ここでは測れない。**
+        PR2 で動くトリガは exit intent の1つだけで、それはタッチ端末では登録しないので、
+        **スマホ側で送られるイベントが1件も無い**(「戻る」は PR4 へ送った)。
+        → 2値の判定は、下の `maxTouchPoints` の it が **desktop 側**で測っている。
+        **測れないものを、測ったふりで書かない。**
+    */
   });
 
   it("🔴 `ontouchstart` が在るだけの環境を「スマホ」と数えない(PC の Chrome / jsdom がこれ)", async () => {
@@ -581,11 +281,9 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
     await flush();
     expect(sent, "スマホなのに exit intent が登録されている").toEqual([]);
 
-    // ① 戻るは端末を問わず動く(要件書 §4-2)
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
-    await flush();
-    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
-    expect(sent[0].device).toBe("mobile");
+    // ⚠ スマホでは PR2 に動くトリガが1つも無い(「戻る」は PR4 へ送った)ので、
+    //   ここで測れるのは「**exit intent を登録しない**」ことまで。
+    //   端末の2値そのものは、下の `maxTouchPoints` の it が見る。
   });
 
   it("⚠ PR2 が知らないトリガ(スクロール等)は無視する = 何も起きない", async () => {
@@ -595,7 +293,6 @@ describe("トリガ(PR2 は ①戻る と ⑥exit intent の2つだけ)", () => 
 
     win.dispatchEvent(new win.Event("scroll"));
     exitIntent();
-    win.dispatchEvent(new win.PopStateEvent("popstate"));
     await flush();
 
     expect(sent).toEqual([]);
