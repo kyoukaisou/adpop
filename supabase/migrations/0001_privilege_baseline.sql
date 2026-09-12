@@ -194,10 +194,28 @@ comment on function public.adpop_authenticated_callable_functions() is
 -- 🔴 **カタログ(pg_default_acl)を読まない。** スキーマ限定の既定ACLとグローバルの既定ACLは
 --   マージされるので、**カタログの見た目と、実際に作られる表のACLは一致しない**(実測で確認済み)。
 --   → **実際に1つ作って測り、すぐ消す**(検算する場所と実効する場所をずらさない)。
-create or replace function public.adpop_assert_privilege_rules()
+/*
+  🔴🔴 **`create or replace` ではなく「無ければ作る」で書く**(2026-09-10 / Codex 1巡目 Astra Medium)。
+    ここは 0001 = **いちばん古いマイグレーション**。`create or replace` で書くと、
+    **後のマイグレーションが直した関門を、0001 を流し直した人が古い版へ戻してしまう**
+    (しかも戻ったことは誰にも見えない = 静かに緩む)。
+    → **初期値を作るのはこの1回だけ**にし、**更新は新しいマイグレーションが `create or replace` で行う**。
+  📌 allow-list に対して同じ結論を出したのと同じ理由(2026-09-08)。
+    **「後から足していく / 直していく宣言」の初期化は、冪等ではなく "無ければ作る" で書く。**
+  ⚠ **いまの正は最も新しいマイグレーション**(0004)。ここに在るのは**最初の版**で、
+    以降の巡で足した検査は入っていない。
+  ⚠ **0001 を流し直したら、最新のマイグレーションも流し直すこと。**
+    ② と ③ が業務ロールから権限を剥がし、⑥ は **anon の allow-list ぶんしか配り直さない**ので、
+    0004 が配った分は戻らない。**忘れたら関門が止める**(静かには壊れない)。
+*/
+do $install_rules$
+begin
+if to_regprocedure('public.adpop_assert_privilege_rules()') is not null then return; end if;
+execute $rules_ddl$
+create function public.adpop_assert_privilege_rules()
 returns void
 language plpgsql
-as $$
+as $rules$
 declare
   -- MAINTAIN は PostgreSQL 17 で追加された。16 以下に渡すと引数エラーになるので版で切り替える。
   is_pg17    constant boolean := current_setting('server_version_num')::int >= 170000;
@@ -379,17 +397,32 @@ begin
   end if;
 
   /*
-    (e) スキーマの権限。anon の USAGE は「allow-list が空でないとき」だけ許す。
+    (e) スキーマの権限。anon の USAGE は「**そのスキーマに allow-list の関数が在るとき**」だけ許す。
     ⚠ USAGE 単体では何も触れないが、**入口を開ける理由が無いのに開いている状態**を残さない。
     🔴 **`public` 固定をやめて集合で回す**(Codex 3巡目 Medium)。
       `adpop_exposed_schemas()` を増やしても、増やしたスキーマの anon USAGE と CREATE を
       1つも見ていなかった = **2巡目に直した型(集合が別の場所で育つ)の、直し残し**。
+    🔴🔴 **判定を「allow-list 全体が空か」から「このスキーマに1本でも在るか」に変えた**
+      (2026-09-09 / PR2)。**PR1 の書き方は、allow-list が空でなくなった瞬間に
+      1つのスキーマも落とさなくなる** —— PR2 で配信の関数を2本足したので、
+      `array_length(allowed, 1) is null` は**恒偽**になり、この関門は丸ごと空回りに変わっていた。
+      ⚠ **守りは正しいまま、測る対象が消える**型。テストのコードは1文字も変わらないので、
+        差分レビューにも出ない。
+      ✅ **スキーマごとに「そこに allow-list の関数が在るか」で見る**と、
+        集合が増えても・allow-list が埋まっても、判定の意味が変わらない。
   */
   select coalesce(array_agg(ns order by ns), '{}') into offenders
   from unnest(exposed) as ns
-  where has_schema_privilege('anon', ns, 'USAGE') and array_length(allowed, 1) is null;
+  where has_schema_privilege('anon', ns, 'USAGE')
+    and not exists (
+      select 1
+      from unnest(allowed) as sig
+      join pg_catalog.pg_proc p on p.oid = to_regprocedure(sig)::oid
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = ns
+    );
   if array_length(offenders, 1) is not null then
-    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が0本なのに、anon が USAGE を持つスキーマがあります: %',
+    raise exception 'ADPOP 権限の関門(e): anon から呼べる関数が1本も無いのに、anon が USAGE を持つスキーマがあります: %',
       array_to_string(offenders, ', ');
   end if;
 
@@ -441,7 +474,7 @@ begin
   --       ⚠ 並べ替えるときはここを読むこと(順序が意味を持っている)。
   execute format('create table public.%I (id integer)', probe_tbl);
   execute format('create sequence public.%I', probe_seq);
-  execute format('create function public.%I() returns integer language sql as $q$select 1$q$', probe_fn);
+  execute format('create function public.%I() returns integer language sql as $probe$select 1$probe$', probe_fn);
 
   select coalesce(array_agg(format('table|%s|%s', grantee, priv) order by 1), '{}')
     into offenders
@@ -482,7 +515,10 @@ begin
   execute format('drop sequence public.%I', probe_seq);
   execute format('drop table public.%I', probe_tbl);
 end;
-$$;
+$rules$
+$rules_ddl$;
+end
+$install_rules$;
 
 comment on function public.adpop_assert_privilege_rules() is
   'すべてのマイグレーションの末尾で呼ぶ関門。書いた SQL ではなく、実効の権限を測る。';

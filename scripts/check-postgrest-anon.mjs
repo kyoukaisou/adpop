@@ -13,8 +13,11 @@ import { execFileSync } from "node:child_process";
 import {
   coverageProblems,
   evaluateProbe,
+  evaluateRpcProbe,
   keyProblems,
   ROLES,
+  RPC_PROBES,
+  rpcCoverageProblems,
   TABLES,
 } from "./postgrest-expectations.mjs";
 
@@ -95,3 +98,56 @@ if (failed) {
   process.exit(1);
 }
 console.log(`\nOK  ${probes.length} 件すべてが権限で断られました(anon / service_role × ${TABLES.length}表)。`);
+
+/*
+  ══════════════════════════════════════════════════════════════════════
+  配信の口(0003 の RPC 2本)—— **逆向き**
+  ══════════════════════════════════════════════════════════════════════
+  🔴 **どの API キーからも配信の関数に届かないこと**を測る(0005)。
+    届くこと(逆向き)は `scripts/check-delivery-role.mjs` が**専用の Postgres ロール**で測る。
+*/
+const rpcProbes = [];
+for (const [role, key] of Object.entries(keys)) {
+  for (const rpc of RPC_PROBES) {
+    const probe = { role, name: rpc.name, status: 0, body: null, error: undefined };
+    try {
+      const response = await fetch(`${apiUrl}/rest/v1/rpc/${rpc.name}`, {
+        method: "POST",
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(rpc.args),
+      });
+      probe.status = response.status;
+      probe.body = await response.json().catch(() => null);
+    } catch (error) {
+      probe.error = error instanceof Error ? error.message : String(error);
+    }
+    rpcProbes.push(probe);
+  }
+}
+
+let rpcFailed = false;
+for (const problem of rpcCoverageProblems(rpcProbes, ROLES)) {
+  console.error(`NG  ${problem}`);
+  rpcFailed = true;
+}
+for (const probe of rpcProbes) {
+  const result = evaluateRpcProbe(probe);
+  console.log(`${result.ok ? "OK " : "NG "} ${result.reason}`);
+  if (!result.ok) rpcFailed = true;
+}
+
+if (rpcFailed) {
+  console.error(
+    "\n配信の関数に API キーから届いています(= HTTP のルートに置いた守りを迂回できる)。" +
+      "0005 の revoke を見てください。",
+  );
+  process.exit(1);
+}
+console.log(
+  `OK  配信の口 ${RPC_PROBES.length} 本は、どの API キーからも呼べません(anon / service_role)。`,
+);

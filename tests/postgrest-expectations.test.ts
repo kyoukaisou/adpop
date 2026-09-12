@@ -12,6 +12,10 @@ import {
   keyProblems,
   ROLES,
   TABLES,
+  ABSENT_SITE_KEY,
+  evaluateRpcProbe,
+  RPC_PROBES,
+  rpcCoverageProblems,
 } from "../scripts/postgrest-expectations.mjs";
 
 /** テスト用の JWT(署名は見ないので payload だけが意味を持つ)。 */
@@ -139,5 +143,85 @@ describe("期待値の宣言", () => {
     expect(EXPECTED_SQLSTATE).toBe("42501");
     expect(EXPECTED_STATUS_BY_ROLE).toEqual({ anon: 401, service_role: 403 });
     expect(ROLES).toEqual(["anon", "service_role"]);
+  });
+});
+
+/*
+  ══════════════════════════════════════════════════════════════════════════
+  配信の口(0003 の RPC 2本)の判定 —— **逆向き**
+  ══════════════════════════════════════════════════════════════════════════
+  🔴 上の12件は全部「**届いていないこと**」を測っている。
+    0003 で anon から呼べる関数を2本開けたので、「**届くこと**」も測らないと、
+    配り漏れ(= 配信が静かに止まる)を1つも検出できない。
+*/
+describe("配信の口の判定(evaluateRpcProbe)—— **どの API キーからも呼べない**", () => {
+  /*
+    🔴 0005 で **PostgREST を経路から外した**(配信は専用の Postgres ロールで DB へ直接つなぐ)。
+      ここが測るのは「**API キーからは1本も呼べない**」の側だけ。
+      **呼べること**は `scripts/check-delivery-role.mjs` が本物の専用ロールで測る。
+  */
+  it.each(ROLES)("✅ %s が 401/403 + 42501 なら合格", (role) => {
+    expect(
+      evaluateRpcProbe({
+        role,
+        name: "adpop_site_config",
+        status: (EXPECTED_STATUS_BY_ROLE as Record<string, number>)[role],
+        body: { code: "42501" },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("🔴🔴 200 が返ったら不合格(直接叩ける経路 = 本文の上限を迂回できる)", () => {
+    for (const role of ROLES) {
+      expect(
+        evaluateRpcProbe({ role, name: "adpop_site_config", status: 200, body: null }).ok,
+        `${role} から配信の口を呼べてしまった`,
+      ).toBe(false);
+    }
+  });
+
+  it("🔴 ロールごとに状態コードを1つに固定している(鍵の取り違えに気づくため)", () => {
+    // anon=401 / service_role=403。入れ替えたら不合格
+    expect(
+      evaluateRpcProbe({ role: "anon", name: "adpop_site_config", status: 403, body: { code: "42501" } }).ok,
+    ).toBe(false);
+  });
+
+  it("🔴 状態コードが合っていても SQLSTATE が違えば不合格", () => {
+    expect(
+      evaluateRpcProbe({
+        role: "anon",
+        name: "adpop_site_config",
+        status: 401,
+        body: { code: "PGRST202" },
+      }).ok,
+      "関数が存在しないだけ、を「権限で断られた」と読んだ",
+    ).toBe(false);
+  });
+
+  it("要求そのものが失敗したら不合格(繋がらないことを緑にしない)", () => {
+    expect(
+      evaluateRpcProbe({
+        role: "anon",
+        name: "adpop_site_config",
+        status: 0,
+        body: null,
+        error: "ECONNREFUSED",
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("🔴 1本でも叩いていなければ不合格", () => {
+    expect(rpcCoverageProblems([], ROLES)).toHaveLength(ROLES.length * RPC_PROBES.length);
+    expect(
+      rpcCoverageProblems(
+        ROLES.flatMap((role) => RPC_PROBES.map((rpc) => ({ role, name: rpc.name }))),
+        ROLES,
+      ),
+    ).toEqual([]);
+  });
+
+  it("⚠ 使うサイトキーは「形は通るが実在しない」ものである", () => {
+    expect(ABSENT_SITE_KEY).toMatch(/^[0-9a-f]{32}$/);
   });
 });

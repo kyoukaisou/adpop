@@ -122,3 +122,67 @@ export function coverageProblems(probes, roles) {
   }
   return problems;
 }
+
+/*
+  ══════════════════════════════════════════════════════════════════════
+  配信の口 —— **API キーからは、どのロールでも届かない**
+  ══════════════════════════════════════════════════════════════════════
+  🔴 0005 で **PostgREST を経由しない形**にした(配信は専用の Postgres ロールで DB へ直接つなぐ)。
+    ⚠ 経緯: 0004 は `service_role` の鍵で呼んでいて「この鍵で届くのは関数2本だけ」と書いたが、
+      **測っていたのは `/rest/v1` の `public` だけ**で、実際には
+      **Auth Admin API(利用者の作成・削除)にも Storage API にも通っていた**(2026-09-11 実測)。
+  → **いま測るのは「どの API キーからも配信の関数に届かないこと」。**
+    届くこと(逆向き)は `scripts/check-delivery-role.mjs` が**専用ロールで**測る。
+*/
+
+/** 実在しないサイトキー。⚠ 32桁の16進(形は通り、行は無い)。 */
+export const ABSENT_SITE_KEY = "0".repeat(32);
+const ABSENT_ORIGIN = "https://not-registered.example.com";
+
+export const RPC_PROBES = [
+  { name: "adpop_site_config", args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN } },
+  {
+    name: "adpop_record_event",
+    args: { p_site_key: ABSENT_SITE_KEY, p_origin: ABSENT_ORIGIN, p_event: { kind: "fire" } },
+  },
+];
+
+/**
+ * @param {{ role: string, name: string, status: number, body: unknown, error?: string }} probe
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export function evaluateRpcProbe(probe) {
+  const where = `${probe.role} → rpc/${probe.name}`;
+  if (probe.error) return { ok: false, reason: `${where}: 要求そのものが失敗した(${probe.error})` };
+
+  /*
+    🔴 **どの API キーからも呼べてはいけない。**
+      200 が返ったら、**HTTP のルートに置いた守り(本文の上限・将来のレート制限)を
+      迂回できる経路が開いている**ということ。
+    ⚠ 期待値を「どちらでも合格」に広げない —— 広げると、構造が戻ったことを検出できなくなる。
+  */
+  if (probe.status !== EXPECTED_STATUS_BY_ROLE[probe.role]) {
+    return {
+      ok: false,
+      reason: `${where}: HTTP ${probe.status}(期待 ${EXPECTED_STATUS_BY_ROLE[probe.role]} = 呼べない)`,
+    };
+  }
+  const code = /** @type {{ code?: unknown }} */ (probe.body ?? {}).code;
+  if (code !== EXPECTED_SQLSTATE) {
+    return { ok: false, reason: `${where}: SQLSTATE が ${String(code)}(期待 ${EXPECTED_SQLSTATE})` };
+  }
+  return { ok: true, reason: `${where}: HTTP ${probe.status} / ${EXPECTED_SQLSTATE}` };
+}
+
+/** 🔴 RPC の側でも「1件も叩いていない」を合格にしない。 */
+export function rpcCoverageProblems(probes, roles) {
+  const problems = [];
+  for (const role of roles) {
+    for (const rpc of RPC_PROBES) {
+      if (!probes.some((p) => p.role === role && p.name === rpc.name)) {
+        problems.push(`${role} → rpc/${rpc.name} を1度も叩いていない`);
+      }
+    }
+  }
+  return problems;
+}

@@ -45,6 +45,29 @@ const GRANTED_DML: Record<(typeof TABLES)[number], readonly string[]> = {
 const ALL_DML = ["SELECT", "INSERT", "UPDATE", "DELETE"] as const;
 
 /**
+ * 🔴 **配信の口を呼べるロールと、その関数**(0004)。
+ *   ⚠ 0003 までは `anon` に配っていたが、**PostgREST は `/rest/v1/rpc/...` を公開する**ので
+ *     **誰でも直接叩けて、ルートに置いた守り(本文の上限)を迂回できた**。
+ *     → `service_role`(= サーバーだけが持つ鍵)へ移した。
+ * ⚠ 書式は `regprocedure` の出力に合わせる(**引数の間に空白が入らない**)。
+ * ⚠ `order by 1` の結果と比べるので、**アルファベット順**で並べる。
+ */
+const DELIVERY_ROLE = "adpop_delivery";
+const DELIVERY_CALLABLE = ["adpop_record_event(text,text,jsonb)", "adpop_site_config(text,text)"] as const;
+
+/**
+ * 実物の allow-list に戻す SQL。
+ * 🔴 **関門を壊す変異テストの「戻し」は、必ずこれを使う。**
+ *   空に戻すと後続の it が「(c): 配ってあるのに宣言に無い」や (e3s) で落ちる
+ *   (= 変異テストが**別の失敗**を残していく)。
+ */
+const RESTORE_DELIVERY_ALLOW_LIST = `
+  create or replace function public.adpop_delivery_callable_functions()
+    returns text[] language sql immutable as
+    $body$ select array['public.adpop_site_config(text, text)',
+                        'public.adpop_record_event(text, text, jsonb)']::text[] $body$;`;
+
+/**
  * Supabase 側が用意しているもののスタブ(本番では Supabase が提供する)。
  * ⚠ ここを作らないと、マイグレーションの `auth.uid()` も `references auth.users` も流れない。
  */
@@ -284,12 +307,26 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       ).toEqual([]);
     });
 
-    it("anon は public スキーマの USAGE を持たない(= 入口が無い)", async () => {
+    it("🔴 anon は public スキーマの USAGE も CREATE も持たない(入口が1つも無い)", async () => {
+      /*
+        0003 のあいだは「配信の2本に届くための入口」として USAGE を配っていたが、
+        0004 でその2本を service_role へ移したので、**anon の入口は0本に戻った**。
+      */
       const r = await db.query<{ usage: boolean; create: boolean }>(
         `select has_schema_privilege('anon', 'public', 'USAGE') as usage,
                 has_schema_privilege('anon', 'public', 'CREATE') as create`,
       );
       expect(r.rows[0].usage).toBe(false);
+      expect(r.rows[0].create).toBe(false);
+    });
+
+    it("service_role は USAGE を持つが CREATE は持たない(配信の2本に届くための入口)", async () => {
+      const r = await db.query<{ usage: boolean; create: boolean }>(
+        `select has_schema_privilege($1, 'public', 'USAGE') as usage,
+                has_schema_privilege($1, 'public', 'CREATE') as create`,
+        [DELIVERY_ROLE],
+      );
+      expect(r.rows[0].usage).toBe(true);
       expect(r.rows[0].create).toBe(false);
     });
 
@@ -302,15 +339,68 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       expect(r.rows).toEqual([]);
     });
 
-    it("public スキーマの関数を anon / service_role / PUBLIC は1本も実行できない", async () => {
-      // ⚠ PR2 で配信用の関数を1本だけ anon へ開ける。そのときは
-      //   `adpop_anon_callable_functions()` に署名を足し、この期待値も同時に動かす。
+    it("🔴🔴 anon は public の関数を1本も実行できない(配信の口を直接叩ける経路を閉じた)", async () => {
+      /*
+        🔴 **0003 ではここに2本在った。** PostgREST は `/rest/v1/rpc/...` を公開するので、
+          anon に EXECUTE が在ると **誰でも直接叩けて、Next.js のルートに置いた
+          本文 4KB の上限も、将来のレート制限も迂回できた**(Codex 1巡目・両モデル)。
+        ⚠ ここを「2本以下」ではなく **0本ちょうど**で書く。緩めた瞬間に落ちる。
+      */
       const r = await db.query<{ fn: string; grantee: string }>(
         `select p.oid::regprocedure::text as fn, ro.g as grantee
          from pg_catalog.pg_proc p
          join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-         cross join (values ('anon'), ('service_role'), ('public')) ro(g)
+         cross join (values ('anon'), ('public')) ro(g)
          where n.nspname = 'public' and has_function_privilege(ro.g, p.oid, 'EXECUTE')`,
+      );
+      expect(r.rows).toEqual([]);
+
+      const declared = await db.query<{ sigs: string[] }>(
+        `select public.adpop_anon_callable_functions() as sigs`,
+      );
+      expect(declared.rows[0].sigs, "anon の allow-list が空でない").toEqual([]);
+    });
+
+    it("🔴 service_role が実行できるのは、宣言した配信の口2本ちょうど", async () => {
+      /*
+        🔴 **両向きを1つの等号で見る**: 多すぎ(バイパス鍵になる)も、
+          少なすぎ(配信が静かに止まる)も、同じ1行が落とす。
+      */
+      const r = await db.query<{ fn: string }>(
+        `select p.oid::regprocedure::text as fn
+         from pg_catalog.pg_proc p
+         join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'public' and has_function_privilege($1, p.oid, 'EXECUTE')
+         order by 1`,
+        [DELIVERY_ROLE],
+      );
+      expect(r.rows.map((row) => row.fn)).toEqual(DELIVERY_CALLABLE);
+
+      const declared = await db.query<{ sigs: string[] }>(
+        `select public.adpop_delivery_callable_functions() as sigs`,
+      );
+      expect(
+        declared.rows[0].sigs.map((sig) => sig.replace(/^public\./, "").replace(/\s+/g, "")).sort(),
+      ).toEqual([...DELIVERY_CALLABLE].sort());
+    });
+
+    it("🔴 配信ロールは業務テーブルに権限を1つも持たない(接続文字列が漏れても表へは届かない)", async () => {
+      /*
+        🔴 **専用ロールにした判断の根拠がここ。**
+          ⚠ 前の版は `service_role` の鍵を使い「この鍵で届くのは2本だけ」と書いたが、
+            **測っていたのは `/rest/v1` の `public` だけ**で、実際には
+            **Auth Admin API にも Storage にも通っていた**(2026-09-11 実測)。
+          → いまは資格が Postgres のロール1つなので、**全スキーマで数え上げられる**(関門(g1)〜(g6))。
+      */
+      const r = await db.query<{ table_name: string; priv: string }>(
+        `select c.oid::regclass::text as table_name, p as priv
+         from pg_catalog.pg_class c
+         join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+         cross join unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) as p
+         where n.nspname = 'public' and c.relkind = 'r'
+           and (has_table_privilege($1, c.oid, p)
+                or (p in ('SELECT','INSERT','UPDATE','REFERENCES') and has_any_column_privilege($1, c.oid, p)))`,
+        [DELIVERY_ROLE],
       );
       expect(r.rows).toEqual([]);
     });
@@ -1094,7 +1184,9 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
         "https://lp.example.com/",
         "https://lp.example.com/a/b",
         "https://lp.example.com:8443/a",
-        "http://lp.example.com/a", // 埋め込み先が http でも記録は取る
+        // ⚠ CHECK は http を許すが、**いまの経路では到達しない**(許可ドメインの判定が https のみ)。
+        //   ここが測っているのは CHECK の広さだけで、「http の LP でも動く」ではない。
+        "http://lp.example.com/a",
         // ⚠ path の `@` は許す(`/@handle` は普通の URL。ここを弾くと締めすぎ)
         "https://lp.example.com/@handle",
       ]) {
@@ -1226,11 +1318,14 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
     });
 
     it("allow-list に無い関数を anon へ開けると落ちる", async () => {
+      /*
+        ⚠ **戻しで `revoke usage on schema public from anon` をしない**(0003 以降)。
+          anon の USAGE は配信の関数2本に届くために**要る**ので、剥がすと
+          後続の it が関門(e4)で落ちる = 変異テストが別の失敗を残す。
+      */
       await assertGuardRejects(
-        `grant usage on schema public to anon;
-         grant execute on function public.adpop_is_https_url(text) to anon;`,
-        `revoke all on function public.adpop_is_https_url(text) from anon;
-         revoke usage on schema public from anon;`,
+        `grant execute on function public.adpop_is_https_url(text) to anon;`,
+        `revoke all on function public.adpop_is_https_url(text) from anon;`,
         "anon に関数を開けても関門が通った",
         "(c)",
       );
@@ -1277,8 +1372,17 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
          where n.nspname = 'public' and p.prosecdef order by 1`,
       );
-      // 現状 secdef はトリガの1本だけ。増えたらここが気づく。
-      expect(r.rows.map((row) => row.fn)).toEqual(["adpop_seed_popup_triggers()"]);
+      /*
+        🔴 **secdef は RLS を1枚も通らない**ので、増えた瞬間に気づける形で名指ししておく。
+          いまの3本: トリガの seeding(0002)+ 配信の2本(0003)。
+        ⚠ 配信の2本は **anon から呼べる**(allow-list)ので、
+          「認可を自分で書いている関数」= いちばん読まれるべき場所。
+      */
+      expect(r.rows.map((row) => row.fn)).toEqual([
+        "adpop_record_event(text,text,jsonb)",
+        "adpop_seed_popup_triggers()",
+        "adpop_site_config(text,text)",
+      ]);
       for (const row of r.rows) {
         expect(row.config?.some((c) => c.startsWith("search_path=")), row.fn).toBe(true);
       }
@@ -1308,6 +1412,11 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       ⚠ 置く違反は**1種類ずつ**にする(混ぜると、先に評価される関門が拾って
         「どの関門が守っているか」が分からなくなる)。
     */
+    async function currentDatabase(): Promise<string> {
+      const r = await db.query<{ name: string }>(`select current_database() as name`);
+      return r.rows[0].name;
+    }
+
     const widenSchema = (extraSql: string) =>
       `create schema if not exists zz_exposed;
        create or replace function public.adpop_exposed_schemas()
@@ -1393,12 +1502,37 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       );
     });
 
-    it("🔴 (e) 広げたスキーマに anon の USAGE だけがあると落ちる(allow-list は空)", async () => {
+    it("🔴 (e) 広げたスキーマに anon の USAGE だけがあると落ちる(そこに allow-list の関数は無い)", async () => {
       await assertGuardRejects(
         widenSchema(`grant usage on schema zz_exposed to anon;`),
         restoreSchema(`revoke all on schema zz_exposed from anon;`),
         "広げたスキーマの USAGE を (e) が見落とした",
         "(e)",
+      );
+    });
+
+    it("🔴🔴 (es) allow-list が**空でない**ロールでも、関数の無いスキーマの USAGE は落とす", async () => {
+      /*
+        🔴🔴 **ここだけが「スキーマごとに見る」の効き目を測れる。**
+          関門(e)(es) の条件を「**allow-list 全体が空か**」に戻しても、
+          **anon の allow-list はいま空**なので、上の (e) の負例は**どちらの書き方でも赤くなる**
+          = 直したことを1ミリも測っていない(2026-09-10 の変異検査で判明)。
+        ✅ **allow-list が空でないロール(service_role)**で、
+          **その allow-list の関数が1本も無いスキーマ**の USAGE を配る。
+          ・古い書き方(全体が空か)→ 空でないので**落とさない = 穴**
+          ・いまの書き方(このスキーマに在るか)→ **落とす**
+      */
+      const declared = await db.query<{ n: number }>(
+        `select array_length(public.adpop_delivery_callable_functions(), 1) as n`,
+      );
+      // 🔴 前提の検算: allow-list が空だと、この負例は古い書き方でも赤くなる = 何も測っていない
+      expect(declared.rows[0].n, "配信の allow-list が空 = この検査は空回りする").toBeGreaterThan(0);
+
+      await assertGuardRejects(
+        widenSchema(`grant usage on schema zz_exposed to adpop_delivery;`),
+        restoreSchema(`revoke all on schema zz_exposed from adpop_delivery;`),
+        "allow-list の関数が無いスキーマの USAGE を (es) が見落とした",
+        "(es)",
       );
     });
 
@@ -1419,36 +1553,39 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       await assertGuardRejects(
         `create schema if not exists zz_outside;
          create function zz_outside.zz_fn() returns int language sql as 'select 1';
-         create or replace function public.adpop_anon_callable_functions()
+         create or replace function public.adpop_delivery_callable_functions()
            returns text[] language sql immutable as
-           $body$ select array['zz_outside.zz_fn()']::text[] $body$;`,
-        `create or replace function public.adpop_anon_callable_functions()
-           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+           $body$ select array['public.adpop_site_config(text, text)',
+                               'public.adpop_record_event(text, text, jsonb)',
+                               'zz_outside.zz_fn()']::text[] $body$;`,
+        `${RESTORE_DELIVERY_ALLOW_LIST}
          drop schema if exists zz_outside cascade;`,
         "集合の外のスキーマの関数を allow-list に載せられた",
         "(0b)",
       );
     });
 
-    it("🔴 allow-list に載っているのに anon へ配られていないと落ちる(配りすぎだけでなく、配り漏れも見る)", async () => {
+    it("🔴 (e3s) allow-list に載っているのに配られていないと落ちる(配りすぎだけでなく、配り漏れも見る)", async () => {
       /*
         🔴 Codex 2巡目 Medium。ここまでの関門は全部「**配りすぎ**」の向きしか見ていなかった。
-          PR2 の配信口が 0001 の流し直しで黙って止まるのは「**配り漏れ**」の向き。
+          配信口が 0001 の流し直しで黙って止まるのは「**配り漏れ**」の向き。
+        ⚠ 0004 で配信の口が service_role へ移ったので、撃つのは (e3s)。
       */
       await assertGuardRejects(
         `create function public.zz_delivery() returns int language sql as 'select 1';
-         create or replace function public.adpop_anon_callable_functions()
+         create or replace function public.adpop_delivery_callable_functions()
            returns text[] language sql immutable as
-           $body$ select array['public.zz_delivery()']::text[] $body$;`,
-        `create or replace function public.adpop_anon_callable_functions()
-           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+           $body$ select array['public.adpop_site_config(text, text)',
+                               'public.adpop_record_event(text, text, jsonb)',
+                               'public.zz_delivery()']::text[] $body$;`,
+        `${RESTORE_DELIVERY_ALLOW_LIST}
          drop function public.zz_delivery();`,
         "allow-list に載っているのに配られていない状態を関門が見落とした",
-        "(e3)",
+        "(e3s)",
       );
     });
 
-    it("🔴 (e4) EXECUTE はあるのにスキーマの USAGE が無いと落ちる", async () => {
+    it("🔴 (e4s) EXECUTE はあるのにスキーマの USAGE が無いと落ちる", async () => {
       /*
         🔴 Codex 3巡目 Low —— **(e4) を消しても上の負例は通る**。
           あの負例は EXECUTE も USAGE も欠いているので、**先に (e3) が落としていた**
@@ -1457,26 +1594,285 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
       */
       await assertGuardRejects(
         `create function public.zz_delivery_e4() returns int language sql as 'select 1';
-         create or replace function public.adpop_anon_callable_functions()
+         create or replace function public.adpop_delivery_callable_functions()
            returns text[] language sql immutable as
-           $body$ select array['public.zz_delivery_e4()']::text[] $body$;
-         grant execute on function public.zz_delivery_e4() to anon;
-         revoke usage on schema public from anon;`,
-        `create or replace function public.adpop_anon_callable_functions()
-           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+           $body$ select array['public.adpop_site_config(text, text)',
+                               'public.adpop_record_event(text, text, jsonb)',
+                               'public.zz_delivery_e4()']::text[] $body$;
+         grant execute on function public.zz_delivery_e4() to adpop_delivery;
+         revoke usage on schema public from adpop_delivery;`,
+        `${RESTORE_DELIVERY_ALLOW_LIST}
          drop function public.zz_delivery_e4();
-         revoke usage on schema public from anon;`,
-        "EXECUTE はあるが USAGE が無い状態を (e4) が見落とした",
-        "(e4)",
+         grant usage on schema public to adpop_delivery;`,
+        "EXECUTE はあるが USAGE が無い状態を (e4s) が見落とした",
+        "(e4s)",
       );
     });
 
-    it("anon から呼べる関数が0本なのに USAGE だけ開けると落ちる", async () => {
+    it("🔴 (e) anon から呼べる関数が1本も無いのに USAGE を配ると落ちる", async () => {
+      /*
+        🔴🔴 **PR1 の書き方だと、この it は配信の口が開いた日に空回りしていた。**
+          関門(e) の条件は `array_length(allowed, 1) is null`(= allow-list 全体が空)だったので、
+          **allow-list に1本でも入った瞬間に恒偽**になり、**1つのスキーマも落とさなくなる**。
+          テストのコードは1文字も変わらないのに、測る対象だけが消える型。
+        ✅ (e) を「**そのスキーマに allow-list の関数が在るか**」に変えた。
+        ⚠ 0004 で anon の allow-list は空へ戻ったので、**USAGE を配るだけ**で撃てる。
+      */
       await assertGuardRejects(
         `grant usage on schema public to anon;`,
         `revoke usage on schema public from anon;`,
         "使い道の無い USAGE を関門が見落とした",
         "(e)",
+      );
+    });
+
+    it("🔴 (es) service_role でも同じ規則が効く(片方だけ直していない)", async () => {
+      await assertGuardRejects(
+        `revoke execute on function public.adpop_site_config(text, text) from adpop_delivery;
+         revoke execute on function public.adpop_record_event(text, text, jsonb) from adpop_delivery;
+         create or replace function public.adpop_delivery_callable_functions()
+           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;`,
+        `${RESTORE_DELIVERY_ALLOW_LIST}
+         grant execute on function public.adpop_site_config(text, text) to adpop_delivery;
+         grant execute on function public.adpop_record_event(text, text, jsonb) to adpop_delivery;`,
+        "使い道の無い USAGE を (es) が見落とした",
+        "(es)",
+      );
+    });
+
+    it("🔴🔴 配信の口を anon へ開け直すと落ちる(この PR でいちばん守りたいところ)", async () => {
+      /*
+        🔴 **PostgREST は `/rest/v1/rpc/...` を公開する。**
+          anon に EXECUTE が1本でも戻ると、**誰でも直接叩けて、
+          Next.js のルートに置いた本文 4KB の上限も将来のレート制限も迂回できる。**
+        ⚠ **allow-list に足しても落ちる**(足した先が anon だから)。
+      */
+      await assertGuardRejects(
+        `grant usage on schema public to anon;
+         grant execute on function public.adpop_site_config(text, text) to anon;`,
+        `revoke all on function public.adpop_site_config(text, text) from anon;
+         revoke usage on schema public from anon;`,
+        "配信の口を anon へ開け直しても関門が通った",
+        "(c)",
+      );
+    });
+
+    /*
+      ──────────────────────────────────────────────────────────────
+      (g) 配信ロールの権限を**全スキーマ**で数える(Codex 2巡目 Blocker 1・2)
+      ──────────────────────────────────────────────────────────────
+      🔴 **前の版の誤りの本体**: 「この資格で届くのは関数2本だけ」と書きながら、
+        測っていたのは `/rest/v1` の `public` だけだった。
+        実際の `service_role` の鍵は **Auth Admin API(利用者の作成・削除)にも Storage にも通り**、
+        利用者を消すと `sites.owner_id` の cascade で**配下データが全部消えた**(2026-09-11 実測)。
+      ✅ 資格を Postgres のロール1つにしたので、**権限を全部数え上げられる**。
+        ⚠ **1本ずつ、名指しで撃つ** —— まとめて撃つと「どの関門が守っているか」が分からなくなる。
+    */
+    it("⚠ `public` の表を配ると、先に (a) が落とす(**(g1) の担当ではない**)", async () => {
+      /*
+        ⚠ **関門は最初の違反で止まる。** `public` は `adpop_exposed_schemas()` に在るので、
+          (a) が先に拾う。**(g1) が守っているのは「その外」**。
+          🔴 名前と観測しているものをずらさないため、ここは (a) と書く。
+      */
+      await assertGuardRejects(
+        `grant select on public.sites to ${DELIVERY_ROLE};`,
+        `revoke all on public.sites from ${DELIVERY_ROLE};`,
+        "配信ロールへの表の grant を見落とした",
+        "(a)",
+      );
+    });
+
+    it("🔴🔴 (g1) `auth` スキーマの表を配ると落ちる(**public の外を見るのはここだけ**)", async () => {
+      /*
+        🔴🔴 **ここが「測る範囲」の要点。** 前の版は `public` しか見ていなかったので、
+          **`auth.users` に届く経路をまるごと見落としていた。**
+      */
+      await assertGuardRejects(
+        `grant usage on schema auth to ${DELIVERY_ROLE};
+         grant select on auth.users to ${DELIVERY_ROLE};`,
+        `revoke all on auth.users from ${DELIVERY_ROLE};
+         revoke all on schema auth from ${DELIVERY_ROLE};`,
+        "public の外(auth)の表の grant を (g1) が見落とした",
+        "(g1)",
+      );
+    });
+
+    it("⚠ `public` の関数を配ると、先に (c) が落とす(**(g3) の担当ではない**)", async () => {
+      await assertGuardRejects(
+        `grant execute on function public.adpop_is_https_url(text) to ${DELIVERY_ROLE};`,
+        `revoke all on function public.adpop_is_https_url(text) from ${DELIVERY_ROLE};`,
+        "allow-list の外の関数の grant を見落とした",
+        "(c)",
+      );
+    });
+
+    it("🔴🔴 (g3) `public` の外の関数を配ると落ちる(**関門の集合の外まで見る**)", async () => {
+      /*
+        🔴 (c) が見るのは `adpop_exposed_schemas()` の中だけ。
+          **その外に関数を1本置いて配れば、(c) は1ミリも鳴らない。**
+        ⚠ schema の USAGE は配らない —— 配ると (g6) が先に落とし、
+          **(g3) が守っていることを測らないまま緑になる**(負例が2つの穴を同時に開ける形)。
+      */
+      await assertGuardRejects(
+        `create schema if not exists zz_outside_g3;
+         create function zz_outside_g3.zz_fn() returns int language sql as 'select 1';
+         revoke all on function zz_outside_g3.zz_fn() from public;
+         grant execute on function zz_outside_g3.zz_fn() to ${DELIVERY_ROLE};`,
+        `drop schema if exists zz_outside_g3 cascade;`,
+        "集合の外の関数の grant を (g3) が見落とした",
+        "(g3)",
+      );
+    });
+
+    it("🔴 (g4) 配信ロールを他のロールのメンバーにすると落ちる", async () => {
+      await assertGuardRejects(
+        `grant service_role to ${DELIVERY_ROLE};`,
+        `revoke service_role from ${DELIVERY_ROLE};`,
+        "ロールのメンバー化を (g4) が見落とした",
+        "(g4)",
+      );
+    });
+
+    /*
+      ⚠ `superuser` は入れない —— **付けた瞬間に全部の権限が真になる**ので、
+        (a) が先に落とす。**(g5) が守っているものを測らない**(名前が嘘になる)。
+        🔴 その代わり (g5) の本体(`rolsuper` を見ていること)は SQL に残っている。
+    */
+    it.each(["bypassrls", "createrole", "createdb", "replication"])(
+      "🔴 (g5) 配信ロールに %s を付けると落ちる",
+      async (flag) => {
+        await assertGuardRejects(
+          `alter role ${DELIVERY_ROLE} ${flag};`,
+          `alter role ${DELIVERY_ROLE} no${flag};`,
+          `配信ロールの ${flag} を (g5) が見落とした`,
+          "(g5)",
+        );
+      },
+    );
+
+    it("🔴 (g6) 使い道の無いスキーマの USAGE を配信ロールへ配ると落ちる", async () => {
+      await assertGuardRejects(
+        `create schema if not exists zz_useless;
+         grant usage on schema zz_useless to ${DELIVERY_ROLE};`,
+        `drop schema if exists zz_useless cascade;`,
+        "使い道の無い USAGE を (g6) が見落とした",
+        "(g6)",
+      );
+    });
+
+    it("🔴🔴 (g7) 配信の関数を配信ロール以外へ配ると落ちる(allow-list の書き換えでは外せない)", async () => {
+      /*
+        🔴 (c) は「allow-list に載っていれば許す」ので、**allow-list を書き換えれば通ってしまう**。
+          実際、追い越された 0003 を流し直すと「anon の allow-list に載せて anon へ配る」が再現され、
+          **(c) は何も言わない**。= **誰でも直接叩ける構造が黙って戻る。**
+        ✅ (g7) は allow-list を見ないので、書き換えでは外せない。
+      */
+      await assertGuardRejects(
+        `grant usage on schema public to anon;
+         grant execute on function public.adpop_site_config(text, text) to anon;
+         create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as
+           $body$ select array['public.adpop_site_config(text, text)']::text[] $body$;`,
+        `create or replace function public.adpop_anon_callable_functions()
+           returns text[] language sql immutable as $body$ select '{}'::text[] $body$;
+         revoke all on function public.adpop_site_config(text, text) from anon;
+         revoke usage on schema public from anon;`,
+        "allow-list に載せて anon へ配り直しても関門が通った",
+        "(g7)",
+      );
+    });
+
+    it("🔴 (g8) 配信ロールにデータベースの TEMPORARY を持たせると落ちる", async () => {
+      await assertGuardRejects(
+        `grant temporary on database ${"${db}"} to ${DELIVERY_ROLE};`.replace(
+          "${db}",
+          await currentDatabase(),
+        ),
+        `revoke temporary on database ${await currentDatabase()} from ${DELIVERY_ROLE};`,
+        "データベースの TEMPORARY を (g8) が見落とした",
+        "(g8)",
+      );
+    });
+
+    it("🔴 (g9) PUBLIC にデータベースの TEMPORARY を戻すと落ちる(**閉めた結果を測っている**)", async () => {
+      /*
+        ⚠ 「閉めた」と書くだけにしない。**戻したら赤くなる**ことで、閉まっていることを測る。
+      */
+      const db = await currentDatabase();
+      await assertGuardRejects(
+        `grant temporary on database ${db} to public;`,
+        `revoke temporary on database ${db} from public;`,
+        "PUBLIC のデータベース権限を (g9) が見落とした",
+        "(g9)",
+      );
+    });
+
+    it.each(["0", "0ms", "60s", "10min"])(
+      "🔴 (g10) statement_timeout が %s だと落ちる(**載っているだけでは通さない**)",
+      async (value) => {
+        /*
+          🔴 **`0` は PostgreSQL では「無制限」**(Codex 4巡目)。
+            「載っているか」だけを見ると、**上限が外れている状態が通る**。**値まで比べる。**
+          ⚠ 長すぎる側(60s / 10min)も落とす —— LP を待たせないための上限なので、
+            **上下どちらに外れても意味が無い**。
+        */
+        await assertGuardRejects(
+          `alter role ${DELIVERY_ROLE} set statement_timeout = '${value}';`,
+          `alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`,
+          `statement_timeout = ${value} を (g10) が見落とした`,
+          "(g10)",
+        );
+      },
+    );
+
+    it("✅ (g10) 単位の書き方を変えても通る(締めすぎていないこと)", async () => {
+      for (const value of ["5000ms", "5s", "5000"]) {
+        await db.exec(`alter role ${DELIVERY_ROLE} set statement_timeout = '${value}';`);
+        await db.query(`select public.adpop_assert_privilege_rules()`);
+      }
+      await db.exec(`alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`);
+    });
+
+    it("🔴 (g10) 配信ロールから statement_timeout の既定を外すと落ちる", async () => {
+      /*
+        🔴 **文の上限はここにしか無い**(2026-09-11 実測: 関数単位の SET は効かない /
+          クライアントの起動時パラメータは pooler で残らない)。**外れたら気づく形にする。**
+      */
+      await assertGuardRejects(
+        `alter role ${DELIVERY_ROLE} reset statement_timeout;`,
+        `alter role ${DELIVERY_ROLE} set statement_timeout = '5000ms';`,
+        "statement_timeout の消失を (g10) が見落とした",
+        "(g10)",
+      );
+    });
+
+    it("🔴 (g11) 集合の外のスキーマの CREATE を配信ロールへ配ると落ちる", async () => {
+      /*
+        ⚠ (e2) は `adpop_exposed_schemas()` の中しか見ない。**その外**は (g11) の担当。
+      */
+      await assertGuardRejects(
+        `create schema if not exists zz_outside_g11;
+         grant create on schema zz_outside_g11 to ${DELIVERY_ROLE};`,
+        `drop schema if exists zz_outside_g11 cascade;`,
+        "集合の外のスキーマの CREATE を (g11) が見落とした",
+        "(g11)",
+      );
+    });
+
+    it("🔴 (f) 広げたスキーマの既定privilege も見る(probe を public にしか作っていなかった)", async () => {
+      /*
+        🔴 Codex 1巡目 sol Medium。(a)〜(e2) は集合で回していたのに、
+          **(f) だけ probe を `public` に固定**していた = 2巡かけて直した型の**残り**。
+      */
+      await assertGuardRejects(
+        widenSchema(
+          `alter default privileges in schema zz_exposed grant select on tables to anon;`,
+        ),
+        restoreSchema(
+          `alter default privileges in schema zz_exposed revoke all on tables from anon;`,
+        ),
+        "広げたスキーマの既定privilege を (f) が見落とした",
+        "(f-1)",
       );
     });
   });
@@ -1489,68 +1885,66 @@ describe.each(START_ACLS)("開始ACL = $name", (acl) => {
   🔴 **1度しか流れないマイグレーションを、次のマイグレーションが検算する形**にしている。
     呼び忘れると、その回の変更だけが測られないまま通る。
 */
-describe("0001 の再実行", () => {
+describe("マイグレーションの再実行", () => {
   /*
-    🔴 0001 は「途中で止まった人が流し直せる」ことを条件にしている。**その主張を実際に撃つ。**
-    ⚠ 主張の範囲は 0001 だけ。**0002 は再実行できない**(`create type` が落ちる)ことも、
-      同じ場所で固定しておく —— 書いていないと、次に読む人が両方できると思う。
+    🔴 0001 は「途中で止まった人が流し直せる」ことを条件にしていた。
+      **0004 でその主張が狭まった** —— 0001 の ② と ③ は業務ロールから権限を剥がすが、
+      0001 の ⑥ は **anon の allow-list ぶんしか配り直さない**(0001 は service_role を知らない)。
+      → **0001 だけを流し直すと、配信の口が止まる。**
+    ✅ **静かに止めない。** 関門(e3s) が適用そのものを失敗させ、直し方(最新まで流し直す)を文言に出す。
+      ⚠ ここが「通る」に戻ったら、**配信が黙って死ぬ経路が復活した**ということ。
   */
-  it("0001 をもう一度流しても通り、0002 が配った権限が剥がれない", async () => {
+  it("✅ 0001 を流し直しても、配信は止まらない(専用ロールは 0001 の revoke 対象に入っていない)", async () => {
+    /*
+      🔴 **`service_role` を使っていたときは、ここが「止まる」だった。**
+        0001 の ② と ③ は `anon` / `service_role` / `public` から剥がすので、
+        配信の資格がその中に在ると、流し直すたびに配信が死んでいた。
+      ✅ **専用ロールにしたら、0001 は配信の資格を1ミリも触らない。**
+        = 直した本体(Auth / Storage への到達)とは別に、**運用の壊れやすさも1つ減った**。
+    */
     const db = await createMigratedDb(START_ACLS[0]);
     try {
-      const first = await db.query<{ granted: boolean }>(
-        `select has_table_privilege('authenticated', 'public.sites', 'INSERT') as granted`,
+      const code = await sqlstateOf(db, () =>
+        db.exec(readFileSync(path.join(MIGRATIONS_DIR, MIGRATION_FILES[0]), "utf8")),
       );
-      expect(first.rows[0].granted).toBe(true);
+      expect(code, "0001 の流し直しが落ちた").toBe("");
 
-      await db.exec(readFileSync(path.join(MIGRATIONS_DIR, MIGRATION_FILES[0]), "utf8"));
-
-      const after = await db.query<{ granted: boolean }>(
-        `select has_table_privilege('authenticated', 'public.sites', 'INSERT') as granted`,
+      const after = await db.query<{ granted: boolean; usage: boolean }>(
+        `select has_function_privilege($1, 'public.adpop_site_config(text, text)', 'EXECUTE') as granted,
+                has_schema_privilege($1, 'public', 'USAGE') as usage`,
+        [DELIVERY_ROLE],
       );
-      expect(after.rows[0].granted, "0001 を流し直したら 0002 の grant が消えた").toBe(true);
-      // 関門も通る
-      await db.query(`select public.adpop_assert_privilege_rules()`);
+      expect(after.rows[0].granted, "0001 を流し直したら配信の EXECUTE が消えた").toBe(true);
+      expect(after.rows[0].usage, "0001 を流し直したら配信の USAGE が消えた").toBe(true);
     } finally {
       await db.close();
     }
   });
 
-  it("🔴 allow-list に1本入れた状態で 0001 を流し直しても、anon はまだ呼べる", async () => {
+  it("🔴🔴 0001 を流し直しても、関門は最新版の検査((g5))を持ったまま", async () => {
     /*
-      🔴 **PR2 の配信口が黙って止まる経路**(Codex 2巡目 Medium)。
-        0001 の ② と ③ は流し直すたびに anon から全部剥がす。
-        剥がしっぱなしだと、**マイグレーションは緑・テストも緑のまま、配信だけが 42501 になる。**
-      ✅ ⑥ が配り直し、関門(e3)(e4)がその**状態**を測る。ここは両方を通しで撃つ。
+      🔴 **Codex 1巡目 Astra Medium の本体**: 0001 を書き換えても、
+        **既に適用した DB には1ミリも届かない**。だから関門の「いまの正」は
+        最も新しいマイグレーションが持ち、**0001 側は「無ければ作る」**にしてある。
+      ⚠ **版を comment で測らない** —— 0001 の `comment on function` は
+        「無ければ作る」の**外側**にあり、流し直すと**説明文だけ古い版に戻る**(2026-09-11 実測)。
+        **説明ではなく、振る舞いで測る。**
+      ✅ 0001 の版には**存在しない** (g5)(配信ロールが強い属性を持たない)を撃つ。
     */
     const db = await createMigratedDb(START_ACLS[0]);
     try {
-      // PR2 が入った後を模す: 関数を作り、allow-list に載せ、anon へ配る
-      await db.exec(`
-        create function public.zz_delivery(site_key text) returns text
-          language sql security definer set search_path = '' as $body$ select $1 $body$;
-        create or replace function public.adpop_anon_callable_functions()
-          returns text[] language sql immutable as
-          $body$ select array['public.zz_delivery(text)']::text[] $body$;
-        grant usage on schema public to anon;
-        grant execute on function public.zz_delivery(text) to anon;
-      `);
-      await db.query(`select public.adpop_assert_privilege_rules()`);
-
-      const before = await db.query<{ granted: boolean }>(
-        `select has_function_privilege('anon', 'public.zz_delivery(text)', 'EXECUTE') as granted`,
-      );
-      expect(before.rows[0].granted).toBe(true);
-
-      // 0001 を流し直す(② と ③ が anon から剥がし、⑥ が配り直す)
       await db.exec(readFileSync(path.join(MIGRATIONS_DIR, MIGRATION_FILES[0]), "utf8"));
 
-      const after = await db.query<{ granted: boolean; usage: boolean }>(
-        `select has_function_privilege('anon', 'public.zz_delivery(text)', 'EXECUTE') as granted,
-                has_schema_privilege('anon', 'public', 'USAGE') as usage`,
-      );
-      expect(after.rows[0].granted, "0001 を流し直したら配信口が止まった").toBe(true);
-      expect(after.rows[0].usage, "0001 を流し直したら anon の USAGE が消えた").toBe(true);
+      await db.exec(`alter role ${DELIVERY_ROLE} bypassrls;`);
+      let message = "";
+      try {
+        await db.query(`select public.adpop_assert_privilege_rules()`);
+      } catch (e) {
+        message = (e as { message?: string }).message ?? "";
+      }
+      await db.exec(`alter role ${DELIVERY_ROLE} nobypassrls;`);
+      expect(message, "0001 の流し直しで関門が古い版へ戻った((g5) が消えた)").toContain("関門(g5)");
+      // 戻したら通る(戻し漏れをここで見つける)
       await db.query(`select public.adpop_assert_privilege_rules()`);
     } finally {
       await db.close();
@@ -1565,6 +1959,69 @@ describe("0001 の再実行", () => {
       );
       // 42710 = duplicate_object(型が既に在る)
       expect(code).toBe("42710");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("🔴 いちばん新しいマイグレーションは再実行できる(実データのある DB に流すため)", async () => {
+    const latest = MIGRATION_FILES[MIGRATION_FILES.length - 1];
+    const db = await createMigratedDb(START_ACLS[0]);
+    try {
+      await asUser(
+        db,
+        USER_A,
+        `insert into public.sites (owner_id, name, allowed_origins)
+           values ('${USER_A}', '再実行', array['https://lp.example.com']);
+         insert into public.popups (owner_id, site_id, name)
+           select '${USER_A}', id, '再実行' from public.sites where name = '再実行';`,
+      );
+      const before = await db.query<{ public_key: string }>(
+        `select public_key from public.popups where name = '再実行'`,
+      );
+
+      const code = await sqlstateOf(db, () =>
+        db.exec(readFileSync(path.join(MIGRATIONS_DIR, latest), "utf8")),
+      );
+      expect(code, `${latest} を流し直したら落ちた`).toBe("");
+
+      const after = await db.query<{ public_key: string }>(
+        `select public_key from public.popups where name = '再実行'`,
+      );
+      expect(after.rows[0].public_key, "流し直しで公開用の識別子が振り直された").toBe(
+        before.rows[0].public_key,
+      );
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("🔴 追い越されたマイグレーション(0003)を流し直すと、関門が止める", async () => {
+    /*
+      🔴 0003 は **anon に配信の口を配る**マイグレーションで、0004 がそれを閉じた。
+        流し直すと **0004 が閉じたものを開け直す**ことになる。
+        ⚠ 「再実行できる」を全マイグレーションについて主張しない —— **主張は最新の1本だけ**。
+      ✅ 静かに開き直らず、**関門が適用そのものを失敗させる**ことをここで固定する。
+    */
+    const db = await createMigratedDb(START_ACLS[0]);
+    try {
+      const code = await sqlstateOf(db, () =>
+        db.exec(readFileSync(path.join(MIGRATIONS_DIR, "0003_delivery.sql"), "utf8")),
+      );
+      /*
+        🔴 0003 は **anon の allow-list に2本を載せて anon へ配る**マイグレーション。
+          ⚠ 関門(c) は「宣言と実効が一致していればよい」なので、**これを何も言わずに通す**。
+          → **誰でも直接叩ける構造が、黙って戻る。**
+          ✅ そこで (g7) を足した:「**配信の関数を実行してよいのは配信ロールだけ**」。
+             allow-list の書き換えでは外せない不変条件なので、ここで止まる。
+      */
+      expect(code, "追い越されたマイグレーションが黙って通った").toBe("P0001");
+
+      // 🔴 開き直っていないこと(状態としても測る)
+      const r = await db.query<{ granted: boolean }>(
+        `select has_function_privilege('anon', 'public.adpop_site_config(text, text)', 'EXECUTE') as granted`,
+      );
+      expect(r.rows[0].granted, "anon へ配信の口が開き直った").toBe(false);
     } finally {
       await db.close();
     }

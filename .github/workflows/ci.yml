@@ -36,15 +36,19 @@ jobs:
       - name: typecheck
         run: npm run typecheck
 
-      # 🔴 ここに **anon の権限の実測**が入っている(supabase/tests/schema.test.ts)。
+      # 🔴 ここに **anon の権限の実測**(supabase/tests/schema.test.ts)と、
+      #   **埋め込みスクリプトを束ねて実行する検査**(tests/embed-safety.test.ts)が入っている。
+      #   ⚠ 後者は step の中で `scripts/build-embed.mjs` を別プロセスで走らせる
+      #     (esbuild は jsdom の中では動かない)。
       #   マイグレーションを PGlite へ通しで流し、
       #   「anon / service_role / PUBLIC が1つも触れないこと」「RLS が有効なこと」を毎 PR 測る。
       #   ⚠ Docker も Supabase の認証情報も要らない。
       - name: test
         run: npm test
 
-      # 埋め込みスクリプトの gzip 上限(要件書 §5-1)。⚠ PR1 では中身が空なので、
-      # まだ何も守っていない(判定そのものは tests/bundle-size.test.ts が両側で固定している)。
+      # 埋め込みスクリプトの gzip 上限(要件書 §5-1)。
+      # ⚠ PR2 で中身が入ったので、ここは**実物を測っている**(PR1 のあいだは空を測っていた)。
+      #   判定そのものは tests/bundle-size.test.ts が両側(超える / 超えない)で固定している。
       - name: 埋め込みスクリプトのサイズ上限
         run: npm run check:bundle-size
 
@@ -62,6 +66,12 @@ jobs:
   # **その再現が Supabase の実物とずれたら、検査は「ずれた前提」を測り続ける**(測る対象の取り違え)。
   # → anon キーと service_role キーで業務テーブルに当たり、**HTTP と SQLSTATE の両方**を突き合わせる。
   # ⚠ 接続失敗・鍵が取れない・想定外のコードは**全部不合格**(繋がらないことを緑にしない)。
+  #
+  # 🔴 **両向きを同じジョブで測る**:
+  #   ・どの API キーからも配信の関数に**届かない**こと(PostgREST は経路から外した)
+  #   ・**専用の Postgres ロールからは届く**こと(配り漏れると配信だけが静かに止まる)
+  #   ⚠ 前の版は「service_role の鍵で届くのは関数2本だけ」と書いていたが、
+  #     測っていたのは `/rest/v1` の `public` だけで、**Auth と Storage を1バイトも測っていなかった**。
   postgrest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -83,8 +93,14 @@ jobs:
       - name: supabase start
         run: supabase start
 
-      - name: 実物の PostgREST に anon / service_role で当たる
+      - name: 実物の PostgREST に anon / service_role で当たる(届かないこと)
         run: npm run check:postgrest
+
+      # 🔴 **逆向き**: 配信専用の Postgres ロールで実際につないで、
+      #   できること2件 / できないこと8件(表・auth.users・allow-list 外の関数・set role・create table)を撃つ。
+      #   ⚠ 「届かないこと」だけを測ると、**配り漏れ = 配信だけが静かに止まる**を検出できない。
+      - name: 配信専用ロールで DB へ直接つないで両向きを撃つ
+        run: npm run check:delivery-role
 
       - name: supabase stop
         if: always()
