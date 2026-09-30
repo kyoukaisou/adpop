@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   test: {
-    // PR1 に React のコンポーネント検査は無いので jsdom を入れない(PR3 で足す)。
+    // React のコンポーネント検査はまだ無い(管理画面 = PR3b)ので jsdom を既定にしない。
     environment: "node",
     // 端末のタイムゾーンで結果が変わる検査を作らないため、常に UTC で走らせる。
     env: { TZ: "UTC" },
@@ -17,19 +17,24 @@ export default defineConfig({
         1本なら、消した瞬間に収集が0件になって vitest 自体が失敗する。
     */
     include: ["**/*.test.ts"],
-    exclude: ["node_modules/**", ".next/**", "packages/embed/dist/**"],
+    exclude: ["node_modules/**", ".next/**", "packages/embed/dist/**", "dist/**", ".wrangler/**"],
     /*
-      マイグレーションを PGlite へ通しで流す検査は数秒かかる。
+      ローカルの D1(workerd)を起動する検査は数秒かかる。
       既定の 5000ms だと**負荷で落ちる**(2026-09-03 実測)ので 30 秒にする。
       ⚠ これは「遅い検査を許す」設定ではない。5秒を超える検査が増えたら検査の重さを疑う。
     */
     testTimeout: 30_000,
     /*
       ⚠ `hookTimeout` は `testTimeout` とは**別枠**(既定 10 秒)。
-        PGlite を起動してマイグレーションを通しで流すのは `beforeAll` の中なので、
+        D1 や Worker を起動するのは `beforeAll` の中なので、
         ここを上げないと **検査そのものは速いのに束ごと落ちる**(2026-09-08 に実測: 10秒で時間切れ)。
     */
     hookTimeout: 60_000,
+    /*
+      🔴 ローカルの D1 の型紙を、**本番と同じ `wrangler d1 migrations apply`** で1回だけ作る
+      (`tests/setup/d1-template.ts`)。D1 を使う検査はそれを複写して使う。
+    */
+    globalSetup: ["tests/setup/d1-template.ts"],
   },
   resolve: {
     alias: { "@": path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./src") },

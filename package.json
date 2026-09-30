@@ -13,20 +13,17 @@
     "test": "vitest run",
     "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "check:embed-independence": "node scripts/check-embed-independence.mjs",
-    "check:postgrest": "node scripts/check-postgrest-anon.mjs",
-    "supabase:start": "npx --no-install supabase start",
-    "supabase:stop": "npx --no-install supabase stop",
     "build:embed": "node scripts/build-embed.mjs",
-    "check:delivery-role": "node scripts/check-delivery-role.mjs"
+    "delivery:migrate:local": "wrangler d1 migrations apply adpop --local -c wrangler.delivery.jsonc",
+    "delivery:dev": "npm run build:embed && wrangler dev -c wrangler.delivery.jsonc"
   },
   "dependencies": {
     "next": "16.3.3",
-    "postgres": "^3.4.9",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.4",
+    "@cloudflare/workers-types": "^5.20260930.2",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -35,8 +32,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
     "jsdom": "^29.1.1",
-    "supabase": "2.111.0",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.145.0"
   }
 }

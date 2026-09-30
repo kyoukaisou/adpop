@@ -15,4 +15,9 @@ next-env.d.ts
 *.log
 
 # ビルドの出力(scripts/build-embed.mjs が作る)。ソースは packages/embed/src/
-public/embed/
+dist/delivery-assets/
+
+# 検査が一時的に作るファイル
+.tmp-*/
+.wrangler/
+.dev.vars

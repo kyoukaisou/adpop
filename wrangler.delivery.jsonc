@@ -1,0 +1,29 @@
+// 配信の Worker(`/api/v1/config`・`/api/v1/events`・`/embed/*`)。
+// 管理画面は別の Worker(PR3b)。**配信の不具合と管理画面の不具合を切り離す**ため(D-296 3)。
+//
+// ⚠ `database_id` はまだ無い(Cloudflare 側に D1 を作っていない)。ローカル(wrangler dev / Miniflare)は
+//   この値を識別子として使うだけなので、形が UUID ならそのまま動く。
+//   本番に出すときは `wrangler d1 create adpop` の出力の id に差し替える(README「Cloudflare に立てる」)。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "adpop-delivery",
+  "main": "src/delivery/worker.ts",
+  "compatibility_date": "2026-09-30",
+  // 🔴 静的配信: 埋め込みスクリプト(`npm run build:embed` の出力)。
+  //   ファイルがある URL は Worker を起こさずに配る(課金されない。Workers の公式 pricing)。
+  "assets": { "directory": "./dist/delivery-assets" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "adpop",
+      "database_id": "00000000-0000-4000-8000-000000000000",
+      "migrations_dir": "db/migrations"
+    }
+  ],
+  // 🔴 **呼び出しのログ(invocation logs)を Cloudflare に残さない**(Codex #4 Blocker 3・本部裁定)。
+  //   呼び出しのログは「Request, Response, and related metadata」を保存する(Workers Logs の公式文書)。
+  //   README の「IP アドレスを保存しない」と両立させるため切る。残すのは、こちらが console に出す
+  //   **匿名化したエラーの1行だけ**(src/delivery/log.ts)。
+  //   ⚠ invocation_logs を切ったときに console の出力が保存されるかは、公式文書に書かれていない(未確認)。
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}
