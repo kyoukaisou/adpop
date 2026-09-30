@@ -15,8 +15,9 @@ export default defineConfig([
     "packages/embed/dist/**",
     // ⚠ `scripts/build-embed.mjs` が書き出す**束ねた出力**(ソースは packages/embed/src)。
     //   ここを見ると、minify した1行に対して警告が出るだけで、誰も直せない。
-    "public/embed/**",
-    "supabase/.temp/**",
+    "dist/**",
+    ".wrangler/**",
+    ".tmp-*/**",
   ]),
   nextVitals,
   nextTs,

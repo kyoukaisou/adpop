@@ -12,7 +12,13 @@ import { gzipSync } from "node:zlib";
 export const KB = 1024;
 
 /**
- * ⚠ `publicOut` は **Next.js が配る場所**(`public/` の下は URL の root に出る)。
+ * 配信の Worker が静的に配るディレクトリ(`wrangler.delivery.jsonc` の `assets.directory`)。
+ * ⚠ 写しが wrangler の設定にもあるので、`tests/embed-safety.test.ts` が突き合わせる。
+ */
+export const DELIVERY_ASSETS_DIR = "dist/delivery-assets";
+
+/**
+ * ⚠ `publicOut` は **配信の Worker が配る場所**(`DELIVERY_ASSETS_DIR` の下が URL の root に出る)。
  *   🔴 埋め込みタグと本体の読み込みは、**この位置に置かれている前提**で書いてある。
  *     写しが2つ(ここと `packages/embed/src/loader.ts` の `RUNTIME_PATH`)在るので、
  *     **`tests/embed-safety.test.ts` が機械で突き合わせる**。
@@ -22,7 +28,7 @@ export const BUNDLES = [
     id: "loader",
     entry: "packages/embed/src/loader.ts",
     out: "packages/embed/dist/t.js",
-    publicOut: "public/embed/t.js",
+    publicOut: "dist/delivery-assets/embed/t.js",
     url: "/embed/t.js",
     label: "ローダ t.js(全訪問者に配る)",
     gzipLimit: 5 * KB,
@@ -31,7 +37,7 @@ export const BUNDLES = [
     id: "runtime",
     entry: "packages/embed/src/runtime.ts",
     out: "packages/embed/dist/adpop.js",
-    publicOut: "public/embed/adpop.js",
+    publicOut: "dist/delivery-assets/embed/adpop.js",
     url: "/embed/adpop.js",
     label: "本体(発火してから取りに行く)",
     gzipLimit: 20 * KB,

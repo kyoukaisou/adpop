@@ -1,0 +1,239 @@
+/*
+  配信の2つの口(設定を返す・計測イベントを入れる)。**未認証の入口から DB へ届く唯一の経路。**
+
+  旧版(PostgreSQL)では `adpop_site_config` / `adpop_record_event`(security definer の関数)が持っていた判定を、
+  そのまま TypeScript に移した。**判定の順序と「断りの理由」は旧版と同じ**(`tests/d1-delivery.test.ts` が固定)。
+
+  🔴 **fail-closed**: サイトキー・Origin・許可ドメイン・稼働中のポップ・配れるバリアントの
+    どれか1つでも欠けたら `null` / `not_allowed`。**サイトの不在と Origin の不一致を区別しない。**
+  🔴 **返す情報を最小に**: 内部 id・owner_id・他サイトの情報を返さない。`content` は名指しした鍵だけ。
+  🔴 **所有者を呼び出し側から指定させない**: 書く行の owner_id / site_id は、サイトキーから引いた行の値だけを使う。
+  ⚠ D1 のバインドはネットワークに出ていないので、旧版の「関数を直接叩いてルートの守りを迂回する」経路は無い。
+    **守りは1か所(ここ)**で、旧版のように DB 側にもう1枚置いてはいない(置けない)。
+*/
+import type { D1Database } from "@cloudflare/workers-types";
+import { isHex32, isOrigin, isUuid, normalizePageUrl } from "./shapes";
+
+/** 本文の上限(旧版と同じ 4096 バイト)。⚠ ルートは回線のバイト、ここは正規化した JSON のバイトを数える。 */
+export const MAX_EVENT_JSON_BYTES = 4096;
+
+const TRIGGER_ORDER = ["back", "scroll", "idle", "dwell", "visibility", "exit_intent"] as const;
+const RECEIVABLE_KINDS = ["fire", "suppressed", "impression", "click", "close"] as const;
+
+export type SiteConfig = {
+  v: 1;
+  popup: {
+    key: string;
+    minDisplayDelaySeconds: number;
+    frequency: { suppressDays: number; sessionImpressions: number; postConversionDays: number };
+    triggers: Array<{ kind: string; threshold: number | null }>;
+    variants: Array<{
+      key: string;
+      kind: string;
+      weight: number;
+      content: Record<string, unknown>;
+      destinationUrl: string;
+    }>;
+  };
+};
+
+/*
+  🔴 稼働中のポップを「サイトキー × 許可ドメイン」から引く副問い合わせ。**3つの問い合わせが同じ条件を使う。**
+    ⚠ `limit 1` は選択ではなく検算(稼働中は1サイト1つ = 一意索引)。
+*/
+const ACTIVE_POPUP = `
+  select p.id from popups p
+  join sites s on s.id = p.site_id
+  join site_allowed_origins o on o.site_id = s.id and o.origin = ?2
+  where s.site_key = ?1 and p.status = 'active'
+  limit 1`;
+
+type PopupRow = {
+  public_key: string;
+  min_display_delay_seconds: number;
+  suppress_days: number;
+  session_impressions: number;
+  post_conversion_days: number;
+};
+type TriggerRow = { kind: string; threshold: number | null };
+type VariantRow = { public_key: string; kind: string; weight: number; content: string; destination_url: string };
+
+/** 表示に要る鍵だけを名指しで取り出す(`content` を丸ごと渡さない)。null と欠けた鍵は落とす。 */
+function pickContent(raw: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  const source = parsed as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["headline", "body", "buttonLabel"]) {
+    if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
+  }
+  return out;
+}
+
+/** サイトキー + Origin → いま有効なポップの設定。合わなければ `null`(fail-closed)。 */
+export async function siteConfig(db: D1Database, siteKey: string, origin: string): Promise<SiteConfig | null> {
+  if (!isHex32(siteKey) || !isOrigin(origin)) return null;
+
+  // ⚠ batch は1つのトランザクション。3つの読み取りが同じ時点を見る
+  const [popupResult, triggerResult, variantResult] = await db.batch([
+    db
+      .prepare(
+        `select public_key, min_display_delay_seconds, suppress_days, session_impressions, post_conversion_days
+         from popups where id = (${ACTIVE_POPUP})`,
+      )
+      .bind(siteKey, origin),
+    db
+      .prepare(`select kind, threshold from popup_triggers where enabled = 1 and popup_id = (${ACTIVE_POPUP})`)
+      .bind(siteKey, origin),
+    /*
+      ⚠ 配らないもの: アーカイブ済み / 画像型(埋め込みがまだ描けない = PR4)/ 🕐 chatbot(v1.1)。
+        「配れる」の定義は `admin.ts` の稼働の切り替えと同じ(DELIVERABLE_VARIANT)。
+      ⚠ 並びは決定的だが「作った順」とは限らない(同じ時刻の行は id の順)。PR5 の割り当てはこの並びに依存させない。
+    */
+    db
+      .prepare(
+        `select public_key, kind, weight, content, destination_url from variants
+         where popup_id = (${ACTIVE_POPUP}) and ${DELIVERABLE_VARIANT}
+         order by created_at, id`,
+      )
+      .bind(siteKey, origin),
+  ]);
+
+  const popup = (popupResult.results as PopupRow[])[0];
+  if (popup === undefined) return null;
+  const variants = variantResult.results as VariantRow[];
+  if (variants.length === 0) return null;
+  const triggers = (triggerResult.results as TriggerRow[]).sort(
+    (a, b) =>
+      TRIGGER_ORDER.indexOf(a.kind as (typeof TRIGGER_ORDER)[number]) -
+      TRIGGER_ORDER.indexOf(b.kind as (typeof TRIGGER_ORDER)[number]),
+  );
+
+  return {
+    v: 1,
+    popup: {
+      key: popup.public_key,
+      minDisplayDelaySeconds: popup.min_display_delay_seconds,
+      frequency: {
+        suppressDays: popup.suppress_days,
+        sessionImpressions: popup.session_impressions,
+        postConversionDays: popup.post_conversion_days,
+      },
+      triggers: triggers.map((t) => ({ kind: t.kind, threshold: t.threshold })),
+      variants: variants.map((v) => ({
+        key: v.public_key,
+        kind: v.kind,
+        weight: v.weight,
+        content: pickContent(v.content),
+        destinationUrl: v.destination_url,
+      })),
+    },
+  };
+}
+
+/** 配信に載るバリアントの条件(SQL の断片)。**配信と稼働の切り替えが同じ1つを使う。** */
+export const DELIVERABLE_VARIANT = "archived_at is null and kind = 'text'";
+
+export type RecordOutcome = { ok: true; stored: boolean } | { ok: false; reason: string };
+
+/**
+ * 計測イベントを1件入れる。
+ * 🔴 断りの理由は旧版と同じ。**サイトキーと Origin の断りは `not_allowed` の1つにまとめる**
+ *   (サイトキーの実在を呼び出し側が判別できないように)。その後の理由(popup / variant / 形)は、
+ *   そのサイトの認可を通った後なので分けて返す。
+ */
+export async function recordEvent(
+  db: D1Database,
+  siteKey: string,
+  origin: string,
+  event: Record<string, unknown>,
+): Promise<RecordOutcome> {
+  if (typeof event !== "object" || event === null || Array.isArray(event)) return { ok: false, reason: "event" };
+  if (new TextEncoder().encode(JSON.stringify(event)).byteLength > MAX_EVENT_JSON_BYTES) {
+    return { ok: false, reason: "too_large" };
+  }
+  // 🔴 値は全部 JSON の文字列(数値や真偽値を文字列として通さない)
+  if (Object.values(event).some((value) => typeof value !== "string")) return { ok: false, reason: "types" };
+  const field = (name: string): string | null => {
+    const value = event[name] as string | undefined;
+    return value === undefined || value === "" ? null : value;
+  };
+
+  if (!isHex32(siteKey) || !isOrigin(origin)) return { ok: false, reason: "not_allowed" };
+  const site = await db
+    .prepare(
+      `select s.id, s.owner_id from sites s
+       join site_allowed_origins o on o.site_id = s.id and o.origin = ?2
+       where s.site_key = ?1`,
+    )
+    .bind(siteKey, origin)
+    .first<{ id: string; owner_id: string }>();
+  if (site === null) return { ok: false, reason: "not_allowed" };
+
+  // 🔴 ポップとバリアントは「公開用の識別子 → そのサイト配下」でしか解決しない(内部 id を受け取らない)
+  const popup = await db
+    .prepare(`select id from popups where site_id = ?1 and public_key = ?2`)
+    .bind(site.id, field("popupKey") ?? "")
+    .first<{ id: string }>();
+  if (popup === null) return { ok: false, reason: "popup" };
+
+  let variantId: string | null = null;
+  const variantKey = field("variantKey");
+  if (variantKey !== null) {
+    const variant = await db
+      .prepare(`select id from variants where popup_id = ?1 and public_key = ?2`)
+      .bind(popup.id, variantKey)
+      .first<{ id: string }>();
+    if (variant === null) return { ok: false, reason: "variant" };
+    variantId = variant.id;
+  }
+
+  const pageUrl = normalizePageUrl(event.pageUrl);
+  if (!pageUrl.ok) return { ok: false, reason: "pageUrl" };
+
+  const visitor = field("visitorHash");
+  if (visitor !== null && !isHex32(visitor)) return { ok: false, reason: "visitorHash" };
+
+  const impressionId = field("impressionId");
+  if (impressionId !== null && !isUuid(impressionId.toLowerCase())) return { ok: false, reason: "impressionId" };
+
+  const kind = field("kind");
+  // 🔴 `conversion` はここでは受けない(CV 計測タグは PR6 の別の入口)
+  if (kind === null || !(RECEIVABLE_KINDS as readonly string[]).includes(kind)) return { ok: false, reason: "kind" };
+
+  try {
+    const result = await db
+      .prepare(
+        `insert into events (owner_id, site_id, popup_id, variant_id, kind, trigger_kind,
+                             impression_id, visitor_hash, device, close_reason, page_url)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         on conflict (site_id, impression_id, kind) where kind in ('impression', 'close') do nothing`,
+      )
+      .bind(
+        site.owner_id,
+        site.id,
+        popup.id,
+        variantId,
+        kind,
+        field("triggerKind"),
+        impressionId === null ? null : impressionId.toLowerCase(),
+        visitor,
+        field("device"),
+        field("closeReason"),
+        pageUrl.value,
+      )
+      .run();
+    // 🔴 重複排除で入らなかったのは「失敗」ではない(stored = false)
+    return { ok: true, stored: result.meta.changes === 1 };
+  } catch (error) {
+    // 形の制約(CHECK / 外部キー / NOT NULL)に当たった。⚠ どの制約かは返さない
+    if (error instanceof Error && error.message.includes("SQLITE_CONSTRAINT")) return { ok: false, reason: "shape" };
+    // 🔴 それ以外(DB に届かない等)は「形が悪い」にしない。呼び出し側が 502 にする
+    throw error;
+  }
+}

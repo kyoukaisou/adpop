@@ -15,7 +15,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { BUNDLES } from "../scripts/bundle-size.mjs";
+import { BUNDLES, DELIVERY_ASSETS_DIR } from "../scripts/bundle-size.mjs";
+import { readDeliveryWranglerConfig } from "./helpers/wrangler-config";
 /*
   ⚠ **`packages/embed/src/loader` を import しない。**
     あれは読み込んだ時点で**自分で起動する**(本番と同じ経路)ので、
@@ -571,13 +572,17 @@ describe("写しの突き合わせ", () => {
     */
     const runtime = BUNDLES.find((bundle) => bundle.id === "runtime");
     expect(runtime?.url).toBe(RUNTIME_PATH);
-    expect(runtime?.publicOut).toBe(`public${RUNTIME_PATH}`);
+    expect(runtime?.publicOut).toBe(`${DELIVERY_ASSETS_DIR}${RUNTIME_PATH}`);
   });
 
-  it("ビルドの出力先が Next.js の配る場所(`public/`)の下にある", () => {
+  it("ビルドの出力先が配信の Worker の配る場所の下にある", () => {
     for (const bundle of BUNDLES) {
-      expect(bundle.publicOut.startsWith("public/")).toBe(true);
-      expect(bundle.publicOut).toBe(`public${bundle.url}`);
+      expect(bundle.publicOut).toBe(`${DELIVERY_ASSETS_DIR}${bundle.url}`);
     }
+  });
+
+  it("🔴 配信の Worker の静的配信のディレクトリが、ビルドの出力先と同じ", () => {
+    // ⚠ ここがずれると t.js が 404 になり、**どの LP でも何も起きなくなる**
+    expect(readDeliveryWranglerConfig().assets?.directory).toBe(`./${DELIVERY_ASSETS_DIR}`);
   });
 });
