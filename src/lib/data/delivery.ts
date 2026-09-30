@@ -3,7 +3,8 @@
   (worker.ts が import しているのはこの2つ。D1 のメソッドを直接呼んでいないことは tests/d1-access-boundary.test.ts)。
 
   旧版(PostgreSQL)では `adpop_site_config` / `adpop_record_event`(security definer の関数)が持っていた判定を、
-  TypeScript に移した。**旧版の検査を全部移して、同じ理由で断ることを確かめた**(`tests/d1-delivery.test.ts`)。
+  TypeScript に移した。旧版の検査のうち D1 でも意味があるものを移して、同じ理由で断ることを確かめた
+  (`tests/d1-delivery.test.ts`。移していないものはその冒頭)。
   ⚠ 違いを1つ知っている: 表示 ID は「ハイフン付き・16進」の形だけを受ける(旧版の uuid 型は `{…}` やハイフン無しも受けた)。
 
   🔴 **fail-closed**: サイトキー・Origin・許可ドメイン・稼働中のポップ・配れるバリアントの
