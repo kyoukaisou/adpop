@@ -3,11 +3,15 @@
 // 🔴 **D1 の値に触ってよいのは `src/lib/data/` の中だけ**(所有者の分離の規則④)。
 //   データ層の外で D1 に触れれば、所有者の条件を入れ忘れた SQL がそのまま通る。
 //
-// 🔴🔴 **判定は「呼び出しの形」ではなく「値の型」**(Codex #4 Blocker 2)。
+// 🔴 **これは網羅ではない**(README)。リポジトリの中の静的な検査は、編集できる人には外せる。
+//   **実際の守りは、データ層の関数(所有者の条件)と D1 のトリガ**で、ここは「うっかり外で触る」を早く見つける補助。
+//
+// 🔴🔴 **判定は「呼び出しの形」ではなく「値の型」**(Codex #4 Blocker 2 / 2巡目)。
 //   前の版は `db.prepare(...)` の形(呼び出し先が直接のプロパティ参照)だけを数えていたので、
 //   `const { prepare } = db` / `db["prepare"](...)` / `db.prepare.bind(db)` で抜けられた。
-//   → いまは **`src/` のデータ層の外にある識別子のうち、型が D1 のもの**(D1 の値・D1 のメソッド・
-//     それらを含む合併型)を**1つでも**見つけたら落とす。参照・分割代入・添字・引数渡しの区別をしない。
+//   2巡目: 識別子だけを見ていたので、`env["DB"]!["prepare"](…)["run"]()`(文字列の添字の連なり)を抜けられた。
+//   → いまは **`src/` のデータ層の外にある、すべての式(識別子・プロパティ参照・添字・呼び出し・非 null・as など)のうち、
+//     型に D1(D1 の値・D1 のメソッド・それらを含む合併型)を含むもの**を1つでも見つけたら落とす。
 //   ⚠ 型の位置(型注釈・import type)は数えない。Worker は D1 を「バインドの入れ物」ごと渡すので、D1 の値に触らない。
 // ⚠ 限界(【限界】の it で固定): **一度も D1 の型を持たずに `any` から取り出した値**は見えない
 //   (例: `(env as any).DB.prepare(...)` —— `env` も `.DB` も型が D1 ではない)。
@@ -51,8 +55,9 @@ function declaredInD1(symbol: ts.Symbol | undefined): boolean {
   });
 }
 
-function isD1Type(type: ts.Type): boolean {
-  if (type.isUnion() || type.isIntersection()) return type.types.some(isD1Type);
+function isD1Type(type: ts.Type | null): boolean {
+  if (type === null) return false;
+  if (type.isUnion() || type.isIntersection()) return type.types.some((t) => isD1Type(t));
   return declaredInD1(type.aliasSymbol) || declaredInD1(type.getSymbol());
 }
 
@@ -66,7 +71,21 @@ function insideTypeOrImport(node: ts.Node): boolean {
 
 type Site = { file: string; line: number; text: string };
 
-/** `files` の中で、型が D1 の識別子を返す。 */
+/**
+ * ⚠ `getTypeAtLocation` は、トークン(`;` や EOF など)や一部の宣言で例外を投げる(2026-10-01 実測)。
+ *   トークン(識別子以外)とファイル全体は飛ばす。それ以外で投げたら、**検査ごと落ちる**(黙って D1 ではない扱いにしない)。
+ */
+function typeOf(checker: ts.TypeChecker, node: ts.Node): ts.Type | null {
+  if (node.kind >= ts.SyntaxKind.FirstToken && node.kind <= ts.SyntaxKind.LastToken && !ts.isIdentifier(node)) return null;
+  if (ts.isSourceFile(node)) return null;
+  return checker.getTypeAtLocation(node);
+}
+
+/**
+ * `files` の中で、**型に D1 を含む式・識別子**を返す(Codex #4 2巡目: 識別子だけだと
+ * `env["DB"]!["prepare"](…)["run"]()` のような添字の連なりを抜けられた)。
+ * ⚠ 見るのは全部のノード(型の位置と import を除く)。式でないノードは型が D1 にならないので数に入らない。
+ */
 function d1References(root: string, files: string[]): Site[] {
   const prog = program(files);
   const checker = prog.getTypeChecker();
@@ -74,11 +93,11 @@ function d1References(root: string, files: string[]): Site[] {
   for (const source of prog.getSourceFiles()) {
     if (!files.includes(path.resolve(source.fileName))) continue;
     const visit = (node: ts.Node): void => {
-      if (ts.isIdentifier(node) && !insideTypeOrImport(node) && isD1Type(checker.getTypeAtLocation(node))) {
+      if (!ts.isTypeNode(node) && !insideTypeOrImport(node) && isD1Type(typeOf(checker, node))) {
         found.push({
           file: path.relative(root, source.fileName),
           line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1,
-          text: node.text,
+          text: node.getText(source).slice(0, 60),
         });
       }
       ts.forEachChild(node, visit);
@@ -108,7 +127,7 @@ function withFixture<T>(source: string, run: (file: string, dir: string) => T): 
 }
 
 describe("D1 の値に触る場所", () => {
-  it("🔴 src/ のうち、型が D1 の値に触っているのは src/lib/data/ だけ", () => {
+  it("🔴 src/ のうち、型に D1 を含む式が現れるのは src/lib/data/ の中だけ(網羅ではない。限界は下の【限界】)", () => {
     const sites = d1References(ROOT, sourceFiles(path.join(ROOT, "src")));
     expect(sites.length, "データ層の中でも1つも見つからない = 型で見分けられていない").toBeGreaterThan(0);
     expect(sites.filter((site) => !site.file.startsWith(DATA_DIR))).toEqual([]);
@@ -122,6 +141,8 @@ describe("D1 の値に触る場所", () => {
     ["変数への別名", `const again = db; void again;`],
     ["データ層の外の関数への引数渡し", `function elsewhere(x: unknown) { return x; } elsewhere(db);`],
     ["バインドの入れ物から取り出す", `const fromEnv = env.DB; void fromEnv;`],
+    ["文字列の添字と非 null アサーションの連なり(Codex 2巡目)", `void env["DB"]!["prepare"]("select 1")["run"]();`],
+    ["括弧と as で包んだ D1 の値", `void (env.DB as D1Database)["prepare"]("select 1");`],
   ])("🔴 検出器の前提: %s を見つける", (_label, body) => {
     const sites = withFixture(
       `import type { D1Database } from "@cloudflare/workers-types";\nexport function leak(db: D1Database, env: { DB?: D1Database }) {\n${body}\n}\n`,

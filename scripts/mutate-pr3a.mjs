@@ -258,6 +258,15 @@ export const MUTATIONS = [
     "tests": [
       "tests/delivery-log.test.ts"
     ]
+  },
+  {
+    "name": "W3 Worker が文字列の添字と非 null で D1 に触る(Codex 2巡目の形)",
+    "file": "src/delivery/worker.ts",
+    "from": "  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
+    "to": "  if (route === \"events\" && request.headers.get(\"x-debug\") === \"1\") await env[\"DB\"]![\"prepare\"](\"select 1\")[\"run\"]();\n  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
+    "tests": [
+      "tests/d1-access-boundary.test.ts"
+    ]
   }
 ];
 
