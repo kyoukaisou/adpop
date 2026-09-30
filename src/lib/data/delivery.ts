@@ -78,9 +78,33 @@ function pickContent(raw: string): Record<string, unknown> {
   return out;
 }
 
+/**
+ * 配信の Worker が受け取るバインド。🔴 **Worker は D1 の値そのものに触らず、この入れ物ごと渡す**
+ *   (データ層の外で D1 の値を参照していないことを `tests/d1-access-boundary.test.ts` が型で見る)。
+ */
+export type DeliveryBindings = { DB?: D1Database };
+
+export class MissingDatabaseError extends Error {
+  constructor() {
+    super("D1 binding `DB` is missing");
+    this.name = "MissingDatabaseError";
+  }
+}
+
+/** バインドが在るか(無い = 運用の設定の問題。Worker は 503 にする)。 */
+export function hasDatabase(env: DeliveryBindings): boolean {
+  return env.DB !== undefined;
+}
+
+function database(env: DeliveryBindings): D1Database {
+  if (env.DB === undefined) throw new MissingDatabaseError();
+  return env.DB;
+}
+
 /** サイトキー + Origin → いま有効なポップの設定。合わなければ `null`(fail-closed)。 */
-export async function siteConfig(db: D1Database, siteKey: string, origin: string): Promise<SiteConfig | null> {
+export async function siteConfig(env: DeliveryBindings, siteKey: string, origin: string): Promise<SiteConfig | null> {
   if (!isHex32(siteKey) || !isOrigin(origin)) return null;
+  const db = database(env);
 
   // ⚠ batch は1つのトランザクション。3つの読み取りが同じ時点を見る
   const [popupResult, triggerResult, variantResult] = await db.batch([
@@ -151,7 +175,7 @@ export type RecordOutcome = { ok: true; stored: boolean } | { ok: false; reason:
  *   そのサイトの認可を通った後なので分けて返す。
  */
 export async function recordEvent(
-  db: D1Database,
+  env: DeliveryBindings,
   siteKey: string,
   origin: string,
   event: Record<string, unknown>,
@@ -168,6 +192,7 @@ export async function recordEvent(
   };
 
   if (!isHex32(siteKey) || !isOrigin(origin)) return { ok: false, reason: "not_allowed" };
+  const db = database(env);
   const site = await db
     .prepare(
       `select s.id, s.owner_id from sites s

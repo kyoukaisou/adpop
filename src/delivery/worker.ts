@@ -12,7 +12,6 @@
   🔴 **fail-closed**: 設定が引けない・DB に届かない・許可されていない —— どれも「ポップが出ないだけ」。
   ⚠ Node 固有の API を使わない(workerd で動く。`tests/d1-worker-runtime.test.ts` が実物の workerd で起動する)。
 */
-import type { D1Database } from "@cloudflare/workers-types";
 import {
   corsHeaders,
   MAX_EVENT_BODY_BYTES,
@@ -22,9 +21,14 @@ import {
   readBodyWithLimit,
   siteKeyProblem,
 } from "../lib/api/http";
-import { recordEvent, siteConfig } from "../lib/data/delivery";
+import { logFailure } from "./log";
+import { hasDatabase, recordEvent, siteConfig, type DeliveryBindings } from "../lib/data/delivery";
 
-export type DeliveryEnv = { DB?: D1Database };
+/**
+ * 🔴 **この Worker は D1 の値に1度も触らない**(`env.DB` を読まない)。バインドの入れ物ごとデータ層へ渡す。
+ *   データ層の外で D1 の値を参照していないことは `tests/d1-access-boundary.test.ts` が型で見る。
+ */
+export type DeliveryEnv = DeliveryBindings;
 
 function json(body: unknown, status: number, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -37,13 +41,16 @@ function deny(status: number, reason: string): Response {
   return json({ ok: false, reason }, status);
 }
 
-/** DB に届かなかった。**握り潰さない** —— 訪問者には「出ないだけ」だが、ログには残す。 */
+/**
+ * DB に届かなかった。**握り潰さない** —— 訪問者には「出ないだけ」だが、ログには残す。
+ * 🔴 ログは**匿名化した1行だけ**(src/delivery/log.ts)。呼び出しのログは設定で切ってある(wrangler.delivery.jsonc)。
+ */
 function upstream(where: string, error: unknown): Response {
-  console.error(`[adpop] ${where} failed: ${error instanceof Error ? error.message : String(error)}`);
+  logFailure(where, error);
   return deny(502, "upstream");
 }
 
-async function handleConfig(request: Request, db: D1Database): Promise<Response> {
+async function handleConfig(request: Request, env: DeliveryEnv): Promise<Response> {
   const origin = request.headers.get("origin");
   const originIssue = originProblem(origin);
   if (originIssue) return deny(originIssue.status, originIssue.reason);
@@ -53,7 +60,7 @@ async function handleConfig(request: Request, db: D1Database): Promise<Response>
 
   let config;
   try {
-    config = await siteConfig(db, siteKey as string, origin as string);
+    config = await siteConfig(env, siteKey as string, origin as string);
   } catch (error) {
     return upstream("config", error);
   }
@@ -62,7 +69,7 @@ async function handleConfig(request: Request, db: D1Database): Promise<Response>
   return json(config, 200, corsHeaders(origin as string));
 }
 
-async function handleEvents(request: Request, db: D1Database): Promise<Response> {
+async function handleEvents(request: Request, env: DeliveryEnv): Promise<Response> {
   const origin = request.headers.get("origin");
   const originIssue = originProblem(origin);
   if (originIssue) return deny(originIssue.status, originIssue.reason);
@@ -77,7 +84,7 @@ async function handleEvents(request: Request, db: D1Database): Promise<Response>
 
   let outcome;
   try {
-    outcome = await recordEvent(db, siteKey as string, origin as string, parsed.value);
+    outcome = await recordEvent(env, siteKey as string, origin as string, parsed.value);
   } catch (error) {
     return upstream("events", error);
   }
@@ -98,11 +105,11 @@ export async function handleDelivery(request: Request, env: DeliveryEnv): Promis
   if (route === "config" && request.method !== "GET") return deny(405, "method");
   if (route === "events" && request.method !== "POST") return deny(405, "method");
   // 🔴 バインドが無い = こちらの設定の問題(運用者に見せる)。訪問者には「出ないだけ」
-  if (env.DB === undefined) {
+  if (!hasDatabase(env)) {
     console.error("[adpop] D1 binding `DB` is missing");
     return deny(503, "config");
   }
-  return route === "config" ? handleConfig(request, env.DB) : handleEvents(request, env.DB);
+  return route === "config" ? handleConfig(request, env) : handleEvents(request, env);
 }
 
 const deliveryWorker = {

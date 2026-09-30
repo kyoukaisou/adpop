@@ -23,7 +23,11 @@ export function classifyD1Error(error: unknown): DataFailure {
     return { kind: "limit", target: limit[1] as LimitTarget };
   }
   if (message.includes("adpop:immutable:")) return { kind: "immutable" };
-  if (message.includes("SQLITE_CONSTRAINT_UNIQUE") || message.includes("SQLITE_CONSTRAINT_PRIMARYKEY")) {
+  if (
+    message.includes("adpop:conflict:") ||
+    message.includes("SQLITE_CONSTRAINT_UNIQUE") ||
+    message.includes("SQLITE_CONSTRAINT_PRIMARYKEY")
+  ) {
     return { kind: "unique" };
   }
   if (message.includes("SQLITE_CONSTRAINT_FOREIGNKEY")) return { kind: "foreign_key" };

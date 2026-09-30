@@ -113,7 +113,10 @@ describe("計測イベントの形(要件書 §4-7・§6 裁定4)", () => {
   it("🔴 表示は同じサイト × 表示 ID で1回だけ(一意索引)", async () => {
     const impression = { kind: "impression", trigger_kind: "exit_intent", variant_id: ids.variant, impression_id: crypto.randomUUID() };
     expect(await event(impression)).toBe("");
-    expect(await event(impression)).toContain("SQLITE_CONSTRAINT_UNIQUE");
+    // ⚠ 2回目は断りではなく**黙って捨てる**(BEFORE INSERT の RAISE(IGNORE)。データ層の ON CONFLICT DO NOTHING と同じ意味)
+    expect(await event(impression)).toBe("");
+    const c = await db.prepare("select count(*) as c from events where impression_id = ?1").bind(impression.impression_id).first<{ c: number }>();
+    expect(c?.c).toBe(1);
   });
 
   it("🔴 書いたイベントは書き換えられない", async () => {
@@ -142,7 +145,7 @@ describe("ポップ・トリガ", () => {
       await errorOf(() =>
         db.prepare("insert into popup_triggers (owner_id, popup_id, kind) values (?1, ?2, 'scroll')").bind(OWNER_A, ids.popup).run(),
       ),
-    ).toContain("SQLITE_CONSTRAINT_PRIMARYKEY");
+    ).toContain("adpop:conflict:popup_triggers");
     expect(
       await errorOf(() => db.prepare("update popup_triggers set kind = 'scroll' where popup_id = ?1 and kind = 'back'").bind(ids.popup).run()),
     ).toContain("adpop:immutable:popup_triggers");
@@ -168,7 +171,7 @@ describe("ポップ・トリガ", () => {
     const other = crypto.randomUUID();
     await db.prepare("insert into popups (id, owner_id, site_id, public_key, name, status) values (?1, ?2, ?3, ?4, 'x', 'active')").bind(other, OWNER_A, ids.site, hex32()).run();
     expect(await errorOf(() => db.prepare("update popups set status = 'active' where id = ?1").bind(ids.popup).run())).toContain(
-      "SQLITE_CONSTRAINT_UNIQUE",
+      "adpop:conflict:popups",
     );
     expect(
       await errorOf(() => db.prepare("update popups set archived_at = '2026-01-01T00:00:00.000Z' where id = ?1").bind(other).run()),

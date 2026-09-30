@@ -42,16 +42,6 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "M4 稼働中は1つ の一意索引を外す",
-    "file": "db/migrations/0001_schema.sql",
-    "from": "create unique index popups_one_active_per_site on popups (site_id) where status = 'active';",
-    "to": "create index popups_one_active_per_site on popups (site_id) where status = 'active';",
-    "tests": [
-      "tests/d1-schema.test.ts",
-      "tests/d1-semantics.test.ts"
-    ]
-  },
-  {
     "name": "M5 親の付け替えの禁止を外す",
     "file": "db/migrations/0001_schema.sql",
     "from": "when new.id is not old.id or new.owner_id is not old.owner_id\n  or new.site_id is not old.site_id or new.public_key is not old.public_key",
@@ -115,10 +105,10 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "W1 Worker から D1 を直接呼ぶ",
+    "name": "W1 Worker が env から D1 を分割代入で取り出す",
     "file": "src/delivery/worker.ts",
-    "from": "  return route === \"config\" ? handleConfig",
-    "to": "  await env.DB.prepare(\"select 1\").first();\n  return route === \"config\" ? handleConfig",
+    "from": "  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
+    "to": "  const { DB } = env;\n  void DB;\n  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
     "tests": [
       "tests/d1-access-boundary.test.ts"
     ]
@@ -158,6 +148,115 @@ export const MUTATIONS = [
     "to": "",
     "tests": [
       "tests/d1-delivery.test.ts"
+    ]
+  },
+  {
+    "name": "M4 稼働にする UPDATE のトリガを外す(一意索引だけが残る)",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when new.status = 'active'\n  and exists (select 1 from popups where site_id = new.site_id and status = 'active' and id <> new.id)",
+    "to": "when 0 and new.status = 'active'\n  and exists (select 1 from popups where site_id = new.site_id and status = 'active' and id <> new.id)",
+    "tests": [
+      "tests/d1-replace.test.ts",
+      "tests/d1-schema.test.ts"
+    ]
+  },
+  {
+    "name": "R1 サイトの REPLACE の守りを外す",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when exists (select 1 from sites where id = new.id or site_key = new.site_key)",
+    "to": "when 0 and exists (select 1 from sites where id = new.id or site_key = new.site_key)",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R2 サイトの REPLACE の守りから site_key を外す",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when exists (select 1 from sites where id = new.id or site_key = new.site_key)",
+    "to": "when exists (select 1 from sites where id = new.id)",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R3 パターンの REPLACE の守りを外す",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when exists (select 1 from variants where id = new.id or public_key = new.public_key)",
+    "to": "when 0",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R4 所有者の REPLACE を黙って捨てない",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "create trigger owners_no_replace before insert on owners\nwhen exists (select 1 from owners where id = new.id)",
+    "to": "create trigger owners_no_replace before insert on owners\nwhen 0",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R5 イベントの REPLACE を黙って捨てない",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when exists (select 1 from events where id = new.id)\n  or (new.kind",
+    "to": "when 0 and (new.kind",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R6 チャットボットのノードの変更禁止から所有者を外す",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "when new.id is not old.id or new.owner_id is not old.owner_id\n  or new.variant_id is not old.variant_id",
+    "to": "when new.id is not old.id\n  or new.variant_id is not old.variant_id",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "R7 一意索引を足したのに REPLACE の守りと検査を足さない",
+    "file": "db/migrations/0001_schema.sql",
+    "from": "create index popups_site on popups (site_id);",
+    "to": "create index popups_site on popups (site_id);\ncreate unique index popups_name_per_site on popups (site_id, name);",
+    "tests": [
+      "tests/d1-replace.test.ts"
+    ]
+  },
+  {
+    "name": "W2 Worker がデータ層の外で env.DB を読む",
+    "file": "src/delivery/worker.ts",
+    "from": "  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
+    "to": "  console.log(env.DB);\n  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
+    "tests": [
+      "tests/d1-access-boundary.test.ts"
+    ]
+  },
+  {
+    "name": "S1 データ層に INSERT OR REPLACE を書く",
+    "file": "src/lib/data/admin.ts",
+    "from": "`insert into owners (id) values (?1) on conflict (id) do nothing`",
+    "to": "`insert or replace into owners (id) values (?1)`",
+    "tests": [
+      "tests/d1-access-boundary.test.ts"
+    ]
+  },
+  {
+    "name": "L1 エラーの1行を伏せずに出す",
+    "file": "src/delivery/log.ts",
+    "from": "${redact(message)}",
+    "to": "${message}",
+    "tests": [
+      "tests/delivery-log.test.ts"
+    ]
+  },
+  {
+    "name": "L2 呼び出しのログを残す設定に戻す",
+    "file": "wrangler.delivery.jsonc",
+    "from": "\"invocation_logs\": false",
+    "to": "\"invocation_logs\": true",
+    "tests": [
+      "tests/delivery-log.test.ts"
     ]
   }
 ];

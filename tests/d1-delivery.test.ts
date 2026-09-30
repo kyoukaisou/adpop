@@ -127,9 +127,9 @@ afterAll(async () => {
   await t?.dispose();
 });
 
-const config = (siteKey: string, origin: string) => siteConfig(db, siteKey, origin);
+const config = (siteKey: string, origin: string) => siteConfig({ DB: db }, siteKey, origin);
 const record = (siteKey: string, origin: string, event: Record<string, unknown>) =>
-  recordEvent(db, siteKey, origin, event);
+  recordEvent({ DB: db }, siteKey, origin, event);
 
 describe("配信: siteConfig", () => {
   it("✅ 許可ドメインから引くと、いま有効なポップの設定が返る", async () => {

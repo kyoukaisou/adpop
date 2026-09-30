@@ -84,7 +84,9 @@ create table popups (
   foreign key (site_id, owner_id) references sites (id, owner_id) on delete cascade
 );
 
--- 🔴 **稼働中(active)は1サイトに1つ**(D-020)。2つ目は一意制約で落ちる
+-- 🔴 **稼働中(active)は1サイトに1つ**(D-020)。
+-- ⚠ 実際に2つ目を断るのは、下の BEFORE トリガ(popups_no_replace / popups_one_active)が先。
+--   この一意索引は、トリガの前にある最後の形の宣言で、**トリガがある限り単独では観測できない**(変異で確認)。
 create unique index popups_one_active_per_site on popups (site_id) where status = 'active';
 create index popups_site on popups (site_id);
 
@@ -313,4 +315,93 @@ end;
 create trigger events_immutable before update on events
 begin
   select raise(abort, 'adpop:immutable:events');
+end;
+
+-- ══════════════════════════════════════════════════════════════════════
+-- 🔴 REPLACE を止める(Codex #4 Blocker 1)
+-- ══════════════════════════════════════════════════════════════════════
+-- SQLite の `INSERT OR REPLACE` / `REPLACE INTO` / `UPDATE OR REPLACE` は、一意制約・主キーと衝突した
+-- **既存の行を消してから**新しい行を入れる(https://www.sqlite.org/lang_conflict.html)。
+--   ・消えるのは DELETE だが **BEFORE UPDATE のトリガを通らない** → 上の「変えてはいけない列」を迂回できる
+--   ・消えた行の配下は外部キーの cascade で消える(サイトを REPLACE すると、ポップ・パターン・数字まで)
+-- ✅ **一意なキーごとに、BEFORE INSERT で「既に在る」を断る**(衝突の判定より先に走るので、REPLACE に届かない)。
+--   `INSERT ... ON CONFLICT DO UPDATE`(UPSERT)も、この BEFORE INSERT で先に止まる。
+-- ⚠ 所有者とイベントだけは**断らずに黙って捨てる**(`RAISE(IGNORE)`)。データ層がそこで
+--   `ON CONFLICT DO NOTHING`(= 既に在れば何もしない)を使っているので、同じ意味にそろえる。
+-- ⚠ **一意なキーを足したら、ここにも足すこと。** `tests/d1-replace.test.ts` が、DB にある一意なキーの一覧と
+--   撃った REPLACE の一覧を突き合わせる(足し忘れると落ちる)。
+create trigger owners_no_replace before insert on owners
+when exists (select 1 from owners where id = new.id)
+begin
+  select raise(ignore);
+end;
+
+create trigger owners_immutable before update of id on owners
+when new.id is not old.id
+begin
+  select raise(abort, 'adpop:immutable:owners');
+end;
+
+create trigger sites_no_replace before insert on sites
+when exists (select 1 from sites where id = new.id or site_key = new.site_key)
+begin
+  select raise(abort, 'adpop:conflict:sites');
+end;
+
+create trigger site_allowed_origins_no_replace before insert on site_allowed_origins
+when exists (select 1 from site_allowed_origins where site_id = new.site_id and origin = new.origin)
+begin
+  select raise(abort, 'adpop:conflict:site_allowed_origins');
+end;
+
+create trigger popups_no_replace before insert on popups
+when exists (select 1 from popups where id = new.id or public_key = new.public_key)
+  or (new.status = 'active'
+      and exists (select 1 from popups where site_id = new.site_id and status = 'active'))
+begin
+  select raise(abort, 'adpop:conflict:popups');
+end;
+
+-- 🔴 `UPDATE OR REPLACE popups SET status = 'active'` は、同じサイトの稼働中を**消して**通る(部分一意索引の衝突)。
+--   → 稼働にする更新は、同じサイトに別の稼働中があれば断る(普通の UPDATE でも同じ文言で断られる)。
+create trigger popups_one_active before update of status on popups
+when new.status = 'active'
+  and exists (select 1 from popups where site_id = new.site_id and status = 'active' and id <> new.id)
+begin
+  select raise(abort, 'adpop:conflict:popups');
+end;
+
+create trigger popup_triggers_no_replace before insert on popup_triggers
+when exists (select 1 from popup_triggers where popup_id = new.popup_id and kind = new.kind)
+begin
+  select raise(abort, 'adpop:conflict:popup_triggers');
+end;
+
+create trigger variants_no_replace before insert on variants
+when exists (select 1 from variants where id = new.id or public_key = new.public_key)
+begin
+  select raise(abort, 'adpop:conflict:variants');
+end;
+
+-- 🕐 v1.1 の表だが、D1 には「書き込み権限を配らない」守りが無いので、いまから同じ形で塞ぐ(Codex #4 Should 1)
+create trigger chatbot_nodes_no_replace before insert on chatbot_nodes
+when exists (select 1 from chatbot_nodes where id = new.id)
+begin
+  select raise(abort, 'adpop:conflict:chatbot_nodes');
+end;
+
+create trigger chatbot_nodes_immutable before update of id, owner_id, variant_id, parent_node_id on chatbot_nodes
+when new.id is not old.id or new.owner_id is not old.owner_id
+  or new.variant_id is not old.variant_id or new.parent_node_id is not old.parent_node_id
+begin
+  select raise(abort, 'adpop:immutable:chatbot_nodes');
+end;
+
+create trigger events_no_replace before insert on events
+when exists (select 1 from events where id = new.id)
+  or (new.kind in ('impression', 'close') and exists (
+        select 1 from events
+        where site_id = new.site_id and impression_id = new.impression_id and kind = new.kind))
+begin
+  select raise(ignore);
 end;

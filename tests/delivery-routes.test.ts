@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/lib/data/delivery", () => ({
   siteConfig: vi.fn(),
   recordEvent: vi.fn(),
+  hasDatabase: (env: { DB?: unknown }) => env.DB !== undefined,
 }));
 
 import { recordEvent, siteConfig } from "../src/lib/data/delivery";
@@ -69,7 +70,7 @@ describe("GET /api/v1/config", () => {
   it("🔴 サイトキーと Origin をそのままデータ層へ渡す(こちらで作り変えない)", async () => {
     vi.mocked(siteConfig).mockResolvedValue({ v: 1 } as never);
     await handleDelivery(configRequest(), env);
-    expect(siteConfig).toHaveBeenCalledExactlyOnceWith(DB, SITE_KEY, ORIGIN);
+    expect(siteConfig).toHaveBeenCalledExactlyOnceWith(env, SITE_KEY, ORIGIN);
   });
 
   it("🔴 Origin ヘッダが無ければ 403 で、DB を1度も呼ばない", async () => {
@@ -184,7 +185,7 @@ describe("POST /api/v1/events", () => {
   it("🔴 データ層へ渡すのは、受け取った本文そのまま(こちらで作り変えない)", async () => {
     vi.mocked(recordEvent).mockResolvedValue({ ok: true, stored: true });
     await handleDelivery(eventRequest(event), env);
-    expect(recordEvent).toHaveBeenCalledExactlyOnceWith(DB, SITE_KEY, ORIGIN, JSON.parse(event));
+    expect(recordEvent).toHaveBeenCalledExactlyOnceWith(env, SITE_KEY, ORIGIN, JSON.parse(event));
   });
 
   it("🔴 DB へ届かなければ 502(こちらの設定の問題と混ぜない)", async () => {

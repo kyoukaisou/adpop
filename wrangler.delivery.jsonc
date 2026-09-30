@@ -20,5 +20,10 @@
       "migrations_dir": "db/migrations"
     }
   ],
-  "observability": { "enabled": true }
+  // 🔴 **呼び出しのログ(invocation logs)を Cloudflare に残さない**(Codex #4 Blocker 3・本部裁定)。
+  //   呼び出しのログは「Request, Response, and related metadata」を保存する(Workers Logs の公式文書)。
+  //   README の「IP アドレスを保存しない」と両立させるため切る。残すのは、こちらが console に出す
+  //   **匿名化したエラーの1行だけ**(src/delivery/log.ts)。
+  //   ⚠ invocation_logs を切ったときに console の出力が保存されるかは、公式文書に書かれていない(未確認)。
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
 }
