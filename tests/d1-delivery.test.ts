@@ -1,8 +1,7 @@
 // @vitest-environment node
 //
 // 配信の2つの口(src/lib/data/delivery.ts)を、**実物のローカル D1** で測る。
-// 旧版(PostgreSQL の `adpop_site_config` / `adpop_record_event`)の検査を移したもの。
-// **判定の順序と断りの理由は旧版と同じ**であることを、ここで固定する。
+// 旧版の検査を全部移し、**同じ入力に同じ理由で断る**ことを固定する(⚠ 表示 ID の形の違いは delivery.ts の冒頭)。
 //
 // 🔴 **この束がいちばん守りたいもの**:
 //   ① **fail-closed**: サイトキー・Origin・許可ドメイン・稼働中・配れるパターンのどれか1つでも欠けたら何も返さない

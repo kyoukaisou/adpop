@@ -6,9 +6,10 @@
 -- 移せなかったもの・弱くなったものは README の「D1 に移して弱くなった守り」に書いてある。
 --
 -- 🔴 **D1 には RLS もロールも GRANT も無い。** 誰がどの行に触れるかは、DB ではなく
---   **`src/lib/data/` の関数が所有者(owner_id)を必ず条件に入れる**ことで守る(検査で固定)。
--- 🔴 **D1 はネットワークに API を出さない。** 届く経路は Worker のバインドと、
---   Cloudflare アカウントの API トークン(D1 の HTTP API・wrangler)だけ。
+--   **`src/lib/data/` の関数が、読み取り・更新・削除の条件に所有者(owner_id)を入れる**ことで守る
+--   (tests/d1-owner-isolation.test.ts が公開関数を全部撃つ)。
+-- 🔴 **D1 には、旧版の PostgREST に当たる匿名で叩ける API が無い**(Cloudflare の製品の性質。測ってはいない)。
+--   届く経路は、この D1 をバインドした Worker と、Cloudflare アカウントの側(ダッシュボード・API トークン・wrangler)。
 --
 -- ⚠ SQLite には正規表現が無い。形の検査は GLOB / LIKE で書ける範囲だけをここに置き、
 --   **完全な判定は `src/lib/data/shapes.ts`**(配信と管理画面が同じ関数を使う)。
@@ -229,13 +230,14 @@ begin
 end;
 
 -- ⚠ トリガの行は「種類ごとに1つ」を主キー (popup_id, kind) が、「種類は6つ」を CHECK が持つ。
---   利用者が行を足す・消す口はデータ層に無い(消えるのはポップの削除の cascade だけ)。
+--   データ層にトリガの行を足す・消す関数は無い(消えるのはポップ・サイトの削除の cascade)。
 
 -- 🔴 **件数の上限**(本部裁定 §6 裁定2: サイト 20 / ポップ 50 / バリアント 5)。
 --   ・値はここと src/lib/data/limits.ts の2か所にある(検査が突き合わせる)
 --   ・**アーカイブ済みは数えない**。その代わり**アーカイブから戻すときにも数える**(D-296 5)
---   ・SQLite の行トリガは、**同じ文で先に入れた行も数える**(Miniflare で実測 = tests/d1-semantics.test.ts)。
---     PostgreSQL の WITH CHECK の「1文で複数行入れると全部通る」穴はここには無い
+--   ・SQLite の行トリガは、**同じ文で先に入れた行も数える**(ローカルの D1 = workerd で実測。
+--     サイトは tests/d1-semantics.test.ts、パターンは tests/d1-limits.test.ts。ポップの複数行は撃っていない)。
+--     PostgreSQL の WITH CHECK の「1文で複数行入れると全部通る」穴は、測った2つの表では起きなかった
 --   ・同時実行: D1 は1つのデータベースのクエリを1つずつ処理する(公式 limits)。
 --     判定がトリガ(= 書き込みと同じ文の中)にある限り、2つの要求が同時に「まだ空きがある」を読まない
 create trigger sites_limit before insert on sites
@@ -306,7 +308,8 @@ begin
   select raise(abort, 'adpop:immutable:variants');
 end;
 
--- 🔴 計測イベントは書いたら変えない(集計の正)。消すのは cascade と保持期間の削除(PR5)だけ
+-- 🔴 計測イベントは書いたら書き換えない(集計の正)。⚠ 止めているのは UPDATE だけで、
+--   削除は止めていない(cascade と、PR5 の保持期間の削除が使う)
 create trigger events_immutable before update on events
 begin
   select raise(abort, 'adpop:immutable:events');

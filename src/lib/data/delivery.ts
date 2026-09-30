@@ -1,15 +1,17 @@
 /*
-  配信の2つの口(設定を返す・計測イベントを入れる)。**未認証の入口から DB へ届く唯一の経路。**
+  配信の2つの口(設定を返す・計測イベントを入れる)。**配信の Worker が DB に触るのは、この2関数を通してだけ**
+  (worker.ts が import しているのはこの2つ。D1 のメソッドを直接呼んでいないことは tests/d1-access-boundary.test.ts)。
 
   旧版(PostgreSQL)では `adpop_site_config` / `adpop_record_event`(security definer の関数)が持っていた判定を、
-  そのまま TypeScript に移した。**判定の順序と「断りの理由」は旧版と同じ**(`tests/d1-delivery.test.ts` が固定)。
+  TypeScript に移した。**旧版の検査を全部移して、同じ理由で断ることを確かめた**(`tests/d1-delivery.test.ts`)。
+  ⚠ 違いを1つ知っている: 表示 ID は「ハイフン付き・16進」の形だけを受ける(旧版の uuid 型は `{…}` やハイフン無しも受けた)。
 
   🔴 **fail-closed**: サイトキー・Origin・許可ドメイン・稼働中のポップ・配れるバリアントの
     どれか1つでも欠けたら `null` / `not_allowed`。**サイトの不在と Origin の不一致を区別しない。**
   🔴 **返す情報を最小に**: 内部 id・owner_id・他サイトの情報を返さない。`content` は名指しした鍵だけ。
   🔴 **所有者を呼び出し側から指定させない**: 書く行の owner_id / site_id は、サイトキーから引いた行の値だけを使う。
   ⚠ D1 のバインドはネットワークに出ていないので、旧版の「関数を直接叩いてルートの守りを迂回する」経路は無い。
-    **守りは1か所(ここ)**で、旧版のように DB 側にもう1枚置いてはいない(置けない)。
+    判定は Worker のコード(ここと入口の src/lib/api/http.ts)にしか無く、旧版のように DB 側にもう1枚置いてはいない。
 */
 import type { D1Database } from "@cloudflare/workers-types";
 import { isHex32, isOrigin, isUuid, normalizePageUrl } from "./shapes";
@@ -143,7 +145,7 @@ export type RecordOutcome = { ok: true; stored: boolean } | { ok: false; reason:
 
 /**
  * 計測イベントを1件入れる。
- * 🔴 断りの理由は旧版と同じ。**サイトキーと Origin の断りは `not_allowed` の1つにまとめる**
+ * 🔴 **サイトキーと Origin の断りは `not_allowed` の1つにまとめる**(旧版と同じ)
  *   (サイトキーの実在を呼び出し側が判別できないように)。その後の理由(popup / variant / 形)は、
  *   そのサイトの認可を通った後なので分けて返す。
  */

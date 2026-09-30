@@ -53,9 +53,9 @@
 
 | 守り | どこで | 検査 |
 |---|---|---|
-| 未認証の入口から表へ届かない | D1 はネットワークに API を出さない。届くのは**配信の Worker のバインド**と、Cloudflare アカウントの API トークン(wrangler / D1 の HTTP API)だけ | `tests/d1-worker-runtime.test.ts`(配信の口以外は 404) |
-| 所有者の分離 | データ層の全関数が `ownerId` を取り、SQL に `owner_id = ?` を入れる。挿入は複合外部キー `(親の id, owner_id)` が他人の親を断る | `tests/d1-owner-isolation.test.ts`(公開関数を列挙して全部を他人として撃つ) |
-| D1 に触る場所 | `src/lib/data/` だけ | `tests/d1-access-boundary.test.ts`(TypeScript の型で呼び出しを探す) |
+| 未認証の入口から表へ届かない | D1 には、旧版の PostgREST に当たる**匿名で叩ける API が無い**(Cloudflare の製品の性質。**この PR では測っていない**)。届く経路は、この D1 をバインドした Worker と、Cloudflare アカウントの側(ダッシュボード・API トークン・wrangler) | 配信の Worker の口が3つ(config / events / 静的配信)で、それ以外が 404 であること(`tests/d1-worker-runtime.test.ts`・`tests/delivery-routes.test.ts`) |
+| 所有者の分離 | データ層の公開関数(いま25本)が2つ目の引数に `ownerId` を取り、読み取り・更新・削除の SQL に `owner_id = ?` を入れる。挿入は複合外部キー `(親の id, owner_id)` が他人の親を断る | `tests/d1-owner-isolation.test.ts`(公開関数を実行時に列挙し、25本とも他人として撃つ) |
+| D1 に触る場所 | `src/lib/data/` の中だけ | `tests/d1-access-boundary.test.ts`(`src/` の中で、型が D1 のオブジェクトのメソッド呼び出しを探す。⚠ `any` に落とした呼び出しは見えない) |
 | 件数の上限(サイト 20 / ポップ 50 / パターン 5) | D1 の行トリガ(`RAISE(ABORT)`)。アーカイブ済みは数えず、戻すときに数える | `tests/d1-limits.test.ts` |
 | 1サイトに稼働中は1つ | 部分一意索引 | `tests/d1-schema.test.ts` |
 | イベントの形・階層の一致・重複排除 | CHECK / 複合外部キー / 一意索引 | `tests/d1-schema.test.ts` |
@@ -71,8 +71,9 @@
   (配信の口は入口で `isOrigin` を通すので、そこからは入りません)。
 - 🔴 **Cloudflare の API トークンに D1 の権限があれば、全データを読み書きできます。**
   旧版の「専用ロールで届く範囲を関門で数える」に当たるものはありません。**トークンの範囲を絞るのは運用**です。
-- ⚠ **本文 4KB の上限は Worker の中の1か所だけ**になりました(旧版は DB の関数にも置いていました)。
-  旧版が2か所に置いたのは PostgREST から関数を直接叩けたためで、**D1 にはその経路がありません**。
+- ⚠ **本文 4KB の上限は Worker のコードの中(入口とデータ層)にしか無く、DB の側には置いていません**
+  (旧版は DB の関数にも置いていました)。旧版が DB に置いたのは PostgREST から関数を直接叩けたためで、
+  **D1 にはその経路がありません**。
 - ⚠ 同時実行: 上限の判定は「D1 は1つのデータベースのクエリを1つずつ処理する」
   (Cloudflare の D1 limits の文書)に乗っています。**2つの要求を本当に並べて撃つ検査はありません**
   (ローカルでは並びを保証できないため)。

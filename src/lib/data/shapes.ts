@@ -3,7 +3,8 @@
 
   🔴 PostgreSQL 版では、これらは DB の CHECK(正規表現)が最後に判定していた。
     **D1(SQLite)には正規表現が無い**ので、DB に残せたのは GLOB / LIKE で書ける範囲だけ
-    (db/migrations/0001_schema.sql)。**完全な判定はここ**で、データ層は書く前に必ずここを通す。
+    (db/migrations/0001_schema.sql)。**完全な判定はここ**で、許可ドメイン・遷移先 URL・page_url を書く
+    データ層の関数は、書く前にここを通す。
   ⚠ したがって「DB を直接触られたとき(wrangler d1 execute 等)」に通る形は旧版より広い。
     README の「D1 に移して弱くなった守り」に書いてある。
   ⚠ Node 固有の import を足さない(Workers で動く)。
