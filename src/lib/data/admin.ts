@@ -622,7 +622,7 @@ export async function deleteVariant(source: DbSource, ownerId: string, variantId
  * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB だけ)。
  * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書く。
  * 🔴 **同じ取引(batch)の中で**: ①前のキーを読む ②前のキーを消し直し待ちに積む ③キーを書く
- *   ④新しいキーを消し直し待ちから外す(呼び出し側が置く前に積んでおいたもの)。
+ *   ④新しいキーを消し直し待ちから外す(呼び出し側が置く前に積んでおいたもの)。**③が当たって参照されているときだけ**。
  *   batch が落ちれば全部巻き戻る(参照と積んだ行の片方だけが残らない)。
  */
 export async function setVariantImage(
@@ -651,7 +651,15 @@ export async function setVariantImage(
            where id = ?1 and owner_id = ?2`,
         )
         .bind(...(key === null ? [variantId, ownerId] : [variantId, ownerId, key])),
-      db.prepare(`delete from pending_image_deletions where key = ?1 and owner_id = ?2`).bind(key ?? "", ownerId),
+      // 🔴 新しいキーの行を外すのは、**上の UPDATE が当たって、そのキーを実際に参照している行があるとき だけ**
+      //   (Codex #7 3巡目)。並行する削除でパターンが消えていたら、行は残り、後の消し直しで R2 から消える。
+      db
+        .prepare(
+          `delete from pending_image_deletions
+           where key = ?1 and owner_id = ?2
+             and exists (select 1 from variants where id = ?3 and owner_id = ?2 and json_extract(content, '$.imageKey') = ?1)`,
+        )
+        .bind(key ?? "", ownerId, variantId),
     ]),
   );
   if (!result.ok) return result;

@@ -175,4 +175,38 @@ describe("先に積む(write-ahead)", () => {
     expect(await t.images.head(live), "参照中の画像を消した").not.toBeNull();
     expect(await pending()).toEqual([]);
   });
+
+  it("🔴 アップロードの途中でパターンが消されたら、新しいキーの行は残り、次の消し直しで R2 から消える(Codex #7 3巡目)", async () => {
+    const variantId = await newVariant(await newSite());
+    const before = await r2Snapshot(t.images);
+    // R2 に置いた直後(head の後・DB の記録の前)に、別の要求がそのパターンを消した状況を作る
+    let deletedConcurrently = false;
+    const racingImages = new Proxy(t.images, {
+      get(obj, prop) {
+        if (prop === "head") {
+          return async (key: string) => {
+            const head = await obj.head(key);
+            if (!deletedConcurrently) {
+              deletedConcurrently = true;
+              await images.deleteVariantWithImages(env(), OWNER_A, variantId);
+            }
+            return head;
+          };
+        }
+        // 後始末の削除も落ちる(中断した)とする
+        if (prop === "delete") return () => Promise.reject(new Error("delete failed"));
+        const value = Reflect.get(obj, prop);
+        return typeof value === "function" ? value.bind(obj) : value;
+      },
+    });
+    const result = await images.storeVariantImage(env({ IMAGES: racingImages }), OWNER_A, variantId, IMAGE);
+    expect(result).toEqual({ ok: false, failure: { kind: "not_found" } });
+    const queued = await pending();
+    const newKeys = (await r2Snapshot(t.images)).map((e) => e.key).filter((k) => !before.some((b) => b.key === k));
+    expect(newKeys.length, "前提: 新しいキーが R2 に残っている").toBe(1);
+    expect(queued, "新しいキーの消し直し待ちの行が消えた = 二度と消えない").toContain(newKeys[0]);
+    await ageAllPending();
+    await images.retryPendingImageDeletions(env(), OWNER_A);
+    expect(await t.images.head(newKeys[0]), "次の消し直しで消えていない").toBeNull();
+  });
 });
