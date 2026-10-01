@@ -604,7 +604,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     const id = ((await variant.json()) as { data: { id: string } }).data.id;
     // SOI + APP1(Exif・"GPS" を含む)+ SOF0 + SOS + データ + EOI
     const exif = [0xff, 0xe1, 0x00, 0x0c, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x47, 0x50, 0x53, 0x21];
-    const response = await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: jpeg(16, 16, exif), cookie });
+    const response = await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: jpeg(16, 16, exif) as BodyInit, cookie });
     expect(response.status).toBe(200);
     const detail = (await (await call(`/api/admin/variants/${id}`, { cookie })).json()) as { data: { content: { imageKey: string } } };
     const stored = await t.images.get(detail.data.content.imageKey);
@@ -623,7 +623,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
       cookie,
     });
     const id = ((await variant.json()) as { data: { id: string } }).data.id;
-    const put = (raw: Uint8Array) => call(`/api/admin/variants/${id}/image`, { method: "PUT", raw, cookie });
+    const put = (raw: Uint8Array) => call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: raw as BodyInit, cookie });
     const response = await put(png(2401, 100));
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ ok: false, reason: "image_dimensions", message: IMAGE_TOO_LARGE_MESSAGE });
