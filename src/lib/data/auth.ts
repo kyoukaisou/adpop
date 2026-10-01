@@ -68,24 +68,32 @@ export type SessionRow = {
   last_seen_at: string;
 };
 
-/** セッションを作る。同じ所有者の期限切れの行も消す。 */
+/**
+ * 期限切れ・無操作のまま時間が過ぎたセッションを消す(所有者の分)。
+ * 🔴 **ログインを試みるたびに呼ぶ**(成功したときだけではない = Codex #7 Should)。
+ */
+export async function purgeExpiredSessions(source: DbSource, ownerId: string, now: Date, idleMs: number): Promise<void> {
+  const db = resolveDb(source);
+  await db
+    .prepare(`delete from admin_sessions where owner_id = ?1 and (expires_at <= ?2 or last_seen_at <= ?3)`)
+    .bind(ownerId, now.toISOString(), new Date(now.getTime() - idleMs).toISOString())
+    .run();
+}
+
+/** セッションを作る。 */
 export async function createSession(
   source: DbSource,
   session: { tokenHash: string; ownerId: string; fingerprint: string; expiresAt: Date; now: Date },
 ): Promise<void> {
   const db = resolveDb(source);
   const nowIso = session.now.toISOString();
-  await db.batch([
-    db
-      .prepare(`delete from admin_sessions where owner_id = ?1 and expires_at <= ?2`)
-      .bind(session.ownerId, nowIso),
-    db
-      .prepare(
-        `insert into admin_sessions (token_hash, owner_id, password_fingerprint, created_at, expires_at, last_seen_at)
-         values (?1, ?2, ?3, ?4, ?5, ?4)`,
-      )
-      .bind(session.tokenHash, session.ownerId, session.fingerprint, nowIso, session.expiresAt.toISOString()),
-  ]);
+  await db
+    .prepare(
+      `insert into admin_sessions (token_hash, owner_id, password_fingerprint, created_at, expires_at, last_seen_at)
+       values (?1, ?2, ?3, ?4, ?5, ?4)`,
+    )
+    .bind(session.tokenHash, session.ownerId, session.fingerprint, nowIso, session.expiresAt.toISOString())
+    .run();
 }
 
 export async function findSession(source: DbSource, tokenHash: string): Promise<SessionRow | null> {

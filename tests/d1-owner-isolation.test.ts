@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as admin from "../src/lib/data/admin";
 import * as images from "../src/lib/data/images";
 import { openTestD1, OWNER_A, OWNER_B, type TestD1 } from "./helpers/d1";
+import { r2Snapshot } from "./helpers/r2";
 
 let t: TestD1;
 let db: D1Database;
@@ -116,6 +117,11 @@ const IMAGE_CASES: Record<string, [ImageCase, Expect]> = {
     (env) => images.deleteVariantWithImages(env, OWNER_B, a.variant),
     (r) => expect(r).toEqual(NOT_FOUND),
   ],
+  // 🔴 B が消し直しを走らせても、A の積んだキー(と、その R2 の中身)には触らない
+  retryPendingImageDeletions: [
+    (env) => images.retryPendingImageDeletions(env, OWNER_B),
+    (r) => expect(r).toEqual({ ok: true, value: { deleted: 0, remaining: 0 } }),
+  ],
 };
 
 // 1x1 の PNG(画像の置き場の検査に使う)
@@ -124,11 +130,9 @@ const TINY_PNG = Uint8Array.from(
   (ch) => ch.charCodeAt(0),
 );
 
-const TABLES = ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events"] as const;
+const TABLES = ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events", "pending_image_deletions"] as const;
 
-async function r2Keys(): Promise<string[]> {
-  return (await t.images.list()).objects.map((o) => o.key).sort();
-}
+const r2Keys = () => r2Snapshot(t.images);
 
 async function snapshotOfA(): Promise<Record<string, unknown[]>> {
   const out: Record<string, unknown[]> = {};
@@ -153,6 +157,10 @@ beforeAll(async () => {
   value(await admin.activatePopup(db, OWNER_A, a.popup));
   // A のパターンに画像を1枚(B から消されない・差し替えられないことを見るため)
   value(await images.storeVariantImage({ DB: db, IMAGES: t.images }, OWNER_A, a.variant, { bytes: TINY_PNG, contentType: "image/png", ext: "png" }));
+  // A の「消し直し待ち」の画像を1枚(R2 にも置いておく = B が消し直しを走らせても消えないことを見る)
+  const pendingKey = `images/${"e".repeat(32)}.png`;
+  await t.images.put(pendingKey, TINY_PNG, { httpMetadata: { contentType: "image/png" } });
+  await db.prepare("insert into pending_image_deletions (key, owner_id) values (?1, ?2)").bind(pendingKey, OWNER_A).run();
 });
 afterAll(async () => {
   await t?.dispose();
@@ -199,7 +207,7 @@ describe("所有者の分離(データ層の全関数)", () => {
     expect(Object.keys(IMAGE_CASES).sort()).toEqual(exported);
     const before = await snapshotOfA();
     const keysBefore = await r2Keys();
-    expect(keysBefore.length, "A の画像が無い = 何も測っていない").toBe(1);
+    expect(keysBefore.length, "A の画像が無い = 何も測っていない").toBe(2);
     for (const [name, [run, check]] of Object.entries(IMAGE_CASES)) {
       const result = await run({ DB: db, IMAGES: t.images });
       try {

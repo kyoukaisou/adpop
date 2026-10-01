@@ -61,7 +61,7 @@
 | 守り | どこで | 検査 |
 |---|---|---|
 | 未認証の入口から表へ届かない | D1 には、旧版の PostgREST に当たる**匿名で叩ける API が無い**(Cloudflare の製品の性質。**この PR では測っていない**)。届く経路は、この D1 をバインドした Worker と、Cloudflare アカウントの側(ダッシュボード・API トークン・wrangler) | 配信の Worker の口が3つ(config / events / 静的配信)で、それ以外が 404 であること(`tests/d1-worker-runtime.test.ts`・`tests/delivery-routes.test.ts`) |
-| 所有者の分離 | データ層の公開関数(いま25本)が2つ目の引数に `ownerId` を取り、読み取り・更新・削除の SQL に `owner_id = ?` を入れる。挿入は複合外部キー `(親の id, owner_id)` が他人の親を断る | `tests/d1-owner-isolation.test.ts`(公開関数を実行時に列挙し、25本とも他人として撃つ) |
+| 所有者の分離 | データ層の公開関数(`admin.ts` の 27 本と `images.ts` の 6 本)が2つ目の引数に `ownerId` を取り、読み取り・更新・削除の SQL に `owner_id = ?` を入れる。挿入は複合外部キー `(親の id, owner_id)` が他人の親を断る | `tests/d1-owner-isolation.test.ts`(公開関数を実行時に列挙し、33 本とも他人として撃つ。画像の関数は R2 の中身(本文のバイト列と Content-Type)も比べる) |
 | D1 に触る場所 | `src/lib/data/` の中だけ。配信の Worker は D1 の値に触らず、バインドの入れ物(`env`)ごとデータ層へ渡す | `tests/d1-access-boundary.test.ts`(`src/` のデータ層の外で、**型に D1 を含む式**(識別子・プロパティ参照・文字列の添字・呼び出し・非 null・`as`)を1つでも見つけたら落とす。⚠ **網羅ではない**: `any` に落とした値(`(env as any).DB`)は見えず、静的な検査は編集できる人には外せる。**実際の守りはデータ層の関数とトリガ**) |
 | REPLACE 系の構文で既存の行を入れ替えられない | 一意なキーごとの BEFORE INSERT トリガ + 稼働にする UPDATE のトリガ。データ層の SQL には REPLACE・`DO UPDATE`・`OR IGNORE` などを書かない | `tests/d1-replace.test.ts`(INSERT OR REPLACE・REPLACE INTO・UPSERT を一意なキーごとに撃ち、DB の一意なキーの一覧と撃った一覧を突き合わせる。⚠ id を含む複合キーは id の守りが覆う前提で一覧から除く。UPDATE OR REPLACE を撃ったのは稼働中と所有者の2経路で、ほかの一意なキーの列は変更禁止のトリガが UPDATE ごと止める = `d1-schema`)/ `tests/d1-access-boundary.test.ts`(データ層の SQL の字面) |
 | 件数の上限(サイト 20 / ポップ 50 / パターン 5) | D1 の行トリガ(`RAISE(ABORT)`)。アーカイブ済みは数えず、戻すときに数える | `tests/d1-limits.test.ts` |
@@ -169,7 +169,7 @@ npm run admin:dev
 | 守り | 中身 |
 |---|---|
 | パスワード | **人が選ばない**。`npm run admin:hash` が 128 ビットの乱数で作る。保存はハッシュだけ(PBKDF2-SHA256・100,000 回・secret) |
-| 試行回数 | 同じ接続元は 15 分に 5 回まで(**パスワードを確かめる前に数える**)。接続元は `CF-Connecting-IP` だけ・IPv6 は /64 に丸める。**IP は保存しない**(日付つきの HMAC) |
+| 試行回数 | 同じ接続元は 15 分に 5 回まで(**パスワードを確かめる前に数える**)。接続元は `CF-Connecting-IP` だけ・IPv6 は /64 に丸める。**IP は保存しない**(日付つきの HMAC)。⚠ **運用の前提**: 管理画面の Worker の前に、**同じゾーンの別の Worker を置かないこと**。同じゾーンの Worker から来たサブリクエストでは、接続元のヘッダを前段が書き換えられる(security の監査 M2 が Cloudflare の HTTP ヘッダの文書の `x-real-ip` の記述で確認)= 接続元ごとの数が前段の値になる |
 | セッション | Cookie は `__Host-adpop_session`・HttpOnly・Secure・SameSite=Strict。最長 7 日・操作が無ければ 24 時間。**パスワードを置き直すと全部ログアウト**。DB に保存するのは Cookie の値の SHA-256 |
 | CSRF | GET/HEAD 以外は Origin の完全一致・`Sec-Fetch-Site`(在れば same-origin)・Content-Type(JSON / 画像は `application/octet-stream`)。CORS のヘッダは返さない |
 | 所有者 | 所有者 id はセッションからだけ取る。他人の行・存在しない行は 404 |
@@ -228,6 +228,8 @@ D1・R2・Workers に絞ってください。**アカウントが乗っ取られ
 - **画像**: JPEG の Exif(APP1)は落としますが、**PNG・WebP の撮影情報のチャンクは落としていません**。
   画像の寸法は**長い辺 2,400px まで**(超えたら断る)。寸法はファイルの先頭(ヘッダ)から読み、読めない画像も断ります。
 - **画像を削除しても**、CDN とブラウザには最長 1 年キャッシュが残りえます(配信の `/img` は `immutable`)。
-  削除の時に R2 から消せなかった画像はログに出します(推測できない乱数のキーですが、知っていれば取れます)。
+  R2 から消せなかった画像は**捨てずに積み**(`pending_image_deletions`)、同じ所有者の次の画像の操作(アップロード・外す・削除)で
+  消し直します。積んでいる数は API の応答(`data.cleanupPending`)に載り、匿名化したログにも出ます。
+  ⚠ 消し直すまでの間は、キーを知っていれば配信の `/img` から取れます(キーは推測できない乱数)。
 - **①戻るトリガ(PR4)は、戻すときに「出せなかったら `history.back()` で戻る操作を通し直す」形にする予定です**
   (ポップが出ないのに操作だけ奪う、をしないため)。**いまは実装していません。**

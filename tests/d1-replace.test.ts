@@ -190,6 +190,13 @@ describe("REPLACE / UPSERT で既存の行を入れ替えられない", () => {
     COVERED.add("admin_login_attempts(key)");
   });
 
+  it("🔴 消し直し待ちの画像のキーを REPLACE しても、黙って捨てられる(所有者は変えられない)", async () => {
+    await t.db.prepare("insert into pending_image_deletions (key, owner_id) values (?1, ?2)").bind(`images/${"f".repeat(32)}.png`, OWNER_A).run();
+    await expectUnchanged("insert or replace into pending_image_deletions (key, owner_id) values (?1, ?2)", [`images/${"f".repeat(32)}.png`, OWNER_B], "");
+    COVERED.add("pending_image_deletions(key)");
+    await expectUnchanged("update pending_image_deletions set owner_id = ?1", [OWNER_B], "adpop:immutable:pending_image_deletions");
+  });
+
   it("🔴 撃ったキーが、DB にある一意なキーの一覧と一致する(一意なキーを足したら、ここで落ちる。id を含む複合キーは除く)", async () => {
     // 一意なキー = 主キー + unique 制約・一意索引。複合の (id, owner_id) などは、中に id を含むので id の守りが覆う
     const keys = new Set<string>();

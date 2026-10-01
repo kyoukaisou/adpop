@@ -22,6 +22,7 @@ import { generateSecrets, hashPassword } from "../scripts/admin-hash.mjs";
 import { IMAGE_TOO_LARGE_MESSAGE } from "../src/lib/storage/image";
 import { openTestD1, type TestD1 } from "./helpers/d1";
 import { jpeg, png } from "./helpers/images";
+import { r2Snapshot } from "./helpers/r2";
 
 const BASE = "https://adpop-admin.example.workers.dev";
 const OTHER_OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -185,14 +186,20 @@ describe("ログイン(監査 H1 / M1 / M2 / L7)", () => {
 
   it("🔴🔴 並列に 12 本撃っても、パスワードまで進むのは 5 本まで(試行を PBKDF2 の前に数える・M1)", async () => {
     const ip = freshIp();
+    // 🔴 状態コードだけでなく、**PBKDF2 が実際に回った回数**を数える(Codex #7 Should:
+    //   上限の判定を PBKDF2 の後ろへ動かしても、状態コードは同じに返せるため)
+    const derive = vi.spyOn(crypto.subtle, "deriveBits");
     const results = await Promise.all(
       Array.from({ length: 12 }, () =>
         call("/api/admin/login", { method: "POST", body: { email: EMAIL, password: "wrong" }, headers: { "cf-connecting-ip": ip } }),
       ),
     );
+    const pbkdf2Calls = derive.mock.calls.filter(([algorithm]) => (algorithm as { name?: string }).name === "PBKDF2").length;
+    derive.mockRestore();
     const statuses = results.map((r) => r.status);
     expect(statuses.filter((s) => s === 401).length).toBe(5);
     expect(statuses.filter((s) => s === 429).length).toBe(7);
+    expect(pbkdf2Calls, "PBKDF2 が上限を超えて回った").toBe(5);
   });
 
   it("🔴 IPv6 は /64 に丸める(末尾を変えても同じ数に入る・M2)", async () => {
@@ -226,6 +233,29 @@ describe("ログイン(監査 H1 / M1 / M2 / L7)", () => {
       headers: { "cf-connecting-ip": ip, "x-forwarded-for": "203.0.113.200" },
     });
     expect(sixth.status).toBe(429);
+  });
+
+  it("🔴 ログインを**試みた**だけで、期限切れ・無操作のセッションの行が消える(成功を待たない・Codex #7 Should)", async () => {
+    // 所有者の行が無ければ作る(既に在れば owners の BEFORE INSERT が黙って捨てる)
+    await t.db.prepare("insert into owners (id) values (?1)").bind(secrets.ownerId).run();
+    const old = (hash: string, expires: string) =>
+      t.db
+        .prepare(
+          "insert into admin_sessions (token_hash, owner_id, password_fingerprint, expires_at, last_seen_at) values (?1, ?2, ?3, ?4, '2000-01-01T00:00:00.000Z')",
+        )
+        .bind(hash, secrets.ownerId, "2".repeat(16), expires);
+    // 期限切れ / 期限は先だが 24 時間より前から操作が無い、の2行
+    await t.db.batch([old("1".repeat(64), "2000-01-01T00:00:00.000Z"), old("3".repeat(64), "2999-01-01T00:00:00.000Z")]);
+    const count = async () =>
+      (await t.db.prepare("select count(*) as c from admin_sessions where token_hash in (?1, ?2)").bind("1".repeat(64), "3".repeat(64)).first<{ c: number }>())!.c;
+    expect(await count(), "前提: 古いセッションを2行入れた").toBe(2);
+    const failed = await call("/api/admin/login", {
+      method: "POST",
+      body: { email: EMAIL, password: "wrong" },
+      headers: { "cf-connecting-ip": freshIp() },
+    });
+    expect(failed.status).toBe(401);
+    expect(await count(), "失敗したログインの試行で掃除されていない").toBe(0);
   });
 
   it("🔴 試行の表に IP を保存しない(鍵は 32 桁の16進)", async () => {
@@ -437,7 +467,8 @@ describe("ルートと所有者の分離(監査 L3 / L4・設計 3 章)", () => 
       for (const table of ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events"]) {
         out[table] = (await t.db.prepare(`select * from ${table} where owner_id = ?1 order by rowid`).bind(OTHER_OWNER).all()).results;
       }
-      out.r2 = (await t.images.list()).objects.map((o) => o.key).sort();
+      // 🔴 キーだけでなく本文のバイト列と Content-Type も比べる(Codex #7 Should)
+      out.r2 = await r2Snapshot(t.images);
       return out;
     };
     const before = await snapshot();
@@ -628,5 +659,46 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ ok: false, reason: "image_dimensions", message: IMAGE_TOO_LARGE_MESSAGE });
     expect((await put(png(100, 2400))).status).toBe(200);
+  });
+});
+
+describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
+  it("🔴 画像を外すときに R2 から消せなければ、応答に数が載り(黙って 200 にしない)、ログに出て、次の操作で消し直す", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "cleanup", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const variant = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    const id = ((await variant.json()) as { data: { id: string } }).data.id;
+    expect((await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: png(10, 10) as BodyInit, cookie })).status).toBe(200);
+    const key = ((await (await call(`/api/admin/variants/${id}`, { cookie })).json()) as { data: { content: { imageKey: string } } }).data.content.imageKey;
+
+    // R2 の delete だけが落ちる環境
+    const failingImages = new Proxy(t.images, {
+      get(target, prop) {
+        if (prop === "delete") return () => Promise.reject(new Error("R2 unavailable"));
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const removed = await call(`/api/admin/variants/${id}/image`, { method: "DELETE", body: {}, cookie }, { ...env(), IMAGES: failingImages });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ ok: true, data: { cleanupPending: 1 } });
+    expect(errors).toHaveBeenCalled();
+    expect(JSON.stringify(errors.mock.calls)).not.toContain(key.slice(7, 39));
+    errors.mockRestore();
+    expect(await t.images.head(key), "前提: 消せずに残っている").not.toBeNull();
+
+    // 次の画像の操作(普通の環境)で消し直す
+    expect((await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: png(10, 10) as BodyInit, cookie })).status).toBe(200);
+    expect(await t.images.head(key), "消し直されていない").toBeNull();
+    const pending = await t.db.prepare("select count(*) as c from pending_image_deletions where key = ?1").bind(key).first<{ c: number }>();
+    expect(pending?.c).toBe(0);
   });
 });

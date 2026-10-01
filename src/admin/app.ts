@@ -87,12 +87,16 @@ function fromResult<T>(c: Ctx, result: admin.Result<T>, okStatus: 200 | 201 = 20
   }
 }
 
-/** 削除の結果。R2 から消せなかった画像が残ったらログに出す(監査 L2。応答は成功のまま)。 */
-function deleted(c: Ctx, result: admin.Result<images.DeletedWithImages>) {
-  if (result.ok && result.value.imagesLeft > 0) {
-    logFailure("delete", new Error(`images left in storage: ${result.value.imagesLeft}`));
+/**
+ * 画像に触る操作の結果。🔴 **R2 から消せずに積んでいる画像があれば、ログに出し、応答にも数を載せる**
+ *   (`data.cleanupPending`。Codex #7 Blocker 2: 黙って 200 を返さない)。積んだキーは次の画像の操作で消し直す。
+ */
+function withCleanup<T extends images.ImageOutcome>(c: Ctx, where: string, result: admin.Result<T>) {
+  if (!result.ok) return fromResult(c, result);
+  if (result.value.cleanupPending > 0) {
+    logFailure(where, new Error(`images waiting for deletion in storage: ${result.value.cleanupPending}`));
   }
-  return fromResult(c, result.ok ? { ok: true, value: null } : result);
+  return c.json({ ok: true, data: { cleanupPending: result.value.cleanupPending } });
 }
 
 async function readJson(c: Ctx): Promise<{ value: unknown } | { problem: Response }> {
@@ -202,6 +206,7 @@ export function createAdminApp(): Hono<AppEnv> {
     const day = t.toISOString().slice(0, 10);
     const key = (await hmacHex(config.rateLimitKey, `${connectingAddress(c.req.header("cf-connecting-ip") ?? null)}|${day}`)).slice(0, 32);
     await auth.purgeStaleLoginAttempts(c.env, t);
+    await auth.purgeExpiredSessions(c.env, config.ownerId, t, IDLE_TIMEOUT_MS);
     // 🔴 PBKDF2 の前に試行を1つ足す(監査 M1)。上限を超えていたらパスワードを確かめない
     const attempts = await auth.reserveLoginAttempt(c.env, key, t);
     if (attempts > auth.LOGIN_ATTEMPTS_PER_WINDOW) return fail(c, 429, "too_many_attempts");
@@ -269,7 +274,7 @@ export function createAdminApp(): Hono<AppEnv> {
     if (siteId === null) return fail(c, 404, "not_found");
     const parsed = await body(c, parseDeleteConfirm);
     if ("problem" in parsed) return parsed.problem;
-    return deleted(c, await images.deleteSiteWithImages(c.env, c.get("ownerId"), siteId));
+    return withCleanup(c, "delete", await images.deleteSiteWithImages(c.env, c.get("ownerId"), siteId));
   });
 
   /* ─────────────── ポップ ─────────────── */
@@ -354,7 +359,7 @@ export function createAdminApp(): Hono<AppEnv> {
     if (popupId === null) return fail(c, 404, "not_found");
     const parsed = await body(c, parseDeleteConfirm);
     if ("problem" in parsed) return parsed.problem;
-    return deleted(c, await images.deletePopupWithImages(c.env, c.get("ownerId"), popupId));
+    return withCleanup(c, "delete", await images.deletePopupWithImages(c.env, c.get("ownerId"), popupId));
   });
 
   /* ─────────────── パターン ─────────────── */
@@ -399,7 +404,7 @@ export function createAdminApp(): Hono<AppEnv> {
     if (variantId === null) return fail(c, 404, "not_found");
     const parsed = await body(c, parseDeleteConfirm);
     if ("problem" in parsed) return parsed.problem;
-    return deleted(c, await images.deleteVariantWithImages(c.env, c.get("ownerId"), variantId));
+    return withCleanup(c, "delete", await images.deleteVariantWithImages(c.env, c.get("ownerId"), variantId));
   });
 
   /*
@@ -421,10 +426,7 @@ export function createAdminApp(): Hono<AppEnv> {
       contentType: checked.type.mime,
       ext: checked.type.ext,
     });
-    if (stored.ok && stored.value.previousKeyDeleted === false) {
-      logFailure("image", new Error("previous image could not be deleted"));
-    }
-    return fromResult(c, stored.ok ? { ok: true, value: { stored: true } } : stored);
+    return withCleanup(c, "image", stored);
   });
 
   app.delete(`${API_PREFIX}/variants/:variantId/image`, async (c) => {
@@ -432,8 +434,7 @@ export function createAdminApp(): Hono<AppEnv> {
     if (variantId === null) return fail(c, 404, "not_found");
     const parsed = await body(c, parseEmpty);
     if ("problem" in parsed) return parsed.problem;
-    const removed = await images.removeVariantImage(c.env, c.get("ownerId"), variantId);
-    return fromResult(c, removed.ok ? { ok: true, value: null } : removed);
+    return withCleanup(c, "image", await images.removeVariantImage(c.env, c.get("ownerId"), variantId));
   });
 
   app.notFound((c) => fail(c, 404, "not_found"));

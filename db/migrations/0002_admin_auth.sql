@@ -1,4 +1,4 @@
--- ADPOP 0002(D1): 管理画面のログイン(PR3b。設計 = notes の ADPOP-PR3b-設計 改訂 v2)。
+-- ADPOP 0002(D1): 管理画面のログインと、画像の後始末(PR3b。設計 = notes の ADPOP-PR3b-設計 改訂 v2)。
 --
 -- 🔴 **追加だけ**(既存の表・索引・トリガは1つも変えない。tests/d1-migration-additive.test.ts がスキーマの差分で見る)。
 -- 🔴 REPLACE の守り(0001 の末尾と同じ形)を、新しい表の一意なキーにも置く(tests/d1-replace.test.ts が一覧を突き合わせる)。
@@ -49,4 +49,29 @@ create trigger admin_login_attempts_immutable before update of key on admin_logi
 when new.key is not old.key
 begin
   select raise(abort, 'adpop:immutable:admin_login_attempts');
+end;
+
+-- 🔴 **R2 から消せなかった画像のキー**(Codex #7 Blocker 2)。消せなかったら、ここに積んで、
+--   同じ所有者の次の画像の操作(アップロード・外す・削除)のたびに消し直す(src/lib/data/images.ts)。
+--   ⚠ 消し直すまでの間は、キーを知っていれば配信の /img から取れる(キーは推測できない乱数)。
+create table pending_image_deletions (
+  key        text primary key
+               check (length(key) between 43 and 44 and key glob 'images/*.*'
+                      and substr(key, 8, 32) not glob '*[^0-9a-f]*' and substr(key, 40, 1) = '.'),
+  owner_id   text not null references owners (id) on delete cascade,
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  attempts   integer not null default 0 check (attempts >= 0)
+);
+create index pending_image_deletions_owner on pending_image_deletions (owner_id);
+
+create trigger pending_image_deletions_no_replace before insert on pending_image_deletions
+when exists (select 1 from pending_image_deletions where key = new.key)
+begin
+  select raise(ignore);
+end;
+
+create trigger pending_image_deletions_immutable before update of key, owner_id on pending_image_deletions
+when new.key is not old.key or new.owner_id is not old.owner_id
+begin
+  select raise(abort, 'adpop:immutable:pending_image_deletions');
 end;

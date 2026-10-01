@@ -215,10 +215,10 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "B16 パターンを消すときに R2 の画像を消さない(L2)",
+    "name": "B16 削除のときに R2 の画像を消さない(L2)",
     "file": "src/lib/data/images.ts",
-    "from": "  const deleted = await admin.deleteVariant(env, ownerId, variantId);\n  if (!deleted.ok) return deleted;\n  return { ok: true, value: { imagesLeft: await deleteQuietly(env, keys.value) } };",
-    "to": "  const deleted = await admin.deleteVariant(env, ownerId, variantId);\n  if (!deleted.ok) return deleted;\n  return { ok: true, value: { imagesLeft: 0 } };",
+    "from": "  await deleteOrEnqueue(env, ownerId, keys.value);\n  return { ok: true, value: { cleanupPending: await pendingCount(env, ownerId) } };",
+    "to": "  return { ok: true, value: { cleanupPending: await pendingCount(env, ownerId) } };",
     "tests": [
       "tests/admin-api.test.ts"
     ]
@@ -249,6 +249,71 @@ export const MUTATIONS = [
     "to": "if (isSof) return { width: u16be(bytes, i + 5), height: u16be(bytes, i + 5) };",
     "tests": [
       "tests/image-check.test.ts"
+    ]
+  },
+  {
+    "name": "C1 置いた後の例外で新しいキーを消さない(#7 Blocker 1)",
+    "file": "src/lib/data/images.ts",
+    "from": "    // 🔴 置いたかもしれない新しいキーを消す(消せなければ積む)。元の例外はそのまま投げる\n    await deleteOrEnqueue(env, ownerId, [key]);\n    throw error;",
+    "to": "    throw error;",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C2 消せなかったキーを積まない(#7 Blocker 2)",
+    "file": "src/lib/data/images.ts",
+    "from": "  if (failed.length > 0) await enqueue(env, ownerId, failed);",
+    "to": "",
+    "tests": [
+      "tests/d1-images-failure.test.ts",
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C3 積んだキーを消し直さない",
+    "file": "src/lib/data/images.ts",
+    "from": "      if (isImageKey(key)) await resolveImages(env).delete(key);\n",
+    "to": "",
+    "tests": [
+      "tests/d1-images-failure.test.ts",
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C4 消し直しが所有者を見ない",
+    "file": "src/lib/data/images.ts",
+    "from": "    .prepare(`select key from pending_image_deletions where owner_id = ?1 order by created_at, key limit ?2`)",
+    "to": "    .prepare(`select key from pending_image_deletions where ?1 is not null order by created_at, key limit ?2`)",
+    "tests": [
+      "tests/d1-owner-isolation.test.ts"
+    ]
+  },
+  {
+    "name": "C5 応答に cleanupPending を載せない",
+    "file": "src/admin/app.ts",
+    "from": "  return c.json({ ok: true, data: { cleanupPending: result.value.cleanupPending } });",
+    "to": "  return c.json({ ok: true, data: null });",
+    "tests": [
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C6 上限の判定を PBKDF2 の後ろへ動かす(M1)",
+    "file": "src/admin/app.ts",
+    "from": "    if (attempts > auth.LOGIN_ATTEMPTS_PER_WINDOW) return fail(c, 429, \"too_many_attempts\");\n    // 🔴 メールの正否にかかわらず PBKDF2 を1回回す(時間差でメールの正否を分からせない・監査 L7)\n    const derived = await pbkdf2(parsed.value.password, config.passwordHash.salt);",
+    "to": "    // 🔴 メールの正否にかかわらず PBKDF2 を1回回す(時間差でメールの正否を分からせない・監査 L7)\n    const derived = await pbkdf2(parsed.value.password, config.passwordHash.salt);\n    if (attempts > auth.LOGIN_ATTEMPTS_PER_WINDOW) return fail(c, 429, \"too_many_attempts\");",
+    "tests": [
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C7 ログインを試みたときにセッションを掃除しない",
+    "file": "src/admin/app.ts",
+    "from": "    await auth.purgeExpiredSessions(c.env, config.ownerId, t, IDLE_TIMEOUT_MS);\n",
+    "to": "",
+    "tests": [
+      "tests/admin-api.test.ts"
     ]
   }
 ];
