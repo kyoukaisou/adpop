@@ -56,3 +56,8 @@ export function normalizePageUrl(raw: unknown): { ok: true; value: string | null
   if (cut.length > MAX_URL_LENGTH || !PAGE_URL_PATTERN.test(cut)) return { ok: false };
   return { ok: true, value: cut };
 }
+
+/** 画像のキーの形(`images/<32桁の16進>.<拡張子>`)。R2 に渡す前・配信で読む前に通す。 */
+export function isImageKey(value: unknown): value is string {
+  return typeof value === "string" && /^images\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(value);
+}

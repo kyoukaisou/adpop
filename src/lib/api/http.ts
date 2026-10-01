@@ -57,6 +57,16 @@ export async function readBodyWithLimit(
   body: ReadableStream<Uint8Array> | null,
   maxBytes: number = MAX_EVENT_BODY_BYTES,
 ): Promise<{ text: string } | { problem: RequestProblem }> {
+  const read = await readBytesWithLimit(body, maxBytes);
+  if ("problem" in read) return read;
+  return { text: new TextDecoder().decode(read.bytes) };
+}
+
+/** `readBodyWithLimit` のバイト列版(画像のアップロードが使う)。数えながら読み、上限を超えたら打ち切る。 */
+export async function readBytesWithLimit(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+): Promise<{ bytes: Uint8Array } | { problem: RequestProblem }> {
   if (body === null) return { problem: { status: 400, reason: "body" } };
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -83,7 +93,7 @@ export async function readBodyWithLimit(
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return { text: new TextDecoder().decode(merged) };
+  return { bytes: merged };
 }
 
 /**

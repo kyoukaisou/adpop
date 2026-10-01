@@ -16,6 +16,7 @@
 */
 import type { D1Database } from "@cloudflare/workers-types";
 import { isHex32, isOrigin, isUuid, normalizePageUrl } from "./shapes";
+import type { Bindings } from "./source";
 
 /** 本文の上限(旧版と同じ 4096 バイト)。⚠ ルートは回線のバイト、ここは正規化した JSON のバイトを数える。 */
 export const MAX_EVENT_JSON_BYTES = 4096;
@@ -82,7 +83,7 @@ function pickContent(raw: string): Record<string, unknown> {
  * 配信の Worker が受け取るバインド。🔴 **Worker は D1 の値そのものに触らず、この入れ物ごと渡す**
  *   (データ層の外で D1 の値を参照していないことを `tests/d1-access-boundary.test.ts` が型で見る)。
  */
-export type DeliveryBindings = { DB?: D1Database };
+export type DeliveryBindings = Bindings;
 
 export class MissingDatabaseError extends Error {
   constructor() {

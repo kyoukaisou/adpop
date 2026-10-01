@@ -9,6 +9,9 @@
   "name": "adpop-delivery",
   "main": "src/delivery/worker.ts",
   "compatibility_date": "2026-09-30",
+  // 🔴 既定値に頼らず明示する(security 監査 M7)。Version URL は修正前の版を本番のデータのまま動かすので切る。
+  "workers_dev": true,
+  "preview_urls": false,
   // 🔴 静的配信: 埋め込みスクリプト(`npm run build:embed` の出力)。
   //   ファイルがある URL は Worker を起こさずに配る(課金されない。Workers の公式 pricing)。
   "assets": { "directory": "./dist/delivery-assets" },
@@ -20,10 +23,13 @@
       "migrations_dir": "db/migrations"
     }
   ],
+  // 画像(PR3b)。⚠ バインドを「読むだけ」に絞る設定は無い。配信の Worker は読むだけの
+  //   `src/lib/data/image-read.ts` しか import しない(tests/delivery-imports.test.ts)。
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "adpop-images" }],
   // 🔴 **呼び出しのログ(invocation logs)を Cloudflare に残さない**(Codex #4 Blocker 3・本部裁定)。
   //   呼び出しのログは「Request, Response, and related metadata」を保存する(Workers Logs の公式文書)。
   //   README の「IP アドレスを保存しない」と両立させるため切る。残すのは、こちらが console に出す
-  //   **匿名化したエラーの1行だけ**(src/delivery/log.ts)。
+  //   **匿名化したエラーの1行だけ**(src/lib/log/redact.ts)。
   //   ⚠ invocation_logs を切ったときに console の出力が保存されるかは、公式文書に書かれていない(未確認)。
   "observability": { "enabled": true, "logs": { "invocation_logs": false } }
 }

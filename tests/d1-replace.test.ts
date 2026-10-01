@@ -26,7 +26,11 @@ const a = {
 };
 const siteB = crypto.randomUUID();
 
-const TABLES = ["owners", "sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "chatbot_nodes", "events"] as const;
+/**
+ * 🔴 表の一覧は**DB から引く**(手で並べると、表を足した日に REPLACE の検査の外に置かれる = PR3b で実際に足した)。
+ *   ⚠ SQLite と D1 が持つ内部の表(`sqlite_*` / `_cf_*` / `d1_migrations`)は除く。
+ */
+let TABLES: string[] = [];
 
 async function snapshot(): Promise<Record<string, unknown[]>> {
   const out: Record<string, unknown[]> = {};
@@ -37,6 +41,15 @@ async function snapshot(): Promise<Record<string, unknown[]>> {
 beforeAll(async () => {
   t = await openTestD1();
   db = t.db;
+  TABLES = (
+    await db
+      .prepare(
+        `select name from sqlite_master where type = 'table'
+           and name not like 'sqlite_%' and name not like '\_cf\_%' escape '\\' and name <> 'd1_migrations'
+         order by name`,
+      )
+      .all<{ name: string }>()
+  ).results.map((r) => r.name);
   await db.batch([
     db.prepare("insert into owners (id) values (?1), (?2)").bind(OWNER_A, OWNER_B),
     db.prepare("insert into sites (id, owner_id, name, site_key) values (?1, ?2, 'A', ?3)").bind(a.site, OWNER_A, a.siteKey),
@@ -49,6 +62,10 @@ beforeAll(async () => {
     db.prepare(
       "insert into events (owner_id, site_id, popup_id, variant_id, kind, trigger_kind, impression_id, device) values (?1, ?2, ?3, ?4, 'impression', 'exit_intent', ?5, 'mobile')",
     ).bind(OWNER_A, a.site, a.popup, a.variant, a.impression),
+    db.prepare(
+      "insert into admin_sessions (token_hash, owner_id, password_fingerprint, expires_at) values (?1, ?2, ?3, '2999-01-01T00:00:00.000Z')",
+    ).bind("a".repeat(64), OWNER_A, "b".repeat(16)),
+    db.prepare("insert into admin_login_attempts (key, window_start, attempts) values (?1, '2026-01-01T00:00:00.000Z', 3)").bind("c".repeat(32)),
   ]);
   a.eventId = (await db.prepare("select id from events").first<{ id: number }>())!.id;
 });
@@ -155,6 +172,29 @@ describe("REPLACE / UPSERT で既存の行を入れ替えられない", () => {
       "",
     );
     COVERED.add("events(site_id,impression_id,kind) where impression/close");
+  });
+
+  it("🔴 ログインの表(PR3b)も REPLACE で入れ替えられない・セッションの所有者は変えられない", async () => {
+    await expectUnchanged(
+      "insert or replace into admin_sessions (token_hash, owner_id, password_fingerprint, expires_at) values (?1, ?2, ?3, '2999-01-01T00:00:00.000Z')",
+      ["a".repeat(64), OWNER_B, "d".repeat(16)],
+      "adpop:conflict:admin_sessions",
+    );
+    COVERED.add("admin_sessions(token_hash)");
+    await expectUnchanged("update admin_sessions set owner_id = ?1", [OWNER_B], "adpop:immutable:admin_sessions");
+    await expectUnchanged(
+      "insert or replace into admin_login_attempts (key, window_start, attempts) values (?1, '2026-01-01T00:00:00.000Z', 0)",
+      ["c".repeat(32)],
+      "adpop:conflict:admin_login_attempts",
+    );
+    COVERED.add("admin_login_attempts(key)");
+  });
+
+  it("🔴 消し直し待ちの画像のキーを REPLACE しても、黙って捨てられる(所有者は変えられない)", async () => {
+    await t.db.prepare("insert into pending_image_deletions (key, owner_id) values (?1, ?2)").bind(`images/${"f".repeat(32)}.png`, OWNER_A).run();
+    await expectUnchanged("insert or replace into pending_image_deletions (key, owner_id) values (?1, ?2)", [`images/${"f".repeat(32)}.png`, OWNER_B], "");
+    COVERED.add("pending_image_deletions(key)");
+    await expectUnchanged("update pending_image_deletions set owner_id = ?1", [OWNER_B], "adpop:immutable:pending_image_deletions");
   });
 
   it("🔴 撃ったキーが、DB にある一意なキーの一覧と一致する(一意なキーを足したら、ここで落ちる。id を含む複合キーは除く)", async () => {

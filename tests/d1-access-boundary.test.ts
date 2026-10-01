@@ -24,7 +24,17 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join("src", "lib", "data") + path.sep;
-const D1_NAMES = new Set(["D1Database", "D1PreparedStatement", "D1DatabaseSession", "D1Result", "D1ExecResult"]);
+const D1_NAMES = new Set([
+  "D1Database",
+  "D1PreparedStatement",
+  "D1DatabaseSession",
+  "D1Result",
+  "D1ExecResult",
+  // 🔴 PR3b: R2 に触るのもデータ層だけ(画像の書き込み・削除を所有者の確認の外で行わせない)
+  "R2Bucket",
+  "R2Object",
+  "R2ObjectBody",
+]);
 
 function program(files: string[]): ts.Program {
   return ts.createProgram(files, {
@@ -47,6 +57,8 @@ function declaredInD1(symbol: ts.Symbol | undefined): boolean {
   // メソッド(`prepare` など)は、宣言の親(クラス・インターフェース)の名前で見る
   return (symbol.declarations ?? []).some((decl) => {
     const parent = decl.parent;
+    // ⚠ 宣言に親が無いもの(合成されたシンボル。Hono の型などで実測)は、ここでは D1 ではない
+    if (parent === undefined) return false;
     return (
       (ts.isClassDeclaration(parent) || ts.isInterfaceDeclaration(parent)) &&
       parent.name !== undefined &&
@@ -143,9 +155,10 @@ describe("D1 の値に触る場所", () => {
     ["バインドの入れ物から取り出す", `const fromEnv = env.DB; void fromEnv;`],
     ["文字列の添字と非 null アサーションの連なり(Codex 2巡目)", `void env["DB"]!["prepare"]("select 1")["run"]();`],
     ["括弧と as で包んだ D1 の値", `void (env.DB as D1Database)["prepare"]("select 1");`],
+    ["R2 のバインドから直接書く(PR3b)", `void env.IMAGES!.put("images/x.png", "x");`],
   ])("🔴 検出器の前提: %s を見つける", (_label, body) => {
     const sites = withFixture(
-      `import type { D1Database } from "@cloudflare/workers-types";\nexport function leak(db: D1Database, env: { DB?: D1Database }) {\n${body}\n}\n`,
+      `import type { D1Database, R2Bucket } from "@cloudflare/workers-types";\nexport function leak(db: D1Database, env: { DB?: D1Database; IMAGES?: R2Bucket }) {\n${body}\n}\n`,
       (file, dir) => d1References(dir, [file]),
     );
     // 本体は3行目。引数の宣言(2行目)ではなく、本体の中で見つかっていること

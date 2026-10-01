@@ -20,4 +20,4 @@ dist/delivery-assets/
 # 検査が一時的に作るファイル
 .tmp-*/
 .wrangler/
-.dev.vars
+.dev.vars*

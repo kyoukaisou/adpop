@@ -64,3 +64,8 @@ jobs:
         run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/delivery-worker" -c wrangler.delivery.jsonc
         env:
           WRANGLER_SEND_METRICS: "false"
+
+      - name: 管理画面の Worker を束ねる(dry-run)
+        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/admin-worker" -c wrangler.admin.jsonc
+        env:
+          WRANGLER_SEND_METRICS: "false"

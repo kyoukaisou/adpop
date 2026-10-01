@@ -10,7 +10,9 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as admin from "../src/lib/data/admin";
+import * as images from "../src/lib/data/images";
 import { openTestD1, OWNER_A, OWNER_B, type TestD1 } from "./helpers/d1";
+import { r2Snapshot } from "./helpers/r2";
 
 let t: TestD1;
 let db: D1Database;
@@ -90,9 +92,43 @@ const CASES: Record<string, [Case, Expect]> = {
     (r) => expect(r).toEqual(NOT_FOUND),
   ],
   deleteVariant: [(d) => admin.deleteVariant(d, OWNER_B, a.variant), (r) => expect(r).toEqual(NOT_FOUND)],
+  // PR3b: 画像のキーを書く唯一の関数と、削除の前にキーを集める関数
+  setVariantImage: [
+    (d) => admin.setVariantImage(d, OWNER_B, a.variant, `images/${"0".repeat(32)}.png`),
+    (r) => expect(r).toEqual(NOT_FOUND),
+  ],
 };
 
-const TABLES = ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events"] as const;
+/** PR3b: R2 に触るデータ層(`images.ts`)。🔴 R2 の中身も変わらないことを見る */
+type ImageCase = (env: { DB: D1Database; IMAGES: TestD1["images"] }) => Promise<unknown>;
+const IMAGE_CASES: Record<string, [ImageCase, Expect]> = {
+  storeVariantImage: [
+    (env) => images.storeVariantImage(env, OWNER_B, a.variant, { bytes: TINY_PNG, contentType: "image/png", ext: "png" }),
+    (r) => expect(r).toEqual(NOT_FOUND),
+  ],
+  removeVariantImage: [(env) => images.removeVariantImage(env, OWNER_B, a.variant), (r) => expect(r).toEqual(NOT_FOUND)],
+  deleteSiteWithImages: [(env) => images.deleteSiteWithImages(env, OWNER_B, a.site), (r) => expect(r).toEqual(NOT_FOUND)],
+  deletePopupWithImages: [(env) => images.deletePopupWithImages(env, OWNER_B, a.popup), (r) => expect(r).toEqual(NOT_FOUND)],
+  deleteVariantWithImages: [
+    (env) => images.deleteVariantWithImages(env, OWNER_B, a.variant),
+    (r) => expect(r).toEqual(NOT_FOUND),
+  ],
+  // 🔴 B が消し直しを走らせても、A の積んだキー(と、その R2 の中身)には触らない
+  retryPendingImageDeletions: [
+    (env) => images.retryPendingImageDeletions(env, OWNER_B),
+    (r) => expect(r).toEqual({ ok: true, value: { remaining: 0 } }),
+  ],
+};
+
+// 1x1 の PNG(画像の置き場の検査に使う)
+const TINY_PNG = Uint8Array.from(
+  atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+  (ch) => ch.charCodeAt(0),
+);
+
+const TABLES = ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events", "pending_image_deletions"] as const;
+
+const r2Keys = () => r2Snapshot(t.images);
 
 async function snapshotOfA(): Promise<Record<string, unknown[]>> {
   const out: Record<string, unknown[]> = {};
@@ -115,6 +151,16 @@ beforeAll(async () => {
   a.archivedVariant = value(await admin.createVariant(db, OWNER_A, a.popup, input)).id;
   value(await admin.archiveVariant(db, OWNER_A, a.archivedVariant));
   value(await admin.activatePopup(db, OWNER_A, a.popup));
+  // A のパターンに画像を1枚(B から消されない・差し替えられないことを見るため)
+  value(await images.storeVariantImage({ DB: db, IMAGES: t.images }, OWNER_A, a.variant, { bytes: TINY_PNG, contentType: "image/png", ext: "png" }));
+  // A の「消し直し待ち」の画像を1枚(R2 にも置いておく = B が消し直しを走らせても消えないことを見る)
+  const pendingKey = `images/${"e".repeat(32)}.png`;
+  await t.images.put(pendingKey, TINY_PNG, { httpMetadata: { contentType: "image/png" } });
+  // ⚠ 積んでから時間が経った行にする(消し直しの対象になる行 = B が触れたら消えてしまう行で撃つ)
+  await db
+    .prepare("insert into pending_image_deletions (key, owner_id, created_at) values (?1, ?2, '2000-01-01T00:00:00.000Z')")
+    .bind(pendingKey, OWNER_A)
+    .run();
 });
 afterAll(async () => {
   await t?.dispose();
@@ -151,6 +197,27 @@ describe("所有者の分離(データ層の全関数)", () => {
       }
     }
     expect(await snapshotOfA()).toEqual(before);
+  });
+
+  it("🔴 画像(R2)のデータ層も、公開関数を全部撃つ。A の行も R2 の中身も変わらない", async () => {
+    const exported = Object.entries(images)
+      .filter(([, v]) => typeof v === "function")
+      .map(([name]) => name)
+      .sort();
+    expect(Object.keys(IMAGE_CASES).sort()).toEqual(exported);
+    const before = await snapshotOfA();
+    const keysBefore = await r2Keys();
+    expect(keysBefore.length, "A の画像が無い = 何も測っていない").toBe(2);
+    for (const [name, [run, check]] of Object.entries(IMAGE_CASES)) {
+      const result = await run({ DB: db, IMAGES: t.images });
+      try {
+        await check(result);
+      } catch (error) {
+        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    expect(await snapshotOfA()).toEqual(before);
+    expect(await r2Keys()).toEqual(keysBefore);
   });
 
   it("✅ A 自身が呼ぶと、同じ関数は A の行を返す(締めすぎていない)", async () => {
