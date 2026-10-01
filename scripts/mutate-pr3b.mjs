@@ -222,6 +222,34 @@ export const MUTATIONS = [
     "tests": [
       "tests/admin-api.test.ts"
     ]
+  },
+  {
+    "name": "B24 寸法の上限 2,400→2,401",
+    "file": "src/lib/storage/image.ts",
+    "from": "export const MAX_IMAGE_SIDE = 2400;",
+    "to": "export const MAX_IMAGE_SIDE = 2401;",
+    "tests": [
+      "tests/image-check.test.ts",
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "B25 寸法を読めない画像を通す",
+    "file": "src/lib/storage/image.ts",
+    "from": "  if (size === null || size.width === 0 || size.height === 0) return { ok: false, reason: \"corrupt\" };\n  if (Math.max(size.width, size.height) > MAX_IMAGE_SIDE)",
+    "to": "  if (size !== null && Math.max(size.width, size.height) > MAX_IMAGE_SIDE)",
+    "tests": [
+      "tests/image-check.test.ts"
+    ]
+  },
+  {
+    "name": "B26 JPEG の寸法を幅と高さを取り違えて読む",
+    "file": "src/lib/storage/image.ts",
+    "from": "if (isSof) return { width: u16be(bytes, i + 7), height: u16be(bytes, i + 5) };",
+    "to": "if (isSof) return { width: u16be(bytes, i + 5), height: u16be(bytes, i + 5) };",
+    "tests": [
+      "tests/image-check.test.ts"
+    ]
   }
 ];
 

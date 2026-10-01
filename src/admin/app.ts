@@ -19,7 +19,7 @@ import * as images from "../lib/data/images";
 import { isUuid } from "../lib/data/shapes";
 import { MissingBindingError } from "../lib/data/source";
 import { logFailure } from "../lib/log/redact";
-import { checkImage, MAX_UPLOAD_BYTES } from "../lib/storage/image";
+import { checkImage, IMAGE_TOO_LARGE_MESSAGE, MAX_UPLOAD_BYTES } from "../lib/storage/image";
 import {
   parseDeleteConfirm,
   parseEmpty,
@@ -412,7 +412,10 @@ export function createAdminApp(): Hono<AppEnv> {
     const read = await readBytesWithLimit(c.req.raw.body, MAX_UPLOAD_BYTES);
     if ("problem" in read) return fail(c, read.problem.status === 413 ? 413 : 400, read.problem.reason);
     const checked = checkImage(read.bytes);
-    if (!checked.ok) return fail(c, checked.reason === "size" ? 413 : 415, `image_${checked.reason}`);
+    if (!checked.ok) {
+      if (checked.reason === "dimensions") return fail(c, 413, "image_dimensions", { message: IMAGE_TOO_LARGE_MESSAGE });
+      return fail(c, checked.reason === "size" ? 413 : 415, `image_${checked.reason}`);
+    }
     const stored = await images.storeVariantImage(c.env, c.get("ownerId"), variantId, {
       bytes: checked.bytes,
       contentType: checked.type.mime,

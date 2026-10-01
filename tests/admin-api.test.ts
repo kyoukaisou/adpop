@@ -19,7 +19,9 @@ import * as admin from "../src/lib/data/admin";
 import * as images from "../src/lib/data/images";
 import { handleDelivery } from "../src/delivery/worker";
 import { generateSecrets, hashPassword } from "../scripts/admin-hash.mjs";
+import { IMAGE_TOO_LARGE_MESSAGE } from "../src/lib/storage/image";
 import { openTestD1, type TestD1 } from "./helpers/d1";
+import { jpeg, png } from "./helpers/images";
 
 const BASE = "https://adpop-admin.example.workers.dev";
 const OTHER_OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -600,14 +602,31 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
       cookie,
     });
     const id = ((await variant.json()) as { data: { id: string } }).data.id;
-    // SOI + APP1(Exif・"GPS" を含む)+ SOS + データ + EOI
+    // SOI + APP1(Exif・"GPS" を含む)+ SOF0 + SOS + データ + EOI
     const exif = [0xff, 0xe1, 0x00, 0x0c, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x47, 0x50, 0x53, 0x21];
-    const jpeg = Uint8Array.from([0xff, 0xd8, ...exif, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]);
-    const response = await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: jpeg, cookie });
+    const response = await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: jpeg(16, 16, exif), cookie });
     expect(response.status).toBe(200);
     const detail = (await (await call(`/api/admin/variants/${id}`, { cookie })).json()) as { data: { content: { imageKey: string } } };
     const stored = await t.images.get(detail.data.content.imageKey);
     const bytes = new Uint8Array(await stored!.arrayBuffer());
-    expect(Array.from(bytes)).toEqual([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]);
+    expect(Array.from(bytes)).toEqual(Array.from(jpeg(16, 16)));
+  });
+
+  it("🔴 長い辺が 2,400px を超える画像は 413 と文言(D-303)", async () => {
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "dims", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const variant = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    const id = ((await variant.json()) as { data: { id: string } }).data.id;
+    const put = (raw: Uint8Array) => call(`/api/admin/variants/${id}/image`, { method: "PUT", raw, cookie });
+    const response = await put(png(2401, 100));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ ok: false, reason: "image_dimensions", message: IMAGE_TOO_LARGE_MESSAGE });
+    expect((await put(png(100, 2400))).status).toBe(200);
   });
 });
