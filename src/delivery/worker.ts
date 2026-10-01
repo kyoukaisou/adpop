@@ -4,6 +4,7 @@
     GET  /api/v1/config?site_key=…   そのサイトの、いま有効なポップの設定
     POST /api/v1/events?site_key=…   計測イベントを1件
     /embed/*                          埋め込みスクリプト(静的配信。**この Worker を起こさずに**配られる)
+    GET  /img/<キー>                   パターンの画像(R2 のバインドから読む。PR3b)
 
   旧版は Next.js のルートハンドラ(src/app/api/v1/*)だった。旧版のルートの検査を移して(tests/delivery-routes.test.ts)
   同じ状態コード・CORS・理由になることを確かめた(⚠ 接続文字列・42501 の検査は、D1 に無いので D1 のバインド欠けに置き換えた)。
@@ -21,8 +22,9 @@ import {
   readBodyWithLimit,
   siteKeyProblem,
 } from "../lib/api/http";
-import { logFailure } from "./log";
+import { logFailure } from "../lib/log/redact";
 import { hasDatabase, recordEvent, siteConfig, type DeliveryBindings } from "../lib/data/delivery";
+import { readImage } from "../lib/data/image-read";
 
 /**
  * 🔴 **この Worker は D1 の値に1度も触らない**(`env.DB` を読まない)。バインドの入れ物ごとデータ層へ渡す。
@@ -43,7 +45,7 @@ function deny(status: number, reason: string): Response {
 
 /**
  * DB に届かなかった。**握り潰さない** —— 訪問者には「出ないだけ」だが、ログには残す。
- * 🔴 ログは**匿名化した1行だけ**(src/delivery/log.ts)。呼び出しのログは設定で切ってある(wrangler.delivery.jsonc)。
+ * 🔴 ログは**匿名化した1行だけ**(src/lib/log/redact.ts)。呼び出しのログは設定で切ってある(wrangler.delivery.jsonc)。
  */
 function upstream(where: string, error: unknown): Response {
   logFailure(where, error);
@@ -97,8 +99,38 @@ async function handleEvents(request: Request, env: DeliveryEnv): Promise<Respons
   return new Response(null, { status: 204, headers: { ...corsHeaders(origin as string), "cache-control": NO_STORE } });
 }
 
+/** 画像の URL(`/img/<32桁の16進>.<拡張子>`)。キーの形は `images.ts` の `readImage` がもう一度確かめる。 */
+const IMAGE_PATH = /^\/img\/([0-9a-f]{32}\.(?:png|jpg|gif|webp))$/;
+
+/**
+ * 画像を返す(PR3b)。🔴 **バケットは公開しない**。この Worker がバインドから読んで返す。
+ * ⚠ キーは毎回新しい乱数なので中身は変わらない → 1年のキャッシュ(immutable)。
+ *   ⚠ 削除しても、CDN・ブラウザのキャッシュには残りうる(README)。
+ */
+async function handleImage(request: Request, env: DeliveryEnv, name: string): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") return deny(405, "method");
+  let image;
+  try {
+    image = await readImage(env, `images/${name}`);
+  } catch (error) {
+    return upstream("image", error);
+  }
+  if (image === null) return deny(404, "not_found");
+  return new Response(request.method === "HEAD" ? null : image.body, {
+    status: 200,
+    headers: {
+      "content-type": image.contentType,
+      "content-length": String(image.size),
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 export async function handleDelivery(request: Request, env: DeliveryEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
+  const imageMatch = IMAGE_PATH.exec(pathname);
+  if (imageMatch !== null) return handleImage(request, env, imageMatch[1]);
   const route =
     pathname === "/api/v1/config" ? "config" : pathname === "/api/v1/events" ? "events" : null;
   if (route === null) return deny(404, "not_found");

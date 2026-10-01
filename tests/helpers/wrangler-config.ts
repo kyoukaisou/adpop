@@ -42,7 +42,12 @@ export function stripLineComments(source: string): string {
 }
 
 export const DELIVERY_WRANGLER_PATH = path.resolve(__dirname, "../../wrangler.delivery.jsonc");
+export const ADMIN_WRANGLER_PATH = path.resolve(__dirname, "../../wrangler.admin.jsonc");
+
+export function readWranglerConfig(file: string): DeliveryWranglerConfig {
+  return JSON.parse(stripLineComments(readFileSync(file, "utf8"))) as DeliveryWranglerConfig;
+}
 
 export function readDeliveryWranglerConfig(): DeliveryWranglerConfig {
-  return JSON.parse(stripLineComments(readFileSync(DELIVERY_WRANGLER_PATH, "utf8"))) as DeliveryWranglerConfig;
+  return readWranglerConfig(DELIVERY_WRANGLER_PATH);
 }

@@ -13,8 +13,9 @@
 */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import { DELIVERABLE_VARIANT } from "./delivery";
+import { resolveDb, type DbSource } from "./source";
 import { classifyD1Error, type DataFailure } from "./errors";
-import { isHttpsUrl, isOrigin } from "./shapes";
+import { isHttpsUrl, isImageKey, isOrigin } from "./shapes";
 
 export type Result<T> = { ok: true; value: T } | { ok: false; failure: DataFailure | { kind: "not_found" } | { kind: "invalid"; field: string } | { kind: "no_deliverable_variant" } };
 
@@ -89,7 +90,8 @@ function parseContent(raw: string): Record<string, unknown> {
 /* ─────────────── 所有者 ─────────────── */
 
 /** 所有者の行を用意する(PR3b の認証がログイン時に呼ぶ)。既に在れば何もしない。 */
-export async function ensureOwner(db: D1Database, ownerId: string): Promise<Result<null>> {
+export async function ensureOwner(source: DbSource, ownerId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return write(async () => {
     await db.prepare(`insert into owners (id) values (?1) on conflict (id) do nothing`).bind(ownerId).run();
     return null;
@@ -115,7 +117,8 @@ async function originsOf(db: D1Database, ownerId: string, siteIds: string[]): Pr
   return map;
 }
 
-export async function listSites(db: D1Database, ownerId: string): Promise<Result<Site[]>> {
+export async function listSites(source: DbSource, ownerId: string): Promise<Result<Site[]>> {
+  const db = resolveDb(source);
   const rows = await db
     .prepare(`select id, name, site_key from sites where owner_id = ?1 order by created_at, id`)
     .bind(ownerId)
@@ -126,7 +129,8 @@ export async function listSites(db: D1Database, ownerId: string): Promise<Result
   );
 }
 
-export async function getSite(db: D1Database, ownerId: string, siteId: string): Promise<Result<Site>> {
+export async function getSite(source: DbSource, ownerId: string, siteId: string): Promise<Result<Site>> {
+  const db = resolveDb(source);
   const row = await db
     .prepare(`select id, name, site_key from sites where id = ?1 and owner_id = ?2`)
     .bind(siteId, ownerId)
@@ -149,10 +153,11 @@ function insertOrigins(db: D1Database, ownerId: string, siteId: string, origins:
 }
 
 export async function createSite(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   input: { name: string; allowedOrigins: string[] },
 ): Promise<Result<{ id: string }>> {
+  const db = resolveDb(source);
   if (!checkOrigins(input.allowedOrigins)) return invalid("allowedOrigins");
   const id = crypto.randomUUID();
   // ⚠ batch は1つのトランザクション。サイトと許可ドメインは両方入るか、両方入らない
@@ -173,11 +178,12 @@ export async function createSite(
  *   他人のサイトを指すと、名前の更新は0件・消去も0件・追加は複合外部キーが断る。
  */
 export async function updateSite(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   siteId: string,
   input: { name: string; allowedOrigins: string[] },
 ): Promise<Result<null>> {
+  const db = resolveDb(source);
   if (!checkOrigins(input.allowedOrigins)) return invalid("allowedOrigins");
   const exists = await db.prepare(`select 1 from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).first();
   if (exists === null) return notFound();
@@ -194,7 +200,8 @@ export async function updateSite(
 }
 
 /** 物理削除。⚠ 配下のポップ・パターン・**数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deleteSite(db: D1Database, ownerId: string, siteId: string): Promise<Result<null>> {
+export async function deleteSite(source: DbSource, ownerId: string, siteId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   const result = await db.prepare(`delete from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).run();
   return changed(result) ? ok(null) : notFound();
 }
@@ -229,7 +236,8 @@ function toPopup(r: PopupRow): Popup {
   };
 }
 
-export async function listPopups(db: D1Database, ownerId: string, siteId: string): Promise<Result<Popup[]>> {
+export async function listPopups(source: DbSource, ownerId: string, siteId: string): Promise<Result<Popup[]>> {
+  const db = resolveDb(source);
   const rows = await db
     .prepare(`select ${POPUP_COLUMNS} from popups where site_id = ?1 and owner_id = ?2 order by created_at, id`)
     .bind(siteId, ownerId)
@@ -237,7 +245,8 @@ export async function listPopups(db: D1Database, ownerId: string, siteId: string
   return ok(rows.results.map(toPopup));
 }
 
-export async function getPopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<Popup>> {
+export async function getPopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<Popup>> {
+  const db = resolveDb(source);
   const row = await db
     .prepare(`select ${POPUP_COLUMNS} from popups where id = ?1 and owner_id = ?2`)
     .bind(popupId, ownerId)
@@ -247,11 +256,12 @@ export async function getPopup(db: D1Database, ownerId: string, popupId: string)
 
 /** ⚠ 他人のサイトを指すと、複合外部キー (site_id, owner_id) が断る(`foreign_key`)。 */
 export async function createPopup(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   siteId: string,
   input: { name: string },
 ): Promise<Result<{ id: string }>> {
+  const db = resolveDb(source);
   const id = crypto.randomUUID();
   return write(async () => {
     await db
@@ -279,16 +289,18 @@ async function updatePopup(
   return changed(result.value) ? ok(null) : notFound();
 }
 
-export function renamePopup(db: D1Database, ownerId: string, popupId: string, name: string): Promise<Result<null>> {
+export function renamePopup(source: DbSource, ownerId: string, popupId: string, name: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return updatePopup(db, ownerId, popupId, "name = ?3", [name]);
 }
 
 export function updateFrequency(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   popupId: string,
   input: { suppressDays: number; sessionImpressions: number; postConversionDays: number; minDisplayDelaySeconds: number },
 ): Promise<Result<null>> {
+  const db = resolveDb(source);
   return updatePopup(
     db,
     ownerId,
@@ -298,12 +310,14 @@ export function updateFrequency(
   );
 }
 
-export function pausePopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<null>> {
+export function pausePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return updatePopup(db, ownerId, popupId, "status = case when status = 'active' then 'paused' else status end", []);
 }
 
 /** アーカイブ(配信から外す・数字は残す)。⚠ 稼働中のままはアーカイブできない(CHECK)ので同じ更新で停止にする。 */
-export function archivePopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<null>> {
+export function archivePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return updatePopup(
     db,
     ownerId,
@@ -314,12 +328,14 @@ export function archivePopup(db: D1Database, ownerId: string, popupId: string): 
 }
 
 /** アーカイブから戻す。⚠ 戻すとサイトあたりの上限を超えるなら DB のトリガが断る(`limit`)。 */
-export function restorePopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<null>> {
+export function restorePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return updatePopup(db, ownerId, popupId, "archived_at = null", []);
 }
 
 /** 物理削除。⚠ **数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deletePopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<null>> {
+export async function deletePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   const result = await db.prepare(`delete from popups where id = ?1 and owner_id = ?2`).bind(popupId, ownerId).run();
   return changed(result) ? ok(null) : notFound();
 }
@@ -331,7 +347,8 @@ export async function deletePopup(db: D1Database, ownerId: string, popupId: stri
  *   D1 は1つのデータベースのクエリを1つずつ処理するので、条件は2つの文の間で変わらない
  *   → 条件が偽なら**どちらの文も何も変えない**(「止めたが動かせなかった」を作らない)。
  */
-export async function activatePopup(db: D1Database, ownerId: string, popupId: string): Promise<Result<null>> {
+export async function activatePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   const eligible = `
     select 1 from popups target
     where target.id = ?1 and target.owner_id = ?2 and target.archived_at is null
@@ -364,7 +381,8 @@ export async function activatePopup(db: D1Database, ownerId: string, popupId: st
 
 /* ─────────────── トリガ ─────────────── */
 
-export async function listTriggers(db: D1Database, ownerId: string, popupId: string): Promise<Result<Trigger[]>> {
+export async function listTriggers(source: DbSource, ownerId: string, popupId: string): Promise<Result<Trigger[]>> {
+  const db = resolveDb(source);
   const rows = await db
     .prepare(`select kind, enabled, threshold from popup_triggers where popup_id = ?1 and owner_id = ?2`)
     .bind(popupId, ownerId)
@@ -373,12 +391,13 @@ export async function listTriggers(db: D1Database, ownerId: string, popupId: str
 }
 
 export async function setTriggerEnabled(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   popupId: string,
   kind: TriggerKind,
   enabled: boolean,
 ): Promise<Result<null>> {
+  const db = resolveDb(source);
   const result = await db
     .prepare(
       `update popup_triggers set enabled = ?1, updated_at = ${NOW} where popup_id = ?2 and owner_id = ?3 and kind = ?4`,
@@ -411,7 +430,8 @@ function toVariant(r: VariantRow): Variant {
   };
 }
 
-export async function listVariants(db: D1Database, ownerId: string, popupId: string): Promise<Result<Variant[]>> {
+export async function listVariants(source: DbSource, ownerId: string, popupId: string): Promise<Result<Variant[]>> {
+  const db = resolveDb(source);
   const rows = await db
     .prepare(`select ${VARIANT_COLUMNS} from variants where popup_id = ?1 and owner_id = ?2 order by created_at, id`)
     .bind(popupId, ownerId)
@@ -419,7 +439,8 @@ export async function listVariants(db: D1Database, ownerId: string, popupId: str
   return ok(rows.results.map(toVariant));
 }
 
-export async function getVariant(db: D1Database, ownerId: string, variantId: string): Promise<Result<Variant>> {
+export async function getVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<Variant>> {
+  const db = resolveDb(source);
   const row = await db
     .prepare(`select ${VARIANT_COLUMNS} from variants where id = ?1 and owner_id = ?2`)
     .bind(variantId, ownerId)
@@ -433,13 +454,29 @@ export type VariantInput = {
   destinationUrl: string;
 };
 
+/**
+ * 🔴 `content` の JSON は**3欄から自分で組み直す**(呼び出し側のオブジェクトを `stringify` しない)。
+ *   型は3欄でも、実行時には何でも通る。そのまま入れると `imageKey` を外から書けた(security 監査 M6)。
+ *   `imageKey` を書けるのは `setVariantImage` だけ。
+ */
+function textContent(input: VariantInput): string {
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return JSON.stringify({
+    headline: text(input.content?.headline),
+    body: text(input.content?.body),
+    buttonLabel: text(input.content?.buttonLabel),
+  });
+}
+
+
 /** ⚠ 他人のポップを指すと、複合外部キー (popup_id, owner_id) が断る(`foreign_key`)。 */
 export async function createVariant(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   popupId: string,
   input: VariantInput,
 ): Promise<Result<{ id: string }>> {
+  const db = resolveDb(source);
   if (!isHttpsUrl(input.destinationUrl)) return invalid("destinationUrl");
   const id = crypto.randomUUID();
   return write(async () => {
@@ -448,7 +485,7 @@ export async function createVariant(
         `insert into variants (id, owner_id, popup_id, public_key, kind, content, destination_url)
          values (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       )
-      .bind(id, ownerId, popupId, randomHex(16), input.kind, JSON.stringify(input.content), input.destinationUrl)
+      .bind(id, ownerId, popupId, randomHex(16), input.kind, textContent(input), input.destinationUrl)
       .run();
     return { id };
   });
@@ -456,22 +493,26 @@ export async function createVariant(
 
 /**
  * パターンの編集。⚠ **計測はリセットしない**(要件書 §6 裁定6)。
- * 文字の欄だけを差し替え、`content` の他の鍵(画像のキーなど)は残す(`json_patch`)。
+ * 文字の3欄だけを差し替える。**画像のキー(`imageKey`)は元の値を残す**(書けるのは `setVariantImage` だけ)。
  */
 export async function updateVariant(
-  db: D1Database,
+  source: DbSource,
   ownerId: string,
   variantId: string,
   input: VariantInput,
 ): Promise<Result<null>> {
+  const db = resolveDb(source);
   if (!isHttpsUrl(input.destinationUrl)) return invalid("destinationUrl");
   const result = await write(() =>
     db
       .prepare(
-        `update variants set kind = ?1, content = json_patch(content, ?2), destination_url = ?3, updated_at = ${NOW}
+        `update variants set kind = ?1,
+           content = case when json_extract(content, '$.imageKey') is null then ?2
+                          else json_set(?2, '$.imageKey', json_extract(content, '$.imageKey')) end,
+           destination_url = ?3, updated_at = ${NOW}
          where id = ?4 and owner_id = ?5`,
       )
-      .bind(input.kind, JSON.stringify(input.content), input.destinationUrl, variantId, ownerId)
+      .bind(input.kind, textContent(input), input.destinationUrl, variantId, ownerId)
       .run(),
   );
   if (!result.ok) return result;
@@ -497,17 +538,78 @@ async function setVariantArchived(
   return changed(result.value) ? ok(null) : notFound();
 }
 
-export function archiveVariant(db: D1Database, ownerId: string, variantId: string): Promise<Result<null>> {
+export function archiveVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return setVariantArchived(db, ownerId, variantId, true);
 }
 
 /** ⚠ 戻すとポップあたりの上限を超えるなら DB のトリガが断る(`limit`)。 */
-export function restoreVariant(db: D1Database, ownerId: string, variantId: string): Promise<Result<null>> {
+export function restoreVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   return setVariantArchived(db, ownerId, variantId, false);
 }
 
 /** 物理削除。⚠ **数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deleteVariant(db: D1Database, ownerId: string, variantId: string): Promise<Result<null>> {
+export async function deleteVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<null>> {
+  const db = resolveDb(source);
   const result = await db.prepare(`delete from variants where id = ?1 and owner_id = ?2`).bind(variantId, ownerId).run();
   return changed(result) ? ok(null) : notFound();
+}
+
+/**
+ * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB の1欄だけ)。
+ * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書き、**前のキーを返す**(呼び出し側が R2 から消す)。
+ * ⚠ batch(1つのトランザクション)で「前の値を読む」と「書く」を行う。
+ */
+export async function setVariantImage(
+  source: DbSource,
+  ownerId: string,
+  variantId: string,
+  key: string | null,
+): Promise<Result<{ previousKey: string | null }>> {
+  const db = resolveDb(source);
+  if (key !== null && !isImageKey(key)) return invalid("imageKey");
+  const result = await write(() =>
+    db.batch([
+      db
+        .prepare(`select json_extract(content, '$.imageKey') as previous from variants where id = ?1 and owner_id = ?2`)
+        .bind(variantId, ownerId),
+      db
+        .prepare(
+          `update variants set content = ${key === null ? "json_remove(content, '$.imageKey')" : "json_set(content, '$.imageKey', ?3)"},
+             updated_at = ${NOW}
+           where id = ?1 and owner_id = ?2`,
+        )
+        .bind(...(key === null ? [variantId, ownerId] : [variantId, ownerId, key])),
+    ]),
+  );
+  if (!result.ok) return result;
+  const [read, update] = result.value;
+  if (update.meta.changes === 0) return notFound();
+  const previous = (read.results as Array<{ previous: unknown }>)[0]?.previous;
+  return ok({ previousKey: isImageKey(previous) ? previous : null });
+}
+
+/** 所有者の配下にある画像のキー(サイト・ポップ・パターンを消す前に集める = 消したあと R2 からも消すため)。 */
+export async function imageKeysUnder(
+  source: DbSource,
+  ownerId: string,
+  scope: { siteId: string } | { popupId: string } | { variantId: string },
+): Promise<Result<string[]>> {
+  const db = resolveDb(source);
+  const [column, value] =
+    "siteId" in scope
+      ? ["p.site_id", scope.siteId]
+      : "popupId" in scope
+        ? ["v.popup_id", scope.popupId]
+        : ["v.id", scope.variantId];
+  const rows = await db
+    .prepare(
+      `select json_extract(v.content, '$.imageKey') as key from variants v
+       join popups p on p.id = v.popup_id
+       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,
+    )
+    .bind(ownerId, value)
+    .all<{ key: unknown }>();
+  return ok(rows.results.map((r) => r.key).filter(isImageKey));
 }

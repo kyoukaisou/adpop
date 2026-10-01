@@ -15,9 +15,13 @@
     "check:embed-independence": "node scripts/check-embed-independence.mjs",
     "build:embed": "node scripts/build-embed.mjs",
     "delivery:migrate:local": "wrangler d1 migrations apply adpop --local -c wrangler.delivery.jsonc",
-    "delivery:dev": "npm run build:embed && wrangler dev -c wrangler.delivery.jsonc"
+    "delivery:dev": "npm run build:embed && wrangler dev -c wrangler.delivery.jsonc",
+    "admin:hash": "node scripts/admin-hash.mjs",
+    "admin:dev": "wrangler dev -c wrangler.admin.jsonc",
+    "admin:migrate:local": "wrangler d1 migrations apply adpop --local -c wrangler.admin.jsonc"
   },
   "dependencies": {
+    "hono": "^4.13.12",
     "next": "16.3.3",
     "react": "19.2.4",
     "react-dom": "19.2.4"

@@ -22,6 +22,7 @@
 import {
   CONFIG_PATH,
   EVENTS_PATH,
+  IMPLEMENTED_TRIGGERS as IMPLEMENTED_TRIGGERS_FROM_BRIDGE,
   readBridge,
   RUNTIME_PATH,
   writeBridge,
@@ -58,7 +59,8 @@ export const PREVIEW_PARAM = "adpop_preview";
  *   ⚠ **設定の型は残してある**(`trigger_kind` の enum・`popup_triggers` の行)。
  *     サーバーは `back` を有効として返しうるが、**ここが無視する**。
  */
-export const IMPLEMENTED_TRIGGERS: TriggerKind[] = ["exit_intent"];
+// ⚠ 値は副作用の無い `./bridge` が持つ(管理画面の API が起動させずに読めるように)。ここは再輸出。
+export const IMPLEMENTED_TRIGGERS: readonly TriggerKind[] = IMPLEMENTED_TRIGGERS_FROM_BRIDGE;
 
 type Win = Window & typeof globalThis;
 

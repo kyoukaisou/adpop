@@ -243,7 +243,7 @@ export const MUTATIONS = [
   },
   {
     "name": "L1 エラーの1行を伏せずに出す",
-    "file": "src/delivery/log.ts",
+    "file": "src/lib/log/redact.ts",
     "from": "${redact(message)}",
     "to": "${message}",
     "tests": [

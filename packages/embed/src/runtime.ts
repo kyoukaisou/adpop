@@ -18,7 +18,7 @@
   🔴 **任意 HTML を1文字も受け取らない**(要件書 §3 除外5 / §5-3):
     見出し・本文・ボタン文言は **`textContent` にしか入れない**。`innerHTML` を使わない。
 */
-import { readBridge, type Bridge, type CloseReason, type RenderRequest } from "./bridge";
+import { readBridge, TEXT_LIMITS, type Bridge, type CloseReason, type RenderRequest } from "./bridge";
 import { isSafeDestination, textOf } from "./frequency";
 
 export const ADPOP_RUNTIME_VERSION = "0.1.0";
@@ -115,9 +115,9 @@ export function startRuntime(win: Win, doc: Document): boolean {
 function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): void {
   const send = bridge.send;
   const content = request.variant.content ?? {};
-  const headline = textOf(content.headline);
-  const body = textOf(content.body, 600);
-  const buttonLabel = textOf(content.buttonLabel, 60) || FALLBACK_BUTTON_LABEL;
+  const headline = textOf(content.headline, TEXT_LIMITS.headline);
+  const body = textOf(content.body, TEXT_LIMITS.body);
+  const buttonLabel = textOf(content.buttonLabel, TEXT_LIMITS.buttonLabel) || FALLBACK_BUTTON_LABEL;
 
   const host = doc.createElement("div");
   // ⚠ LP の CSS が拾える手掛かりを1つだけ残す(ポップの存在は隠さない)

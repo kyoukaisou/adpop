@@ -3,7 +3,7 @@
 // 配信の Worker のエラーの1行が**匿名化**されていること(Codex #4 Blocker 3)。
 // ⚠ 測っているのは「こちらが用意した形を伏せる」ことだけ。伏せ漏れが無いことの保証ではない(log.ts の冒頭)。
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { logFailure, redact } from "../src/delivery/log";
+import { logFailure, redact } from "../src/lib/log/redact";
 import { readDeliveryWranglerConfig } from "./helpers/wrangler-config";
 
 afterEach(() => {

@@ -9,8 +9,8 @@
 **離脱の瞬間に「もう1回だけ提案する枠」**が生まれ、**その枠の効き目(表示・クリック・トリガ別)が
 数字で見える**ようになる。
 
-> ⚠ **いまは配信までです**。**管理画面がまだ無い**ので(PR3b)、サイトとポップを作るには
-> データ層の関数を呼ぶか SQL を直接書く必要があります。
+> ⚠ **管理画面は API までです**(画面は、見本の承認の後に入れます)。サイトとポップは、いまは
+> 管理画面の API(`/api/admin/*`)を直接呼ぶか、データ層の関数を呼んで作ります。
 > 土台は **Cloudflare(Workers + D1 + R2)** です(2026-09-30 に Supabase から移しました)。
 
 ## ライセンス(ディレクトリで分かれている)
@@ -46,7 +46,13 @@
   - `GET /api/v1/config` —— サイトキー + `Origin` から、いま有効なポップの設定を返す
   - `POST /api/v1/events` —— 発火・抑制・表示・クリック・閉じるを受ける
   - `/embed/*` —— 埋め込みスクリプト(静的配信)
-- **管理画面が使うデータ層**(`src/lib/data/admin.ts`。画面は PR3b)
+- **管理画面の Worker の API**(`src/admin/app.ts`・設定は `wrangler.admin.jsonc`。Hono)
+  - ログイン(管理者1人・パスワードは `npm run admin:hash` が乱数で作る)・セッション・ログアウト
+  - サイト・ポップ・パターン・トリガ・頻度の作成・更新・アーカイブ・削除
+  - 画像のアップロード(本文は画像のバイト列そのもの・3MB で打ち切り・中身で形式を判定・JPEG の Exif を落とす)
+  - ⚠ **画面(Next の静的書き出し)はまだ無い**(見本の承認の後の PR)
+- **配信の Worker の `/img/<キー>`** —— パターンの画像を R2 のバインドから返す(バケットは公開しない)
+- **管理画面が使うデータ層**(`src/lib/data/admin.ts` / `auth.ts` / `images.ts`)
 - **埋め込みスクリプト**(タグ1本 → 設定取得 → 離脱の検知 → ポップの表示)
 
 ### 守りの置き場所(D1 には RLS も GRANT も無い)
@@ -100,7 +106,7 @@
 
 | 入れていないもの | いつ | 補足 |
 |---|---|---|
-| **管理画面・画像のアップロード** | PR3b | いまサイト・ポップ・パターンを作るには、データ層の関数を呼ぶか SQL を直接書く必要があります |
+| **管理画面の画面**(Next の静的書き出し・CSP の `_headers`) | 見本の承認の後 | API はある(`/api/admin/*`)。画面から操作する口がまだ無い |
 | **トリガ ①戻る ②スクロール ③無操作 ④滞在 ⑤タブ切替** | PR4 | **実装しているのは ⑥exit intent の1つだけ**。⚠ サーバーは有効なトリガをすべて返しますが、**埋め込みスクリプトは知らない種類を黙って無視します** |
 | **ポップの型 B(画像 / GIF)** | PR4 | いまは**テキスト + ボタン**だけ |
 | **A/B の割り当て** | PR5 | 重みは配信の応答に載っていますが、**1ミリも使っていません**。出るのは**先頭のバリアント**です |
@@ -130,6 +136,12 @@ npm run build
 # 配信の Worker をローカルで起動する(http://localhost:8787)
 npm run delivery:migrate:local    # ローカルの D1 にスキーマを当てる(.wrangler/state)
 npm run delivery:dev              # 埋め込みスクリプトを束ねてから wrangler dev
+
+# 管理画面の API をローカルで起動する
+npm run admin:hash                # パスワードと秘密を作る(パスワードは1回だけ表示)
+#   → 出力の値を .dev.vars に書く(ADMIN_PASSWORD_HASH / ADMIN_RATE_LIMIT_KEY / ADMIN_OWNER_ID / ADMIN_EMAIL)
+npm run admin:migrate:local
+npm run admin:dev
 ```
 
 ⚠ `npm test` が使う D1 は、**本番と同じ `wrangler d1 migrations apply`** で作った型紙の複写です
@@ -151,17 +163,39 @@ npm run delivery:dev              # 埋め込みスクリプトを束ねてか�
 ⚠ 埋め込み先の運営者が規律の対象事業者に当たるかは、その人の事業内容で決まります。
 **ADPOP は「対象です / 対象外です」の判定をしません。**
 
+## 管理画面のログインと守り(PR3b)
+
+| 守り | 中身 |
+|---|---|
+| パスワード | **人が選ばない**。`npm run admin:hash` が 128 ビットの乱数で作る。保存はハッシュだけ(PBKDF2-SHA256・100,000 回・secret) |
+| 試行回数 | 同じ接続元は 15 分に 5 回まで(**パスワードを確かめる前に数える**)。接続元は `CF-Connecting-IP` だけ・IPv6 は /64 に丸める。**IP は保存しない**(日付つきの HMAC) |
+| セッション | Cookie は `__Host-adpop_session`・HttpOnly・Secure・SameSite=Strict。最長 7 日・操作が無ければ 24 時間。**パスワードを置き直すと全部ログアウト**。DB に保存するのは Cookie の値の SHA-256 |
+| CSRF | GET/HEAD 以外は Origin の完全一致・`Sec-Fetch-Site`(在れば same-origin)・Content-Type(JSON / 画像は `application/octet-stream`)。CORS のヘッダは返さない |
+| 所有者 | 所有者 id はセッションからだけ取る。他人の行・存在しない行は 404 |
+
+🔴 **管理画面は、LP と別の登録ドメインに置いてください**(例: `*.workers.dev` か、LP と違うドメイン)。
+`SameSite=Strict` は**同じサイトの別のオリジンには効きません**。LP に第三者のタグが載っていると、
+同じサイトに他人のスクリプトがいることになり、そのときに守っているのは Origin と Content-Type の検査だけです。
+
+🔴 **Cloudflare のアカウントを守ってください**: 二要素認証を必ず有効にし、デプロイに使う API トークンは
+D1・R2・Workers に絞ってください。**アカウントが乗っ取られたら、管理画面も全部取られます**(secret を書き換えられる)。
+さらに強くしたい場合は、管理画面の前に Cloudflare Access を置く方法があります(⚠ 料金・無料の範囲は未確認)。
+
+⚠ **本番の Workers は PBKDF2 の反復を 100,000 回までに制限しています**(workerd のソースの既定の上限)。
+手元の wrangler にはこの上限が無いので、**手元の検査では上限に当たっても気づけません**。
+本番に出す前に、本番の Worker で1回ログインして確かめてください。
+
 ## 自前ホスト
 
 **手順はまだ用意していません**(PR6)。構成は **Cloudflare Workers + D1 + R2** で、
 **Cloudflare のアカウント1つ**で立てられる形を目指しています。
 
-## Cloudflare の側で保存されうるもの(配信の Worker)
+## Cloudflare の側で保存されうるもの(配信と管理画面の Worker)
 
 | 項目 | いまの扱い | 根拠 |
 |---|---|---|
-| **呼び出しのログ**(invocation logs。「Request, Response, and related metadata」を保存する) | **切っています**(`wrangler.delivery.jsonc` の `observability.logs.invocation_logs = false`。検査で固定) | [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) |
-| **ADPOP が出すエラーの1行**(`console.error`) | **匿名化して出します**(IP の形・URL・引用符の中・長い16進を伏せる。`src/delivery/log.ts`)。⚠ 伏せ漏れが無いことは保証しません | ⚠ 呼び出しのログを切ったときに、この1行が保存されるかは**公式文書に書かれておらず未確認**。保存される前提で匿名化しています |
+| **呼び出しのログ**(invocation logs。「Request, Response, and related metadata」を保存する) | **切っています**(`wrangler.delivery.jsonc` と `wrangler.admin.jsonc` の `observability.logs.invocation_logs = false`。検査で固定) | [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) |
+| **ADPOP が出すエラーの1行**(`console.error`) | **匿名化して出します**(IP の形・URL・引用符の中・長い16進を伏せる。`src/lib/log/redact.ts`)。⚠ 伏せ漏れが無いことは保証しません | ⚠ 呼び出しのログを切ったときに、この1行が保存されるかは**公式文書に書かれておらず未確認**。保存される前提で匿名化しています |
 | **`wrangler tail` のリアルタイムのログ**(アカウントの持ち主が開いている間だけ流れる) | 設定では止めていません | 送信元 IP で絞り込める(公式の wrangler の文書)= **開いた人は IP を見られます**。⚠ 保存されるかは未確認 |
 | **Cloudflare のネットワーク・分析・セキュリティの記録** | ADPOP の設定の外 | ⚠ **未確認**(IP がどこにどれだけ残るかを、この PR では一次情報で確かめていません) |
 
@@ -188,5 +222,11 @@ npm run delivery:dev              # 埋め込みスクリプトを束ねてか�
   ⚠ どちらも無い古い環境は「PC」と数えます。
 - 🔴 **Origin の偽造は防げません。** ブラウザは本物の Origin を送るので、
   「他人が自分の LP にタグを貼った」場合は止まります。**curl に対しては何も守っていません。**
+- 🔴 **Workers Free の「1日 10 万リクエスト」はアカウント全体の上限**です。管理画面のログインの口を連打されると、
+  **配信も同じ枠を食います**(配信の口にもレート制限はありません)。WAF のレート制限の可否・料金は未確認です。
+- **画像**: JPEG の Exif(APP1)は落としますが、**PNG・WebP の撮影情報のチャンクは落としていません**。
+  画像の**寸法の上限はありません**(要件書に数値が無いため)。
+- **画像を削除しても**、CDN とブラウザには最長 1 年キャッシュが残りえます(配信の `/img` は `immutable`)。
+  削除の時に R2 から消せなかった画像はログに出します(推測できない乱数のキーですが、知っていれば取れます)。
 - **①戻るトリガ(PR4)は、戻すときに「出せなかったら `history.back()` で戻る操作を通し直す」形にする予定です**
   (ポップが出ないのに操作だけ奪う、をしないため)。**いまは実装していません。**

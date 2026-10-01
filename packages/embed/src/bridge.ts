@@ -23,6 +23,19 @@ export const EVENTS_PATH = "/api/v1/events";
 
 export type TriggerKind = "back" | "scroll" | "idle" | "dwell" | "visibility" | "exit_intent";
 
+/**
+ * 埋め込みが実装しているトリガ。⚠ ここに無い kind はサーバーが返しても**黙って無視する**。
+ * ⚠ 管理画面(AGPL 側)も「いま効くトリガ」だけを ON/OFF させるためにこれを読む(向きは server → embed なので可)。
+ *   **理由の記録はローダ(`loader.ts` の再輸出の箇所)に置いてある。**
+ */
+export const IMPLEMENTED_TRIGGERS: readonly TriggerKind[] = ["exit_intent"];
+
+/**
+ * 本体が描く文字数の上限(UTF-16 の長さ)。**これを超えた分は描かれない**(本体が切る)。
+ * ⚠ 管理画面の API も同じ値で断る —— 保存できた文字が画面で切れる、を作らないため。
+ */
+export const TEXT_LIMITS = { headline: 300, body: 600, buttonLabel: 60 } as const;
+
 export type EventKind = "fire" | "suppressed" | "impression" | "click" | "close";
 
 export type CloseReason = "button" | "backdrop" | "esc";

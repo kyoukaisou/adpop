@@ -1,0 +1,29 @@
+// 管理画面の Worker(いまは API `/api/admin/*` だけ。画面 = Next の静的書き出しは、見本の承認後の PR で静的配信に載せる)。
+// 配信の Worker(wrangler.delivery.jsonc)とは別。**配信の不具合と管理画面の不具合を切り離す**(D-296)。
+//
+// 🔴 **秘密はここに書かない**(ADMIN_PASSWORD_HASH / ADMIN_EMAIL / ADMIN_OWNER_ID / ADMIN_RATE_LIMIT_KEY)。
+//   `npm run admin:hash` の出力を `wrangler secret put` で置く。ローカルは `.dev.vars`(.gitignore 済み)。
+//   ⚠ この設定ファイルに鍵の名前が現れたら検査が落ちる(tests/admin-config.test.ts)。
+// ⚠ `database_id` は仮の値(Cloudflare 側にまだ作っていない)。本番は `wrangler d1 create adpop` の id に差し替える。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "adpop-admin",
+  "main": "src/admin/worker.ts",
+  "compatibility_date": "2026-09-30",
+  // 🔴 既定値に頼らず明示する(security 監査 M7)。
+  //   Version URL(preview_urls)は、修正前の版を本番の secret と D1 のまま動かし続けるので切る。
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "adpop",
+      "database_id": "00000000-0000-4000-8000-000000000000",
+      "migrations_dir": "db/migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "adpop-images" }],
+  // 🔴 呼び出しのログ(Request / Response とメタデータ)を Cloudflare に残さない(security 監査 L11)。
+  //   残すのは匿名化したエラーの1行だけ(src/lib/log/redact.ts)。
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}
