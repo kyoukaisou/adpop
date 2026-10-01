@@ -695,7 +695,8 @@ describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
     errors.mockRestore();
     expect(await t.images.head(key), "前提: 消せずに残っている").not.toBeNull();
 
-    // 次の画像の操作(普通の環境)で消し直す
+    // 積んでから時間が経つと(置いている途中のアップロードを消さないための待ち)、次の画像の操作で消し直す
+    await t.db.prepare("update pending_image_deletions set created_at = '2000-01-01T00:00:00.000Z' where key = ?1").bind(key).run();
     expect((await call(`/api/admin/variants/${id}/image`, { method: "PUT", raw: png(10, 10) as BodyInit, cookie })).status).toBe(200);
     expect(await t.images.head(key), "消し直されていない").toBeNull();
     const pending = await t.db.prepare("select count(*) as c from pending_image_deletions where key = ?1").bind(key).first<{ c: number }>();

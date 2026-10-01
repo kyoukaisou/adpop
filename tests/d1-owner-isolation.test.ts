@@ -97,10 +97,6 @@ const CASES: Record<string, [Case, Expect]> = {
     (d) => admin.setVariantImage(d, OWNER_B, a.variant, `images/${"0".repeat(32)}.png`),
     (r) => expect(r).toEqual(NOT_FOUND),
   ],
-  imageKeysUnder: [
-    (d) => admin.imageKeysUnder(d, OWNER_B, { siteId: a.site }),
-    (r) => expect(r).toEqual({ ok: true, value: [] }),
-  ],
 };
 
 /** PR3b: R2 に触るデータ層(`images.ts`)。🔴 R2 の中身も変わらないことを見る */
@@ -120,7 +116,7 @@ const IMAGE_CASES: Record<string, [ImageCase, Expect]> = {
   // 🔴 B が消し直しを走らせても、A の積んだキー(と、その R2 の中身)には触らない
   retryPendingImageDeletions: [
     (env) => images.retryPendingImageDeletions(env, OWNER_B),
-    (r) => expect(r).toEqual({ ok: true, value: { deleted: 0, remaining: 0 } }),
+    (r) => expect(r).toEqual({ ok: true, value: { remaining: 0 } }),
   ],
 };
 
@@ -160,7 +156,11 @@ beforeAll(async () => {
   // A の「消し直し待ち」の画像を1枚(R2 にも置いておく = B が消し直しを走らせても消えないことを見る)
   const pendingKey = `images/${"e".repeat(32)}.png`;
   await t.images.put(pendingKey, TINY_PNG, { httpMetadata: { contentType: "image/png" } });
-  await db.prepare("insert into pending_image_deletions (key, owner_id) values (?1, ?2)").bind(pendingKey, OWNER_A).run();
+  // ⚠ 積んでから時間が経った行にする(消し直しの対象になる行 = B が触れたら消えてしまう行で撃つ)
+  await db
+    .prepare("insert into pending_image_deletions (key, owner_id, created_at) values (?1, ?2, '2000-01-01T00:00:00.000Z')")
+    .bind(pendingKey, OWNER_A)
+    .run();
 });
 afterAll(async () => {
   await t?.dispose();

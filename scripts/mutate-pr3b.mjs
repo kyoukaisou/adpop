@@ -217,10 +217,11 @@ export const MUTATIONS = [
   {
     "name": "B16 削除のときに R2 の画像を消さない(L2)",
     "file": "src/lib/data/images.ts",
-    "from": "  await deleteOrEnqueue(env, ownerId, keys.value);\n  return { ok: true, value: { cleanupPending: await pendingCount(env, ownerId) } };",
-    "to": "  return { ok: true, value: { cleanupPending: await pendingCount(env, ownerId) } };",
+    "from": "  await drain(env, ownerId, deleted.value.queuedImageKeys);\n",
+    "to": "",
     "tests": [
-      "tests/admin-api.test.ts"
+      "tests/admin-api.test.ts",
+      "tests/d1-images-failure.test.ts"
     ]
   },
   {
@@ -252,44 +253,6 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "C1 置いた後の例外で新しいキーを消さない(#7 Blocker 1)",
-    "file": "src/lib/data/images.ts",
-    "from": "    // 🔴 置いたかもしれない新しいキーを消す(消せなければ積む)。元の例外はそのまま投げる\n    await deleteOrEnqueue(env, ownerId, [key]);\n    throw error;",
-    "to": "    throw error;",
-    "tests": [
-      "tests/d1-images-failure.test.ts"
-    ]
-  },
-  {
-    "name": "C2 消せなかったキーを積まない(#7 Blocker 2)",
-    "file": "src/lib/data/images.ts",
-    "from": "  if (failed.length > 0) await enqueue(env, ownerId, failed);",
-    "to": "",
-    "tests": [
-      "tests/d1-images-failure.test.ts",
-      "tests/admin-api.test.ts"
-    ]
-  },
-  {
-    "name": "C3 積んだキーを消し直さない",
-    "file": "src/lib/data/images.ts",
-    "from": "      if (isImageKey(key)) await resolveImages(env).delete(key);\n",
-    "to": "",
-    "tests": [
-      "tests/d1-images-failure.test.ts",
-      "tests/admin-api.test.ts"
-    ]
-  },
-  {
-    "name": "C4 消し直しが所有者を見ない",
-    "file": "src/lib/data/images.ts",
-    "from": "    .prepare(`select key from pending_image_deletions where owner_id = ?1 order by created_at, key limit ?2`)",
-    "to": "    .prepare(`select key from pending_image_deletions where ?1 is not null order by created_at, key limit ?2`)",
-    "tests": [
-      "tests/d1-owner-isolation.test.ts"
-    ]
-  },
-  {
     "name": "C5 応答に cleanupPending を載せない",
     "file": "src/admin/app.ts",
     "from": "  return c.json({ ok: true, data: { cleanupPending: result.value.cleanupPending } });",
@@ -313,6 +276,89 @@ export const MUTATIONS = [
     "from": "    await auth.purgeExpiredSessions(c.env, config.ownerId, t, IDLE_TIMEOUT_MS);\n",
     "to": "",
     "tests": [
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C1 置いた後の例外で新しいキーを消しにいかない",
+    "file": "src/lib/data/images.ts",
+    "from": "    await drain(env, ownerId, [key]).catch(() => {});\n    throw error;",
+    "to": "    throw error;",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C2 新しいキーを置く前に積まない(write-ahead)",
+    "file": "src/lib/data/images.ts",
+    "from": "  await resolveDb(env)\n    .prepare(`insert into pending_image_deletions (key, owner_id) values (?1, ?2)`)\n    .bind(key, ownerId)\n    .run();\n",
+    "to": "",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C3 消し直しで R2 から消さない",
+    "file": "src/lib/data/images.ts",
+    "from": "      if (referenced === null) await resolveImages(env).delete(key);\n",
+    "to": "",
+    "tests": [
+      "tests/d1-images-failure.test.ts",
+      "tests/admin-api.test.ts"
+    ]
+  },
+  {
+    "name": "C4 消し直しが所有者を見ない",
+    "file": "src/lib/data/images.ts",
+    "from": "`select key from pending_image_deletions where owner_id = ?1 and created_at <= ?2",
+    "to": "`select key from pending_image_deletions where ?1 is not null and created_at <= ?2",
+    "tests": [
+      "tests/d1-owner-isolation.test.ts"
+    ]
+  },
+  {
+    "name": "C8 削除の取引に、画像のキーを積む文を入れない",
+    "file": "src/lib/data/admin.ts",
+    "from": "    selectImagesUnder(db, ownerId, scope),\n    enqueueImagesUnder(db, ownerId, scope),\n    deleteStatement,",
+    "to": "    selectImagesUnder(db, ownerId, scope),\n    selectImagesUnder(db, ownerId, scope),\n    deleteStatement,",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C9 削除で積むのがアーカイブしていないパターンの画像だけ",
+    "file": "src/lib/data/admin.ts",
+    "from": "       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,\n    )\n    .bind(ownerId, value);\n}\n\n/** 同じ範囲のキーを読む文",
+    "to": "       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null and v.archived_at is null`,\n    )\n    .bind(ownerId, value);\n}\n\n/** 同じ範囲のキーを読む文",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C10 参照中のキーも R2 から消す",
+    "file": "src/lib/data/images.ts",
+    "from": "      if (referenced === null) await resolveImages(env).delete(key);",
+    "to": "      void referenced;\n      await resolveImages(env).delete(key);",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C11 積んですぐのキーも消し直す",
+    "file": "src/lib/data/images.ts",
+    "from": ".bind(ownerId, new Date(now.getTime() - RETRY_MIN_AGE_MS).toISOString(), RETRY_BATCH)",
+    "to": ".bind(ownerId, new Date(now.getTime() + 60_000).toISOString(), RETRY_BATCH)",
+    "tests": [
+      "tests/d1-images-failure.test.ts"
+    ]
+  },
+  {
+    "name": "C12 画像を外す取引で前のキーを積まない",
+    "file": "src/lib/data/admin.ts",
+    "from": "           where (${previousOf}) is not null and (${previousOf}) is not ?3`,",
+    "to": "           where 0 and (${previousOf}) is not null and (${previousOf}) is not ?3`,",
+    "tests": [
+      "tests/d1-images-failure.test.ts",
       "tests/admin-api.test.ts"
     ]
   }

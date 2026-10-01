@@ -98,6 +98,63 @@ export async function ensureOwner(source: DbSource, ownerId: string): Promise<Re
   });
 }
 
+
+/*
+  ─────────────── 画像の後始末の「先に積む」(write-ahead・Codex #7 2巡目 Blocker) ───────────────
+  🔴 画像の参照を外す・行を消す DB の操作と**同じ batch(1つの取引)の中で、先に** `pending_image_deletions` に積む。
+    batch が落ちれば、参照も積んだ行も**一緒に巻き戻る**(どちらか片方だけ残らない)。
+    R2 から消すのは batch の後(`images.ts`)。消せたら積んだ行を消す。消せなければ行が残り、次に消し直す。
+  ⚠ 積む INSERT の失敗は握り潰さない(batch ごと失敗して、呼び出し側へ例外が届く)。
+*/
+type DeleteScope = { siteId: string } | { popupId: string } | { variantId: string };
+
+/** その範囲の(アーカイブ済みを含む)全パターンの画像のキーを、所有者の条件つきで `pending_image_deletions` に積む文。 */
+function enqueueImagesUnder(db: D1Database, ownerId: string, scope: DeleteScope): D1PreparedStatement {
+  const [column, value] =
+    "siteId" in scope ? ["p.site_id", scope.siteId] : "popupId" in scope ? ["v.popup_id", scope.popupId] : ["v.id", scope.variantId];
+  return db
+    .prepare(
+      `insert into pending_image_deletions (key, owner_id)
+       select json_extract(v.content, '$.imageKey'), v.owner_id from variants v
+       join popups p on p.id = v.popup_id
+       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,
+    )
+    .bind(ownerId, value);
+}
+
+/** 同じ範囲のキーを読む文(R2 から消すときに使う)。 */
+function selectImagesUnder(db: D1Database, ownerId: string, scope: DeleteScope): D1PreparedStatement {
+  const [column, value] =
+    "siteId" in scope ? ["p.site_id", scope.siteId] : "popupId" in scope ? ["v.popup_id", scope.popupId] : ["v.id", scope.variantId];
+  return db
+    .prepare(
+      `select json_extract(v.content, '$.imageKey') as key from variants v
+       join popups p on p.id = v.popup_id
+       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,
+    )
+    .bind(ownerId, value);
+}
+
+export type Deleted = { queuedImageKeys: string[] };
+
+async function deleteWithQueue(
+  db: D1Database,
+  ownerId: string,
+  scope: DeleteScope,
+  deleteStatement: D1PreparedStatement,
+): Promise<Result<Deleted>> {
+  const [keys, , deleted] = await db.batch([
+    selectImagesUnder(db, ownerId, scope),
+    enqueueImagesUnder(db, ownerId, scope),
+    deleteStatement,
+  ]);
+  if (deleted.meta.changes === 0) {
+    // ⚠ 消す行が無かった(他人の行・既に無い)。同じ取引で積んだ行も無い(積む文も所有者と範囲で絞っている)
+    return notFound();
+  }
+  return ok({ queuedImageKeys: (keys.results as Array<{ key: unknown }>).map((r) => r.key).filter(isImageKey) });
+}
+
 /* ─────────────── サイト ─────────────── */
 
 type SiteRow = { id: string; name: string; site_key: string };
@@ -199,11 +256,13 @@ export async function updateSite(
   });
 }
 
-/** 物理削除。⚠ 配下のポップ・パターン・**数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deleteSite(source: DbSource, ownerId: string, siteId: string): Promise<Result<null>> {
+/**
+ * 物理削除。⚠ 配下のポップ・パターン・**数字(events)も消える**(cascade)。確認は画面の責任。
+ * 🔴 配下の(アーカイブ済みを含む)全パターンの画像のキーを、**同じ取引で先に**消し直し待ちに積む。
+ */
+export async function deleteSite(source: DbSource, ownerId: string, siteId: string): Promise<Result<Deleted>> {
   const db = resolveDb(source);
-  const result = await db.prepare(`delete from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).run();
-  return changed(result) ? ok(null) : notFound();
+  return deleteWithQueue(db, ownerId, { siteId }, db.prepare(`delete from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId));
 }
 
 /* ─────────────── ポップ ─────────────── */
@@ -334,10 +393,9 @@ export function restorePopup(source: DbSource, ownerId: string, popupId: string)
 }
 
 /** 物理削除。⚠ **数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deletePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<null>> {
+export async function deletePopup(source: DbSource, ownerId: string, popupId: string): Promise<Result<Deleted>> {
   const db = resolveDb(source);
-  const result = await db.prepare(`delete from popups where id = ?1 and owner_id = ?2`).bind(popupId, ownerId).run();
-  return changed(result) ? ok(null) : notFound();
+  return deleteWithQueue(db, ownerId, { popupId }, db.prepare(`delete from popups where id = ?1 and owner_id = ?2`).bind(popupId, ownerId));
 }
 
 /**
@@ -550,16 +608,22 @@ export function restoreVariant(source: DbSource, ownerId: string, variantId: str
 }
 
 /** 物理削除。⚠ **数字(events)も消える**(cascade)。確認は画面の責任。 */
-export async function deleteVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<null>> {
+export async function deleteVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<Deleted>> {
   const db = resolveDb(source);
-  const result = await db.prepare(`delete from variants where id = ?1 and owner_id = ?2`).bind(variantId, ownerId).run();
-  return changed(result) ? ok(null) : notFound();
+  return deleteWithQueue(
+    db,
+    ownerId,
+    { variantId },
+    db.prepare(`delete from variants where id = ?1 and owner_id = ?2`).bind(variantId, ownerId),
+  );
 }
 
 /**
- * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB の1欄だけ)。
- * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書き、**前のキーを返す**(呼び出し側が R2 から消す)。
- * ⚠ batch(1つのトランザクション)で「前の値を読む」と「書く」を行う。
+ * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB だけ)。
+ * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書く。
+ * 🔴 **同じ取引(batch)の中で**: ①前のキーを読む ②前のキーを消し直し待ちに積む ③キーを書く
+ *   ④新しいキーを消し直し待ちから外す(呼び出し側が置く前に積んでおいたもの)。
+ *   batch が落ちれば全部巻き戻る(参照と積んだ行の片方だけが残らない)。
  */
 export async function setVariantImage(
   source: DbSource,
@@ -569,11 +633,17 @@ export async function setVariantImage(
 ): Promise<Result<{ previousKey: string | null }>> {
   const db = resolveDb(source);
   if (key !== null && !isImageKey(key)) return invalid("imageKey");
+  const previousOf = `select json_extract(content, '$.imageKey') from variants where id = ?1 and owner_id = ?2`;
   const result = await write(() =>
     db.batch([
+      db.prepare(`select (${previousOf}) as previous`).bind(variantId, ownerId),
       db
-        .prepare(`select json_extract(content, '$.imageKey') as previous from variants where id = ?1 and owner_id = ?2`)
-        .bind(variantId, ownerId),
+        .prepare(
+          `insert into pending_image_deletions (key, owner_id)
+           select (${previousOf}), ?2
+           where (${previousOf}) is not null and (${previousOf}) is not ?3`,
+        )
+        .bind(variantId, ownerId, key),
       db
         .prepare(
           `update variants set content = ${key === null ? "json_remove(content, '$.imageKey')" : "json_set(content, '$.imageKey', ?3)"},
@@ -581,35 +651,12 @@ export async function setVariantImage(
            where id = ?1 and owner_id = ?2`,
         )
         .bind(...(key === null ? [variantId, ownerId] : [variantId, ownerId, key])),
+      db.prepare(`delete from pending_image_deletions where key = ?1 and owner_id = ?2`).bind(key ?? "", ownerId),
     ]),
   );
   if (!result.ok) return result;
-  const [read, update] = result.value;
+  const [read, , update] = result.value;
   if (update.meta.changes === 0) return notFound();
   const previous = (read.results as Array<{ previous: unknown }>)[0]?.previous;
   return ok({ previousKey: isImageKey(previous) ? previous : null });
-}
-
-/** 所有者の配下にある画像のキー(サイト・ポップ・パターンを消す前に集める = 消したあと R2 からも消すため)。 */
-export async function imageKeysUnder(
-  source: DbSource,
-  ownerId: string,
-  scope: { siteId: string } | { popupId: string } | { variantId: string },
-): Promise<Result<string[]>> {
-  const db = resolveDb(source);
-  const [column, value] =
-    "siteId" in scope
-      ? ["p.site_id", scope.siteId]
-      : "popupId" in scope
-        ? ["v.popup_id", scope.popupId]
-        : ["v.id", scope.variantId];
-  const rows = await db
-    .prepare(
-      `select json_extract(v.content, '$.imageKey') as key from variants v
-       join popups p on p.id = v.popup_id
-       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,
-    )
-    .bind(ownerId, value)
-    .all<{ key: unknown }>();
-  return ok(rows.results.map((r) => r.key).filter(isImageKey));
 }
