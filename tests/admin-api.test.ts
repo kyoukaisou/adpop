@@ -604,6 +604,46 @@ describe("サイト・ポップ・パターンの API(通る側)", () => {
   });
 });
 
+describe("稼働中のポップから最後の配信可能パターンを奪う操作は 409(Codex #8 1巡目 Blocker 1)", () => {
+  it("🔴 唯一のパターンのアーカイブは 409・文言つき。削除・編集(画像の無い画像型へ)も同様", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "floor", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const variant = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "text", content: { headline: "唯一", body: "", buttonLabel: "", imageAlt: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    const variantId = ((await variant.json()) as { data: { id: string } }).data.id;
+    expect((await call(`/api/admin/popups/${popupId}/activate`, { method: "POST", body: {}, cookie })).status).toBe(200);
+
+    const archived = await call(`/api/admin/variants/${variantId}/archive`, { method: "POST", body: {}, cookie });
+    expect(archived.status).toBe(409);
+    expect(await archived.json()).toEqual({
+      ok: false,
+      reason: "last_deliverable_variant",
+      message: "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください",
+    });
+
+    const edited = await call(`/api/admin/variants/${variantId}`, {
+      method: "PUT",
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    expect(edited.status).toBe(409);
+
+    const deleted = await call(`/api/admin/variants/${variantId}`, { method: "DELETE", body: { confirm: "delete" }, cookie });
+    expect(deleted.status).toBe(409);
+
+    // ⚠ どれも断られたので、パターンはまだ存在しテキスト型のまま
+    const still = await call(`/api/admin/variants/${variantId}`, { cookie });
+    expect(still.status).toBe(200);
+    expect(((await still.json()) as { data: { kind: string } }).data.kind).toBe("text");
+  });
+});
+
 describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
   let cookie = "";
   let variantId = "";

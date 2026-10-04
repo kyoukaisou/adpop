@@ -32,7 +32,15 @@ const DIALOG_LABEL = "お知らせ";
 /*
   ⚠ この文字列だけが `textContent` 経由でスタイルとして入る。**利用者の入力は1文字も混ざらない。**
 */
-const STYLE = `
+/*
+  🔴 **`rem`/`em` を1つも使わない**(Codex #8 1巡目 Should fix)。`rem` は文書ルート(`<html>`)の
+    `font-size` を基準にする —— `:host { all: initial }` は `:host` 自身の継承プロパティを遮るだけで、
+    **`rem` の基準点(ルート要素)までは遮らない**。埋め込み先が `html { font-size: 10px }` のような
+    LP だと、`2.75rem` は 44px ではなく 27.5px になり、「閉じるボタンは44px以上」が崩れる。
+    **寸法は全部 px の絶対値**にする(1rem=16px だった値をそのまま px に置き換えた。見た目は変わらない)。
+  ⚠ `vh`(`.image` の `max-height`)はビューポート基準で、文書ルートの `font-size` に左右されないので対象外。
+*/
+export const STYLE = `
 :host { all: initial; }
 .backdrop {
   position: fixed; inset: 0; z-index: 2147483647;
@@ -43,25 +51,25 @@ const STYLE = `
 }
 .panel {
   position: relative; box-sizing: border-box;
-  width: calc(100% - 2rem); max-width: 20rem;
-  background: #fff; border: 1px solid #d4d4d4; border-radius: .5rem;
-  padding: 1.25rem 1rem 1rem;
+  width: calc(100% - 32px); max-width: 320px;
+  background: #fff; border: 1px solid #d4d4d4; border-radius: 8px;
+  padding: 20px 16px 16px;
 }
-.headline { margin: 0 0 .5rem; font-size: 1rem; font-weight: 700; }
-.body { margin: 0 0 1rem; font-size: .875rem; }
+.headline { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.body { margin: 0 0 16px; font-size: 14px; }
 .cta {
   /* ⚠ min-height は意匠ではなく**タッチターゲットの下限**(44px)。padding だけだと約40px になる */
-  display: flex; align-items: center; justify-content: center; min-height: 2.75rem;
+  display: flex; align-items: center; justify-content: center; min-height: 44px;
   text-align: center; text-decoration: none;
-  padding: .5rem 1rem; border-radius: .375rem;
-  background: #1a1a1a; color: #fff; font-size: .875rem; font-weight: 700;
+  padding: 8px 16px; border-radius: 6px;
+  background: #1a1a1a; color: #fff; font-size: 14px; font-weight: 700;
 }
 .close {
-  position: absolute; top: .25rem; right: .25rem;
-  min-width: 2.75rem; min-height: 2.75rem;
+  position: absolute; top: 4px; right: 4px;
+  min-width: 44px; min-height: 44px;
   display: flex; align-items: center; justify-content: center;
-  background: none; border: 0; border-radius: .375rem;
-  font-size: 1rem; color: #1a1a1a; cursor: pointer;
+  background: none; border: 0; border-radius: 6px;
+  font-size: 16px; color: #1a1a1a; cursor: pointer;
 }
 /* 🔴 フォーカスリングを消さない(キーボードで操作できることが分かる) */
 .cta:focus-visible, .close:focus-visible { outline: 2px solid #1a1a1a; outline-offset: 2px; }
@@ -70,10 +78,11 @@ const STYLE = `
   ── 画像型(§4-3 B)。実寸モック(2026-10-04 追補 v2)の決定に合わせた ───────
   🔴 画像の高さは固定しない。比率どおりに高さが決まり、画面の高さの70%(スマホで検算した値)を
     超えたときだけ縮んで、そのときだけ左右に余白が出る(帯は出さない)。
+  🔴 「GIF」の印は出さない(2026-10-04 追補v2: 訪問者には不要。管理画面の種類の印はそのまま=LPには影響しない)。
 */
-/* 🔴 実寸モック(06a〜06e)に合わせた値(text 型の 20rem/角丸 .5rem とは別の値)。 */
+/* 🔴 実寸モック(06a〜06e)に合わせた値(text 型の 320px/角丸8px とは別の値)。 */
 .image-panel {
-  padding: 0; max-width: 22rem; border: 0; border-radius: 1rem; overflow: hidden;
+  padding: 0; max-width: 352px; border: 0; border-radius: 16px; overflow: hidden;
   box-shadow: 0 20px 25px -5px rgba(0,0,0,.25), 0 8px 10px -6px rgba(0,0,0,.2);
 }
 .image-link { position: relative; display: block; }
@@ -90,16 +99,16 @@ const STYLE = `
 @media (prefers-reduced-motion: reduce) { .image-overlay { transition: none; } }
 /* 🔴 閉じるボタンは画像に重なるため独立した要素(押し間違えない間隔・44px 以上を維持) */
 .close-image {
-  position: absolute; top: .75rem; right: .75rem;
-  min-width: 2.75rem; min-height: 2.75rem;
+  position: absolute; top: 12px; right: 12px;
+  min-width: 44px; min-height: 44px;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,.55); border: 0; border-radius: 50%;
-  font-size: 1rem; color: #fff; cursor: pointer;
+  font-size: 16px; color: #fff; cursor: pointer;
 }
 .close-image:hover { background: rgba(0,0,0,.7); }
 .close-image:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-.footer { padding: 1.25rem 1rem 1rem; }
-.footer .headline { margin: 0 0 .75rem; }
+.footer { padding: 20px 16px 16px; }
+.footer .headline { margin: 0 0 12px; }
 .footer .cta { margin: 0; }
 `;
 
@@ -111,6 +120,43 @@ function quiet(run: () => void): void {
   } catch {
     /* 🔴 LP を1ミリも壊さない */
   }
+}
+
+/*
+  🔴 **画像の読み込みを待つ上限**(Codex #8 1巡目 Blocker 2)。
+    8 秒。根拠: 画像の上限は 2MB・GIF は 3MB(要件書 §4-3)で、低速回線でも常識的な時間で決着する
+    大きさ。離脱の瞬間に出すポップなので早く諦めたいが、**短すぎるとモバイル回線で正しい画像まで
+    「出せなかった」ことにしてしまう**(fail-closed の代償は「出ない」なので、閾値を切りすぎない側に倒す)。
+    ⚠ 外部根拠は無い(本部が置いた設計値)。待っている間は何も描かれない(訪問者には「出ないだけ」)ので、
+    長めに倒しても実害は「タブが閉じられるまで見えない読み込みが続く」程度。
+*/
+export const IMAGE_LOAD_TIMEOUT_MS = 8000;
+
+/**
+ * 画像の読み込みを待つ(Codex #8 1巡目 Blocker 2)。
+ * 🔴 **読み込みが成功するまで `src` を付けない呼び出し側と対**: `load` に先に耳を傾けてから `src` を立てる
+ *   (キャッシュ即時発火でも取りこぼさない)。失敗(`error`)・上限超過はどちらも reject = **呼び出し側は
+ *   「何も描かない」の1本で扱える**(成功と失敗のどちらで止まったかを区別しない)。
+ */
+function loadImage(win: Win, img: HTMLImageElement, src: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onError);
+      win.clearTimeout(timer);
+      if (ok) resolve();
+      else reject(new Error("adpop: image load failed or timed out"));
+    };
+    const onLoad = () => finish(true);
+    const onError = () => finish(false);
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onError);
+    const timer = win.setTimeout(() => finish(false), timeoutMs);
+    img.src = src;
+  });
 }
 
 /** 本体が読み込まれたときに1度だけ呼ばれる入口。 */
@@ -133,14 +179,22 @@ export function startRuntime(win: Win, doc: Document): boolean {
           = ポップも出ないのに操作だけ奪う(要件書 §5-2 の約束を破る)。
         ⚠ `drawing` は**再入だけ**を止める(`draw` の途中で render がもう一度呼ばれても二重に描かない)。
           **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
+        🔴 **画像型は `draw()` が画像の読み込みを待つ間 `Promise` のまま**(Codex #8 1巡目 Blocker 2)。
+          `drawing` は、その**待っている間ずっと**立てたままにする(待っている間に `render()` が
+          もう一度呼ばれても二重に描かない)。`bridge.render` 自体の型は同期(`() => void`)なので、
+          ここで `await` はできない —— `.then`/`.catch` で結果を受けて `drawing`/`shown` を更新する。
       */
       drawing = true;
-      try {
-        draw(win, doc, bridge, request);
-        bridge.shown = true;
-      } finally {
-        drawing = false;
-      }
+      draw(win, doc, bridge, request).then(
+        () => {
+          bridge.shown = true;
+          drawing = false;
+        },
+        () => {
+          // 🔴 失敗(画像読み込みの失敗・タイムアウト・不正な imageKey 等)。shown は立てない。
+          drawing = false;
+        },
+      );
     });
   };
 
@@ -150,7 +204,7 @@ export function startRuntime(win: Win, doc: Document): boolean {
   return true;
 }
 
-function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): void {
+async function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): Promise<void> {
   const send = bridge.send;
   const content = request.variant.content ?? {};
   const headline = textOf(content.headline, TEXT_LIMITS.headline);
@@ -216,6 +270,7 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   const imageLinkLabel = imageAlt || headline || buttonLabel;
 
   let imageLink: HTMLAnchorElement | null = null;
+  let imageElement: HTMLImageElement | null = null;
   let cta: HTMLAnchorElement | null = null;
 
   if (isImage) {
@@ -231,12 +286,12 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
     imageLink.rel = "noopener noreferrer";
     imageLink.setAttribute("aria-label", imageLinkLabel);
 
-    const img = doc.createElement("img");
-    img.className = "image";
-    img.src = imageUrl as string;
+    imageElement = doc.createElement("img");
+    imageElement.className = "image";
     // ⚠ 画像の説明は <a> の aria-label が持つ(1つの画像に2つの名前を付けない)
-    img.alt = "";
-    imageLink.appendChild(img);
+    imageElement.alt = "";
+    // 🔴 `src` はまだ付けない。読み込みの成否を待ってから差し込む(下の Blocker 2 の対処)。
+    imageLink.appendChild(imageElement);
 
     const overlay = doc.createElement("div");
     overlay.className = "image-overlay";
@@ -376,6 +431,19 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   };
   imageLink?.addEventListener("click", sendClick);
   cta?.addEventListener("click", sendClick);
+
+  /*
+    🔴 **画像の読み込みが成功するまで、何も差し込まない**(Codex #8 1巡目 Blocker 2)。
+      既に設定を取得済みの LP が、差し替え・削除で消えた画像キーを持ったまま exit intent を発火させても、
+      `/img/<key>` が 404(または読み込み中にタイムアウト)なら、ここで `loadImage` が reject し、
+      `draw()` ごと失敗する(quiet() が外側で握る)。**DOM 挿入・`shown`・impression のどれも成立しない**
+      = fail-closed(壊れた画像リンクを訪問者に見せない)。
+    ⚠ **既知の限界**(本PRでは作らない猶予保持の代わり): 差し替え・削除の直後にちょうど発火した訪問者は、
+      そのページを再読み込みするまでポップが出ない(README に書く)。
+  */
+  if (isImage && imageElement !== null) {
+    await loadImage(win, imageElement, imageUrl as string, IMAGE_LOAD_TIMEOUT_MS);
+  }
 
   const parent = doc.body ?? doc.documentElement;
   parent.appendChild(host);

@@ -15,7 +15,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NAMESPACE, type Bridge, type EventPayload } from "../packages/embed/src/bridge";
 import { IMPLEMENTED_TRIGGERS, startAdpop } from "../packages/embed/src/loader";
-import { startRuntime } from "../packages/embed/src/runtime";
+import { IMAGE_LOAD_TIMEOUT_MS, startRuntime } from "../packages/embed/src/runtime";
 
 const SITE_KEY = "0123456789abcdef0123456789abcdef";
 const POPUP_KEY = "p".repeat(32);
@@ -663,7 +663,32 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
   const IMAGE_KEY = `images/${"e".repeat(32)}.png`;
   const IMAGE_URL = `${DELIVERY}/img/${"e".repeat(32)}.png`;
 
-  async function showImage(content: Record<string, unknown>): Promise<void> {
+  /*
+    🔴 jsdom は `resources` を有効にしていない限り `<img src>` を実際に取りに行かない
+      (`load`/`error` のどちらも自然には発火しない)。**本体は画像の読み込みを待ってから描く**
+      (Codex #8 1巡目 Blocker 2)ので、検査側で `HTMLImageElement.prototype.src` の setter を
+      差し替え、`src` が設定された瞬間に `load`/`error` を**非同期(マイクロタスク)**で発火させる
+      (ブラウザの実際の挙動=同期では発火しない、に合わせる)。`newDom()` が作る `win` ごとに
+      差し替えるので、他のテストへは漏れない。
+  */
+  function stubImageLoad(outcome: "load" | "error"): void {
+    const proto = win.HTMLImageElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "src");
+    Object.defineProperty(proto, "src", {
+      configurable: true,
+      get() {
+        return this.getAttribute("src") ?? "";
+      },
+      set(value: string) {
+        this.setAttribute("src", value);
+        queueMicrotask(() => this.dispatchEvent(new win.Event(outcome)));
+      },
+    });
+    void descriptor; // 元の descriptor は使わない(getAttribute 経由で十分)。型のためだけに参照。
+  }
+
+  async function showImage(content: Record<string, unknown>, imageOutcome: "load" | "error" = "load"): Promise<void> {
+    stubImageLoad(imageOutcome);
     stubNetwork({
       config: configBody({
         variants: [
@@ -682,6 +707,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
     exitIntent();
     await flush();
     await bootRuntime();
+    await flush(); // 画像の読み込み(マイクロタスク)が解決してから DOM 挿入が走るのを待つ
   }
 
   it("✅ 画像だけのバナー(ボタン文言が空)。画像全体が1つのリンクで、閉じるボタンは独立している", async () => {
@@ -828,5 +854,55 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
 
     expect(doc.querySelector("[data-adpop]")).toBeNull();
     expect(sent.at(-1)?.closeReason).toBe("backdrop");
+  });
+
+  describe("🔴 画像の読み込みに失敗したら、何も出さない(Codex #8 1巡目 Blocker 2)", () => {
+    /*
+      再現(Blocker 2 の原文どおり): LP が旧 imageKey を含む config を取得済みの状態で、管理側が
+      画像を差し替え・削除して旧キーが `/img/<old-key>` で 404 になってから exit intent が発火する。
+      本体は**画像の読み込みが成功してから** DOM 挿入・`shown`・impression を成立させる。
+      失敗(404 相当のエラー)・タイムアウトのどちらでも、何も描かず計測も送らない
+      (`fire` は発火条件を満たした時点で既に送られているので、それだけは残る)。
+    */
+    it("画像が404(error)— DOM・shown・impression のどれも成立しない", async () => {
+      await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY }, "error");
+
+      expect(doc.querySelector("[data-adpop]"), "読み込み失敗なのに描いてしまった").toBeNull();
+      expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+      // bridge.shown が立っていないことも確認する(ローダ側が「出せなかった」と判定できる)
+      const bridge = (win as unknown as Record<string, { shown?: boolean }>)[NAMESPACE];
+      expect(bridge?.shown).not.toBe(true);
+    });
+
+    it(`画像の読み込みが ${IMAGE_LOAD_TIMEOUT_MS}ms を超えてもタイムアウトし、何も描かない`, async () => {
+      vi.useFakeTimers();
+      try {
+        stubNetwork({
+          config: configBody({
+            variants: [
+              {
+                key: VARIANT_KEY,
+                kind: "image",
+                weight: 100,
+                content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+                destinationUrl: "https://offer.example.com/a",
+              },
+            ],
+          }),
+        });
+        installTag();
+        startAdpop(win, doc);
+        await vi.advanceTimersByTimeAsync(0); // 設定の取得(fetch の Promise)を解決させる
+        exitIntent();
+        await vi.advanceTimersByTimeAsync(0); // fire → 本体(<script>)の挿入まで
+        startRuntime(win, doc); // 本体が読み込まれた状況を作る(画像の `load`/`error` は一度も発火させない)
+        await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + 1000); // 上限を越える
+
+        expect(doc.querySelector("[data-adpop]"), "タイムアウトしたのに描いてしまった").toBeNull();
+        expect(sent.filter((e) => e.kind === "impression")).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

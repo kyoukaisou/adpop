@@ -12,12 +12,22 @@
   ⚠ 結果の「0件」は失敗として返す(`not_found`)。成功に見せない。
 */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
-import { DELIVERABLE_VARIANT } from "./delivery";
+import { DELIVERABLE_VARIANT, deliverableVariantSql } from "./delivery";
 import { resolveDb, type DbSource } from "./source";
 import { classifyD1Error, type DataFailure } from "./errors";
-import { isHttpsUrl, isImageKey, isOrigin } from "./shapes";
+import { isHttpsUrl, isImageKey, isOrigin, requiresImageAlt } from "./shapes";
 
-export type Result<T> = { ok: true; value: T } | { ok: false; failure: DataFailure | { kind: "not_found" } | { kind: "invalid"; field: string } | { kind: "no_deliverable_variant" } };
+export type Result<T> =
+  | { ok: true; value: T }
+  | {
+      ok: false;
+      failure:
+        | DataFailure
+        | { kind: "not_found" }
+        | { kind: "invalid"; field: string }
+        | { kind: "no_deliverable_variant" }
+        | { kind: "last_deliverable_variant" };
+    };
 
 export type PopupStatus = "draft" | "active" | "paused";
 export type TriggerKind = "back" | "scroll" | "idle" | "dwell" | "visibility" | "exit_intent";
@@ -142,6 +152,11 @@ async function deleteWithQueue(
   ownerId: string,
   scope: DeleteScope,
   deleteStatement: D1PreparedStatement,
+  /**
+   * 0件だった理由を「他人・存在しない」以外にも分けたいときに渡す(変更しなければ `not_found` のまま)。
+   * ⚠ 今のところ使うのは `deleteVariant`(稼働中のポップから最後の配信可能パターンを奪う削除を断る)だけ。
+   */
+  onZeroChanges: () => Promise<Result<Deleted>> = async () => notFound(),
 ): Promise<Result<Deleted>> {
   const [keys, , deleted] = await db.batch([
     selectImagesUnder(db, ownerId, scope),
@@ -149,8 +164,8 @@ async function deleteWithQueue(
     deleteStatement,
   ]);
   if (deleted.meta.changes === 0) {
-    // ⚠ 消す行が無かった(他人の行・既に無い)。同じ取引で積んだ行も無い(積む文も所有者と範囲で絞っている)
-    return notFound();
+    // ⚠ 消す行が無かった(他人の行・既に無い・またはガードが断った)。同じ取引で積んだ行も無い
+    return onZeroChanges();
   }
   return ok({ queuedImageKeys: (keys.results as Array<{ key: unknown }>).map((r) => r.key).filter(isImageKey) });
 }
@@ -527,18 +542,66 @@ function textContent(input: VariantInput): string {
   });
 }
 
+/*
+  🔴 `requiresImageAlt` は `./shapes.ts` にある(Codex #8 1巡目 Blocker 3)。
+    `src/admin/body.ts`(1枚目の関門)とここ(2枚目)が**同じ関数**を呼ぶことで、定義の重複による
+    fail-open の再発を防ぐ。`admin.ts` に置かないのは、DB に触らないこの純粋関数を export すると
+    `tests/d1-owner-isolation.test.ts`(「データ層の公開関数はすべて `ownerId` を2番目に取る」を
+    機械で検査する)を無関係に壊すため。
+*/
+
+/*
+  ─────────────── 稼働中のポップから「配信できる最後のパターン」を奪わせない(Codex #8 1巡目 Blocker 1) ───────────────
+  🔴 **画像を外す・アーカイブする・削除する・(画像の無い画像型へ)編集する**の4つの操作は、
+    稼働中(`status = 'active'`)のポップを配信 0 件のまま放置しうる。**黙って停止に切り替えず、操作そのものを断る**
+    (本部裁定 2026-10-?: 押した操作と違う結果になるため)。
+  🔴 **判定は書き込みと同じ1つの文の WHERE に埋め込む**(先に読んでから書く、ではない)。
+    activatePopup と同じ形: 条件が偽なら変更が0件のまま終わり、呼び出し側が「なぜ変わらなかったか」を後から1回読む。
+*/
+
 /**
- * 🔴 **画像の説明(`imageAlt`)は、画像型かつボタン文言が空のときだけ必須**
- *   (2026-10-04 追補v2 §7-7-1 の5番。画像だけのバナーでは、空のままだと読み上げの手がかりが
- *   汎用文言(`buttonLabel` の既定値)だけになる)。
- *   ⚠ **保存 API(画面側)だけに置かない** —— ここ(データ層)でも断る、という2枚目の関門
- *   (`src/admin/body.ts` が1枚目)。この層は「API を直叩きしても素通りしない」ための場所(M6 と同じ考え方)。
- * ⚠ **DB の CHECK には入れていない**(限界として記録): SQLite の CHECK は同じ行の他の列を
- *   参照できるので条件自体は書けるが、**既存の表に CHECK を追加するには表の再生成が要り**、
- *   0002 の「追加だけ」の方針(security 監査 M9)と緊張する。v1 はこの2枚(body.ts + ここ)を正とする。
+ * ガードの断片。**ALLOW = そのポップが稼働中でない OR この行以外に配信できる行がある。**
+ * ⚠ 「この行自身が操作後も配信できるままか」は呼び出し側が個別に緩める
+ *   (archive/delete は、この行が必ず非配信になる操作なのでこれだけで足りる。
+ *   `setVariantImage` の画像を外す・`updateVariant` の kind 変更は、**この行の kind・前の状態次第で
+ *   「変えても配信できるままの場合」がある**(例: text 型の `imageKey` を外しても配信判定に影響しない)ので、
+ *   呼び出し側で OR を足す。提出前セルフレビューで、text 型のこのケースを見落として誤って断っていたことに気づいた)。
+ * 🔴 **対象行の指し方は、列名(`id` 等)ではなく束縛パラメータ(`?1` 等)で渡す。**
+ *   当初は `variants.id` のようにテーブル名で相関させていたが、この断片を `insert ... select`
+ *   (対象の `variants` 行が FROM に出てこない文)に挿すと `no such column: variants.popup_id` で落ちた
+ *   (実測。D1/SQLite はその文脈で `variants` を解決できない)。さらに `UPDATE`/`DELETE` 内の素の
+ *   `where id = id` のような自己参照は、入れ子のサブクエリの中では**内側の `variants` に取られて
+ *   常に真になる**(シャドーイング)。**束縛パラメータはテーブルのスコープを持たない**ので、
+ *   `update`・`delete`・`insert ... select` のどこに挿しても、何階層ネストしても意味がずれない。
+ * @param variantIdParam 呼び出し元の文で対象の variant id を束縛しているプレースホルダ(例 `"?1"`)。
  */
-function requiresImageAlt(input: VariantInput): boolean {
-  return input.kind === "image" && input.content?.buttonLabel?.trim() === "" && input.content?.imageAlt?.trim() === "";
+function keepsDeliverableGuard(variantIdParam: string): string {
+  return `(
+    not exists (
+      select 1 from popups p join variants v on v.popup_id = p.id
+      where v.id = ${variantIdParam} and p.status = 'active'
+    )
+    or exists (
+      select 1 from variants other
+      where other.popup_id = (select popup_id from variants where id = ${variantIdParam})
+        and other.id <> ${variantIdParam}
+        and ${deliverableVariantSql("other")}
+    )
+  )`;
+}
+
+/**
+ * 書き込みが0件のとき、「他人・存在しない」か「ガードが断った」かを**書き込みの後に1回だけ**読み分ける
+ * (activatePopup と同じ形。判定そのもの=許可するかどうかは書き込みの WHERE で既に確定しており、
+ *  ここは理由を分けて返すためだけの読み取り)。
+ */
+async function notFoundOrBlocked(
+  db: D1Database,
+  ownerId: string,
+  variantId: string,
+): Promise<{ ok: false; failure: { kind: "not_found" } | { kind: "last_deliverable_variant" } }> {
+  const exists = await db.prepare(`select 1 from variants where id = ?1 and owner_id = ?2`).bind(variantId, ownerId).first();
+  return exists === null ? { ok: false, failure: { kind: "not_found" } } : { ok: false, failure: { kind: "last_deliverable_variant" } };
 }
 
 
@@ -585,13 +648,19 @@ export async function updateVariant(
            content = case when json_extract(content, '$.imageKey') is null then ?2
                           else json_set(?2, '$.imageKey', json_extract(content, '$.imageKey')) end,
            destination_url = ?3, updated_at = ${NOW}
-         where id = ?4 and owner_id = ?5`,
+         where id = ?4 and owner_id = ?5
+           and (
+             ?1 = 'text'
+             or (?1 = 'image' and json_extract(content, '$.imageKey') is not null)
+             or ${keepsDeliverableGuard("?4")}
+           )`,
       )
       .bind(input.kind, textContent(input), input.destinationUrl, variantId, ownerId)
       .run(),
   );
   if (!result.ok) return result;
-  return changed(result.value) ? ok(null) : notFound();
+  if (changed(result.value)) return ok(null);
+  return notFoundOrBlocked(db, ownerId, variantId);
 }
 
 async function setVariantArchived(
@@ -604,13 +673,15 @@ async function setVariantArchived(
     db
       .prepare(
         `update variants set archived_at = ${archived ? `coalesce(archived_at, ${NOW})` : "null"}, updated_at = ${NOW}
-         where id = ?1 and owner_id = ?2`,
+         where id = ?1 and owner_id = ?2
+           ${archived ? `and ${keepsDeliverableGuard("?1")}` : ""}`,
       )
       .bind(variantId, ownerId)
       .run(),
   );
   if (!result.ok) return result;
-  return changed(result.value) ? ok(null) : notFound();
+  if (changed(result.value)) return ok(null);
+  return archived ? notFoundOrBlocked(db, ownerId, variantId) : notFound();
 }
 
 export function archiveVariant(source: DbSource, ownerId: string, variantId: string): Promise<Result<null>> {
@@ -631,7 +702,10 @@ export async function deleteVariant(source: DbSource, ownerId: string, variantId
     db,
     ownerId,
     { variantId },
-    db.prepare(`delete from variants where id = ?1 and owner_id = ?2`).bind(variantId, ownerId),
+    db
+      .prepare(`delete from variants where id = ?1 and owner_id = ?2 and ${keepsDeliverableGuard("?1")}`)
+      .bind(variantId, ownerId),
+    () => notFoundOrBlocked(db, ownerId, variantId),
   );
 }
 
@@ -651,6 +725,27 @@ export async function setVariantImage(
   const db = resolveDb(source);
   if (key !== null && !isImageKey(key)) return invalid("imageKey");
   const previousOf = `select json_extract(content, '$.imageKey') from variants where id = ?1 and owner_id = ?2`;
+  /*
+    🔴 **画像を「外す」(`key === null`)だけガードを掛ける**(稼働中のポップから最後の配信可能パターンを
+    奪わせない。Codex #8 1巡目 Blocker 1)。置く・差し替える(`key` が非 null)は配信できる状態を
+    減らさないので、ガード無し(既存のまま)。**同じ条件を、積む文(②)と書く文(③)の両方に掛ける**
+    —— ③だけに掛けると、ブロックされた(= content が変わらない)のに②だけが R2 への消し直しを
+    予約してしまい、宙に浮いた pending 行が残る(実害は無い=drain 側が「まだ参照されている」で
+    実削除を止めるが、綺麗ではない)。
+  */
+  /*
+    🔴 **text 型のガードはすり抜けさせる**(提出前セルフレビューで発見: 当初 `kind <> 'image'` の分岐を
+    忘れ、text 型の `imageKey`(配信判定では使われない、ただの残骸)を外す操作まで、唯一の稼働中
+    パターンだからという理由で誤って断っていた)。**配信できる状態を減らすのは image 型だけ**なので、
+    `kind <> 'image'` を先に見てから `keepsDeliverableGuard` に落とす。
+  */
+  /*
+    ⚠ **`kind` も列名の裸参照ではなく、束縛パラメータで引いたサブクエリにする**(②の `insert ... select`
+    には `from variants` が無く、`keepsDeliverableGuard` を直したのと同じ理由で裸の `kind` は
+    `no such column: kind` になる)。
+  */
+  const kindOf = `(select kind from variants where id = ?1 and owner_id = ?2)`;
+  const removalGuardClause = key === null ? `and (${kindOf} <> 'image' or ${keepsDeliverableGuard("?1")})` : "";
   const result = await write(() =>
     db.batch([
       db.prepare(`select (${previousOf}) as previous`).bind(variantId, ownerId),
@@ -658,14 +753,16 @@ export async function setVariantImage(
         .prepare(
           `insert into pending_image_deletions (key, owner_id)
            select (${previousOf}), ?2
-           where (${previousOf}) is not null and (${previousOf}) is not ?3`,
+           where (${previousOf}) is not null and (${previousOf}) is not ?3
+             ${removalGuardClause}`,
         )
         .bind(variantId, ownerId, key),
       db
         .prepare(
           `update variants set content = ${key === null ? "json_remove(content, '$.imageKey')" : "json_set(content, '$.imageKey', ?3)"},
              updated_at = ${NOW}
-           where id = ?1 and owner_id = ?2`,
+           where id = ?1 and owner_id = ?2
+             ${removalGuardClause}`,
         )
         .bind(...(key === null ? [variantId, ownerId] : [variantId, ownerId, key])),
       // 🔴 新しいキーの行を外すのは、**上の UPDATE が当たって、そのキーを実際に参照している行があるとき だけ**
@@ -681,6 +778,7 @@ export async function setVariantImage(
   );
   if (!result.ok) return result;
   const [read, , update] = result.value;
+  if (update.meta.changes === 0 && key === null) return notFoundOrBlocked(db, ownerId, variantId);
   if (update.meta.changes === 0) return notFound();
   const previous = (read.results as Array<{ previous: unknown }>)[0]?.previous;
   return ok({ previousKey: isImageKey(previous) ? previous : null });

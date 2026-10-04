@@ -171,13 +171,20 @@ export async function siteConfig(env: DeliveryBindings, siteKey: string, origin:
 }
 
 /**
- * 配信に載るバリアントの条件(SQL の断片)。**配信と稼働の切り替えが同じ1つを使う。**
+ * 配信に載るバリアントの条件(SQL の断片)を組み立てる。**配信と稼働の切り替えが同じ1つを使う。**
  * 🔴 **画像型は `imageKey` が入っているものだけ配る**(PR4a。発注の決まりごと「画像が未設定の画像パターンは
  *   配信しない」)。アップロードしていない画像パターンを配ると、埋め込みの本体が描けずに
  *   壊れたポップを出すか(2枚目の関門で)何も出さないことになる——どちらも「出せる」と見せかけるだけ無駄。
+ * @param alias テーブルの別名(省略時は無印。相関サブクエリで別名を付けた `variants` を指すときに使う
+ *   = `admin.ts` の「稼働中のポップから配信できる最後のパターンを奪う操作を断る」ガードが使う)
  */
-export const DELIVERABLE_VARIANT =
-  "archived_at is null and (kind = 'text' or (kind = 'image' and json_extract(content, '$.imageKey') is not null))";
+export function deliverableVariantSql(alias?: string): string {
+  const col = (name: string) => (alias ? `${alias}.${name}` : name);
+  return `${col("archived_at")} is null and (${col("kind")} = 'text' or (${col("kind")} = 'image' and json_extract(${col("content")}, '$.imageKey') is not null))`;
+}
+
+/** 無印(別名無し)の形。既存の呼び出し側はこのまま使う。 */
+export const DELIVERABLE_VARIANT = deliverableVariantSql();
 
 export type RecordOutcome = { ok: true; stored: boolean } | { ok: false; reason: string };
 

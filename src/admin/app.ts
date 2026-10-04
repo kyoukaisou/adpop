@@ -77,6 +77,11 @@ function fromResult<T>(c: Ctx, result: admin.Result<T>, okStatus: 200 | 201 = 20
       return fail(c, 409, "limit", { target: f.target });
     case "no_deliverable_variant":
       return fail(c, 409, "no_deliverable_variant");
+    case "last_deliverable_variant":
+      // 🔴 稼働中のポップから、配信できる最後のパターンを奪う操作(本部裁定。Codex #8 1巡目 Blocker 1)
+      return fail(c, 409, "last_deliverable_variant", {
+        message: "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください",
+      });
     case "unique":
       return fail(c, 409, "conflict");
     case "check":
