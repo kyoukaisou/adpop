@@ -118,8 +118,17 @@ export async function ensureOwner(source: DbSource, ownerId: string): Promise<Re
 */
 type DeleteScope = { siteId: string } | { popupId: string } | { variantId: string };
 
-/** その範囲の(アーカイブ済みを含む)全パターンの画像のキーを、所有者の条件つきで `pending_image_deletions` に積む文。 */
-function enqueueImagesUnder(db: D1Database, ownerId: string, scope: DeleteScope): D1PreparedStatement {
+/**
+ * その範囲の(アーカイブ済みを含む)全パターンの画像のキーを、所有者の条件つきで `pending_image_deletions` に積む文。
+ * 🔴 **`extraCondition` は、同じ取引の `deleteStatement` が断られたときに、この INSERT だけが
+ *   実行されてしまわないようにするためのもの**(Codex #8 2巡目 Should fix)。`deleteVariant` は
+ *   「稼働中のポップから最後の配信可能パターンを奪う削除」を WHERE で断る(`keepsDeliverableGuard`)が、
+ *   このガードは DELETE の文だけに掛かっていて、**同じ batch の INSERT(ここ)は無条件で実行されていた**
+ *   —— 断られた削除でも画像キーが積まれ、`cleanupPending` とログに偽の未処理削除が出ていた。
+ *   ⚠ `siteId`/`popupId` 範囲(deleteSite/deletePopup)には対応するガードが無い(断る操作ではない)ので、
+ *   既定は空文字列のまま変えない。
+ */
+function enqueueImagesUnder(db: D1Database, ownerId: string, scope: DeleteScope, extraCondition = ""): D1PreparedStatement {
   const [column, value] =
     "siteId" in scope ? ["p.site_id", scope.siteId] : "popupId" in scope ? ["v.popup_id", scope.popupId] : ["v.id", scope.variantId];
   return db
@@ -127,7 +136,8 @@ function enqueueImagesUnder(db: D1Database, ownerId: string, scope: DeleteScope)
       `insert into pending_image_deletions (key, owner_id)
        select json_extract(v.content, '$.imageKey'), v.owner_id from variants v
        join popups p on p.id = v.popup_id
-       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null`,
+       where v.owner_id = ?1 and ${column} = ?2 and json_extract(v.content, '$.imageKey') is not null
+         ${extraCondition}`,
     )
     .bind(ownerId, value);
 }
@@ -157,14 +167,26 @@ async function deleteWithQueue(
    * ⚠ 今のところ使うのは `deleteVariant`(稼働中のポップから最後の配信可能パターンを奪う削除を断る)だけ。
    */
   onZeroChanges: () => Promise<Result<Deleted>> = async () => notFound(),
+  /**
+   * 🔴 **`enqueueImagesUnder` に足す条件(Codex #8 2巡目 Should fix)**。`deleteStatement` が
+   *   ガードで断るときは、**同じ条件をここにも渡す**——渡さないと、削除は0件のままなのに
+   *   画像キーだけが `pending_image_deletions` に積まれる(断った操作が内部状態を変えてしまう)。
+   */
+  enqueueExtraCondition = "",
 ): Promise<Result<Deleted>> {
   const [keys, , deleted] = await db.batch([
     selectImagesUnder(db, ownerId, scope),
-    enqueueImagesUnder(db, ownerId, scope),
+    enqueueImagesUnder(db, ownerId, scope, enqueueExtraCondition),
     deleteStatement,
   ]);
   if (deleted.meta.changes === 0) {
-    // ⚠ 消す行が無かった(他人の行・既に無い・またはガードが断った)。同じ取引で積んだ行も無い
+    /*
+      ⚠ 消す行が無かった(他人の行・既に無い・またはガードが断った)。
+      🔴 **積んだ行も無い**(Codex #8 2巡目 Should fix で修正): `enqueueExtraCondition` に
+      `deleteStatement` と同じガードを渡しているときは、INSERT もここで0件のまま確定する
+      (同じ batch = 同じ取引なので、他の文が何を書いても一緒にコミットされるだけで、
+      INSERT 自身の WHERE が偽なら元々0行)。
+    */
     return onZeroChanges();
   }
   return ok({ queuedImageKeys: (keys.results as Array<{ key: unknown }>).map((r) => r.key).filter(isImageKey) });
@@ -706,6 +728,9 @@ export async function deleteVariant(source: DbSource, ownerId: string, variantId
       .prepare(`delete from variants where id = ?1 and owner_id = ?2 and ${keepsDeliverableGuard("?1")}`)
       .bind(variantId, ownerId),
     () => notFoundOrBlocked(db, ownerId, variantId),
+    // 🔴 `enqueueImagesUnder` の `{variantId}` スコープは `?1`=ownerId・`?2`=variantId で束縛する
+    //   (DELETE 文とは束縛の順が違うので、ガードに渡すプレースホルダも `?2` にする)。
+    `and ${keepsDeliverableGuard("?2")}`,
   );
 }
 

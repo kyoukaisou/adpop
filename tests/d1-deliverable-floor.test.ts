@@ -143,6 +143,31 @@ describe("稼働中のポップから最後の配信可能パターンを奪う�
     expect((await admin.getVariant(db, OWNER_A, variantId)).ok).toBe(true);
   });
 
+  it("🔴 断られた削除では、画像キーが pending_image_deletions に積まれない(Codex #8 2巡目 Should fix)", async () => {
+    const site = await newActiveSite();
+    const popupId = value(await admin.createPopup(db, OWNER_A, site, { name: "p" })).id;
+    const variantId = value(await admin.createVariant(db, OWNER_A, popupId, imageInput())).id;
+    const key = IMAGE_KEY("f");
+    value(await admin.setVariantImage(db, OWNER_A, variantId, key));
+    value(await admin.activatePopup(db, OWNER_A, popupId));
+
+    const pendingBefore = await db
+      .prepare("select count(*) as c from pending_image_deletions where key = ?1")
+      .bind(key)
+      .first<{ c: number }>();
+    expect(pendingBefore?.c, "前提: まだ積まれていない").toBe(0);
+
+    expect(await admin.deleteVariant(db, OWNER_A, variantId)).toEqual(BLOCKED);
+
+    // ⚠ 削除は断られたので、行も画像の参照も変わらず、消し直し待ちにも積まれていない
+    expect((await admin.getVariant(db, OWNER_A, variantId)).ok).toBe(true);
+    const pendingAfter = await db
+      .prepare("select count(*) as c from pending_image_deletions where key = ?1")
+      .bind(key)
+      .first<{ c: number }>();
+    expect(pendingAfter?.c, "断られたのに pending_image_deletions に積まれた").toBe(0);
+  });
+
   it("✅ 他に配信できるパターンがあれば削除できる", async () => {
     const site = await newActiveSite();
     const popupId = value(await admin.createPopup(db, OWNER_A, site, { name: "p" })).id;
@@ -163,5 +188,69 @@ describe("稼働中のポップから最後の配信可能パターンを奪う�
     expect((await admin.restoreVariant(db, OWNER_A, variantId)).ok).toBe(true);
     expect((await admin.updateVariant(db, OWNER_A, variantId, imageInput())).ok).toBe(true);
     expect((await admin.deleteVariant(db, OWNER_A, variantId)).ok).toBe(true);
+  });
+
+  /*
+    🔴 **並行性(Codex #8 2巡目 Should fix)**。ガードは「書き込みと同じ文の WHERE」に埋め込んであるので、
+    D1 が1つずつ処理する限り、同じポップの配信可能な2行に対して2つの破壊的操作を**同時に**投げても、
+    最初にコミットされた側だけが「他に配信できる行がある」を見て通り、後からコミットされた側は
+    「もう無い」を見て断られる、という順序性が保たれるはず——それを実際に `Promise.all` で確かめる。
+  */
+  describe("並行に撃っても、配信可能な行が0件になる組み合わせは片方しか通らない", () => {
+    it("アーカイブ + 削除を同時に", async () => {
+      const site = await newActiveSite();
+      const popupId = value(await admin.createPopup(db, OWNER_A, site, { name: "p" })).id;
+      const variantA = value(await admin.createVariant(db, OWNER_A, popupId, textInput("A"))).id;
+      const variantB = value(await admin.createVariant(db, OWNER_A, popupId, textInput("B"))).id;
+      value(await admin.activatePopup(db, OWNER_A, popupId));
+
+      const [archived, deleted] = await Promise.all([
+        admin.archiveVariant(db, OWNER_A, variantA),
+        admin.deleteVariant(db, OWNER_A, variantB),
+      ]);
+      const results = [archived, deleted];
+      const succeeded = results.filter((r) => r.ok);
+      const blocked = results.filter((r) => !r.ok);
+      expect(succeeded, "成功は片方だけのはず").toHaveLength(1);
+      expect(blocked, "もう片方は断られるはず").toHaveLength(1);
+      expect(blocked[0]).toEqual(BLOCKED);
+
+      // 最後に1件だけ配信できる行が残っている(アーカイブされていない/削除されていない、どちらかの行)
+      const remaining = await db
+        .prepare(
+          `select count(*) as c from variants where popup_id = ?1 and archived_at is null and (kind = 'text' or (kind = 'image' and json_extract(content, '$.imageKey') is not null))`,
+        )
+        .bind(popupId)
+        .first<{ c: number }>();
+      expect(remaining?.c).toBe(1);
+    });
+
+    it("画像を外す + 画像の無い型への変更を同時に", async () => {
+      const site = await newActiveSite();
+      const popupId = value(await admin.createPopup(db, OWNER_A, site, { name: "p" })).id;
+      const imageVariant = value(await admin.createVariant(db, OWNER_A, popupId, imageInput())).id;
+      value(await admin.setVariantImage(db, OWNER_A, imageVariant, IMAGE_KEY("0")));
+      const textVariant = value(await admin.createVariant(db, OWNER_A, popupId, textInput("B"))).id;
+      value(await admin.activatePopup(db, OWNER_A, popupId));
+
+      const [imageRemoved, kindChanged] = await Promise.all([
+        admin.setVariantImage(db, OWNER_A, imageVariant, null),
+        admin.updateVariant(db, OWNER_A, textVariant, imageInput()), // text → 画像の無い image 型
+      ]);
+      const results = [imageRemoved, kindChanged];
+      const succeeded = results.filter((r) => r.ok);
+      const blocked = results.filter((r) => !r.ok);
+      expect(succeeded, "成功は片方だけのはず").toHaveLength(1);
+      expect(blocked, "もう片方は断られるはず").toHaveLength(1);
+      expect(blocked[0]).toEqual(BLOCKED);
+
+      const remaining = await db
+        .prepare(
+          `select count(*) as c from variants where popup_id = ?1 and archived_at is null and (kind = 'text' or (kind = 'image' and json_extract(content, '$.imageKey') is not null))`,
+        )
+        .bind(popupId)
+        .first<{ c: number }>();
+      expect(remaining?.c).toBe(1);
+    });
   });
 });

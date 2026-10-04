@@ -165,10 +165,9 @@ export function startRuntime(win: Win, doc: Document): boolean {
   // 🔴 ローダより先に読まれた / 別の何かが先に居る = 何もしない(fail-closed)
   if (bridge === undefined) return false;
 
-  let drawing = false;
   const render = (): void => {
     quiet(() => {
-      if (bridge.shown === true || drawing) return;
+      if (bridge.shown === true || bridge.drawing === true) return;
       const request = bridge.request;
       if (request === undefined) return;
       if (!isSafeDestination(request.variant?.destinationUrl)) return;
@@ -177,22 +176,29 @@ export function startRuntime(win: Win, doc: Document): boolean {
           前は先に立てていたので、**描画が途中で落ちても「表示済み」になっていた** ——
           ローダはそれを見て「出せた」と判断し、**戻るトリガが「戻る」を吸収したままになる**。
           = ポップも出ないのに操作だけ奪う(要件書 §5-2 の約束を破る)。
-        ⚠ `drawing` は**再入だけ**を止める(`draw` の途中で render がもう一度呼ばれても二重に描かない)。
-          **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
+        🔴🔴 **`drawing` は `bridge` に持たせる(Codex #8 2巡目 Blocker)**。
+          以前はこの関数のローカル変数だったため、**画像の読み込みを待っている間に本体がもう一度
+          読み込まれる**(= `startRuntime()` がもう一度呼ばれる)と、2つ目の呼び出しは**別の
+          ローカル変数**(常に `false` から始まる)を見てしまい、再入防止が効かなかった ——
+          両方が同じ画像を並行に読み込み、両方成功すると**ポップが2つ・impressionも2件**になる
+          (「本体が2回読み込まれても1つ」の約束=要件書 §5-2 の多重読み込み耐性に反する)。
+          `bridge` は `readBridge(win)` でどの呼び出しからも**同じオブジェクト**が返るので、
+          ここに置けば2つ目の `startRuntime()` が作る `render` からも正しく見える。
+        ⚠ **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
         🔴 **画像型は `draw()` が画像の読み込みを待つ間 `Promise` のまま**(Codex #8 1巡目 Blocker 2)。
-          `drawing` は、その**待っている間ずっと**立てたままにする(待っている間に `render()` が
-          もう一度呼ばれても二重に描かない)。`bridge.render` 自体の型は同期(`() => void`)なので、
-          ここで `await` はできない —— `.then`/`.catch` で結果を受けて `drawing`/`shown` を更新する。
+          `bridge.drawing` は、その**待っている間ずっと**立てたままにする。`bridge.render` 自体の
+          型は同期(`() => void`)なので、ここで `await` はできない —— `.then`/`.catch` で結果を
+          受けて `bridge.drawing`/`bridge.shown` を更新する。
       */
-      drawing = true;
+      bridge.drawing = true;
       draw(win, doc, bridge, request).then(
         () => {
           bridge.shown = true;
-          drawing = false;
+          bridge.drawing = false;
         },
         () => {
           // 🔴 失敗(画像読み込みの失敗・タイムアウト・不正な imageKey 等)。shown は立てない。
-          drawing = false;
+          bridge.drawing = false;
         },
       );
     });
@@ -345,8 +351,13 @@ async function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequ
       閉じたあと `host.remove()` するだけだと、フォーカスは `body` の先頭へ飛び、
       **キーボードで読んでいた人は位置を失う**。
     ⚠ `document.activeElement` は Shadow root の外側の要素を指す(ポップはまだ挿していない)。
+    🔴🔴 **「開く前」は DOM に差し込む直前を指す(Codex #8 2巡目 Should fix)**。
+      画像型は `await loadImage(...)` で最大8秒待つ —— ここで先に読んでしまうと、
+      **待っている間に利用者が別の要素へフォーカスを移していても、発火した瞬間の古い要素へ
+      戻してしまう**。値を入れるのは下(画像の読み込みを待ったあと・`appendChild` の直前)。
+      `close()` は `let` を閉包で捕まえているので、代入する場所を後にずらすだけでよい。
   */
-  const previouslyFocused = doc.activeElement as HTMLElement | null;
+  let previouslyFocused: HTMLElement | null = null;
 
   /**
    * 🔴 **`aria-modal="true"` を名乗るなら、フォーカスも実際に閉じ込める**
@@ -445,6 +456,8 @@ async function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequ
     await loadImage(win, imageElement, imageUrl as string, IMAGE_LOAD_TIMEOUT_MS);
   }
 
+  // 🔴 差し込む直前のフォーカス位置(上の注記どおり、待った**あと**に読む)。
+  previouslyFocused = doc.activeElement as HTMLElement | null;
   const parent = doc.body ?? doc.documentElement;
   parent.appendChild(host);
   doc.addEventListener("keydown", onKeyDown);
