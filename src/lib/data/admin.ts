@@ -734,6 +734,88 @@ export async function deleteVariant(source: DbSource, ownerId: string, variantId
   );
 }
 
+/* ─────────────── 計測の数字(表示・クリック・閉じた) ─────────────── */
+
+export type EventCounts = { impression: number; click: number; close: number };
+export type PopupStats = { sevenDay: EventCounts; lifetime: EventCounts };
+
+const STATS_KINDS = ["impression", "click", "close"] as const;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function emptyCounts(): EventCounts {
+  return { impression: 0, click: 0, close: 0 };
+}
+
+type StatsRow = { popup_id: string; kind: string; n: number };
+
+function applyRows(target: Record<string, PopupStats>, rows: StatsRow[], field: keyof PopupStats): void {
+  for (const row of rows) {
+    const stats = target[row.popup_id];
+    if (stats === undefined) continue; // ⚠ 理論上は起きない(FK で popupIds の外を指せない)が、黙って無視せず読み飛ばすだけに留める
+    if (!(STATS_KINDS as readonly string[]).includes(row.kind)) continue;
+    stats[field][row.kind as (typeof STATS_KINDS)[number]] = row.n;
+  }
+}
+
+/**
+ * サイト配下の全ポップ(アーカイブ済みを含む)の、表示・クリック・閉じたの数字。
+ * 🔴 **単位・期間(本部発注 D-330 の決め。notes/プロダクト事業部/離脱ポップ-要件書.md §4-7 の続き)**:
+ *   ・数える単位は**ポップごと**(バリアント別・トリガ別の内訳は要件書 §10 の数値ダッシュボードの仕事で、
+ *     本PR = 管理画面のポップ一覧・アーカイブ一覧・完全削除の確認、の範囲外)。
+ *   ・クリックは**生の件数**(同じ表示で複数回押されたら複数回数える。要件書 §4-7 のとおり)。
+ *     CTR(ユニーク・impression_id あたり1)に畳む指標は、この3画面には出ない。
+ *   ・「直近7日」は**リクエスト時刻からの 7×24 時間のローリング窓(UTC)**。カレンダー日・JST では切らない
+ *     ——社長1人の運用で、時差の扱いを決めるだけの実データがまだ無いため最も単純な基準を採った。
+ *     ずれが問題になったら、要件書に時差の方針を足してから変える(README にも書く)。
+ *   ・「累計」は保持期間の制約なし(§6 裁定4 の90日保持は PR5 本体の宿題。本PRでは削除を実装していないので
+ *     累計 = 今 DB に残っている全件)。
+ * 🔴 **取れなかったときは 0 を返さない(P-011)**: ここは読み取りだけで、`listSites` 等の既存の読み取り関数と
+ *   同じ形(try/catch で握り潰さない)。D1 の例外はそのまま投げ、呼び出し側(`app.ts` の `onError`)が
+ *   500(`upstream`)にする。**件数0件のポップと、取得そのものが失敗したときを、HTTP の状態コードで分ける**
+ *   ——前者は 200 で `{ impression: 0, ... }`(グループ化した行が無い = そのキーの件数が0という読み取り)、
+ *   後者は 500(画面は「—」を出す)。
+ * ⚠ **索引**: `events_site_kind_occurred_at`(migration 0003)が無いと、events が増えるほど全表走査になる。
+ */
+export async function getPopupStats(
+  source: DbSource,
+  ownerId: string,
+  siteId: string,
+): Promise<Result<Record<string, PopupStats>>> {
+  const db = resolveDb(source);
+  const site = await db.prepare(`select 1 from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).first();
+  if (site === null) return notFound();
+  const popupRows = await db
+    .prepare(`select id from popups where site_id = ?1 and owner_id = ?2`)
+    .bind(siteId, ownerId)
+    .all<{ id: string }>();
+  const popupIds = popupRows.results.map((r) => r.id);
+  const out: Record<string, PopupStats> = {};
+  for (const id of popupIds) out[id] = { sevenDay: emptyCounts(), lifetime: emptyCounts() };
+  if (popupIds.length === 0) return ok(out);
+  const cutoff = new Date(Date.now() - SEVEN_DAYS_MS).toISOString();
+  const [sevenDay, lifetime] = await db.batch([
+    db
+      .prepare(
+        `select popup_id, kind, count(*) as n from events
+         where site_id = ?1 and owner_id = ?2 and occurred_at >= ?3
+           and kind in ('impression', 'click', 'close')
+         group by popup_id, kind`,
+      )
+      .bind(siteId, ownerId, cutoff),
+    db
+      .prepare(
+        `select popup_id, kind, count(*) as n from events
+         where site_id = ?1 and owner_id = ?2
+           and kind in ('impression', 'click', 'close')
+         group by popup_id, kind`,
+      )
+      .bind(siteId, ownerId),
+  ]);
+  applyRows(out, sevenDay.results as StatsRow[], "sevenDay");
+  applyRows(out, lifetime.results as StatsRow[], "lifetime");
+  return ok(out);
+}
+
 /**
  * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB だけ)。
  * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書く。

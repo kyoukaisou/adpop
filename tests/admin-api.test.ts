@@ -362,6 +362,7 @@ const ROUTES = [
   "PUT /api/admin/sites/:siteId",
   "DELETE /api/admin/sites/:siteId",
   "GET /api/admin/sites/:siteId/popups",
+  "GET /api/admin/sites/:siteId/popups/stats",
   "POST /api/admin/sites/:siteId/popups",
   "GET /api/admin/popups/:popupId",
   "PUT /api/admin/popups/:popupId/name",

@@ -1063,5 +1063,117 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
         vi.useRealTimers();
       }
     });
+
+    /*
+      🔴 **PR #8 最終巡 Should fix(テストだけ・2026-10-04 PR5a で追加)**:
+        `bridge.drawing` は失敗の種類(画像の失敗・タイムアウト・`draw()` 内の同期の例外)に関わらず
+        必ず `false` に戻り、**そのあとの `bridge.render()` 呼び出しでは再び描ける**ことを固定する。
+        ⚠ `runtime.ts` 側の実装は変えていない(既に `.then(resolve, reject)` の両方が
+        `bridge.drawing = false` を立てる形になっている)。ここまでは実装済みの振る舞いを**初めてテストで撃つ**。
+    */
+    it("🔴 画像エラーの後、drawing は false に戻り、次の bridge.render() では描ける", async () => {
+      await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY }, "error");
+      const bridge = (win as unknown as Record<string, { drawing?: boolean; shown?: boolean; render?: () => void }>)[
+        NAMESPACE
+      ];
+      expect(doc.querySelector("[data-adpop]"), "前提: まだ描かれていない").toBeNull();
+      expect(bridge.drawing, "画像エラーの後も drawing が true のまま(2回目の render が無視される)").not.toBe(true);
+      expect(bridge.shown).not.toBe(true);
+
+      // 次の挑戦では画像が読み込める状況にして、同じ bridge の render() をもう一度呼ぶ
+      stubImageLoad("load");
+      bridge.render?.();
+      await flush();
+
+      expect(doc.querySelector("[data-adpop]"), "drawing が false に戻ったはずなのに、次の render() で描けない").not.toBeNull();
+      expect(bridge.shown).toBe(true);
+    });
+
+    it(`タイムアウトの後、drawing は false に戻り、次の bridge.render() では描ける`, async () => {
+      vi.useFakeTimers();
+      try {
+        stubNetwork({
+          config: configBody({
+            variants: [
+              {
+                key: VARIANT_KEY,
+                kind: "image",
+                weight: 100,
+                content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+                destinationUrl: "https://offer.example.com/a",
+              },
+            ],
+          }),
+        });
+        installTag();
+        startAdpop(win, doc);
+        await vi.advanceTimersByTimeAsync(0);
+        exitIntent();
+        await vi.advanceTimersByTimeAsync(0);
+        startRuntime(win, doc);
+        await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + 1000); // タイムアウトが確定する
+
+        const bridge = (win as unknown as Record<string, { drawing?: boolean; shown?: boolean; render?: () => void }>)[
+          NAMESPACE
+        ];
+        expect(doc.querySelector("[data-adpop]"), "前提: まだ描かれていない").toBeNull();
+        expect(bridge.drawing, "タイムアウトの後も drawing が true のまま").not.toBe(true);
+
+        // 次の挑戦に備えて実タイマーへ戻し、画像が読み込める状況で render() をもう一度呼ぶ
+        vi.useRealTimers();
+        stubImageLoad("load");
+        bridge.render?.();
+        await flush();
+
+        expect(doc.querySelector("[data-adpop]"), "drawing が false に戻ったはずなのに、次の render() で描けない").not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("🔴 draw() 内の同期の例外(不正な imageKey)の後、drawing は false に戻り、次の bridge.render() では描ける", async () => {
+      /*
+        `isImage && imageUrl === null` は `await` の前(同期)で throw する経路
+        (= Promise の reject であって、画像の `load`/`error` イベントを経由しない失敗)。
+        ローダを通さずに `bridge` を直接書き替え、この経路だけを単独で撃つ(embed-flow.test.ts の
+        「2枚目の関門」と同じ手口)。
+      */
+      const brokenRequest = {
+        popupKey: POPUP_KEY,
+        variant: {
+          key: VARIANT_KEY,
+          kind: "image",
+          weight: 100,
+          content: { imageKey: "../../etc/passwd" },
+          destinationUrl: "https://offer.example.com/a",
+        },
+        triggerKind: "exit_intent" as const,
+        visitorHash: "0".repeat(32),
+        device: "desktop" as const,
+        pageUrl: "https://lp.example.com/lp",
+        impressionId: "aaaaaaaa-0000-0000-0000-000000000005",
+        deliveryOrigin: DELIVERY,
+      };
+      (win as unknown as Record<string, unknown>)[NAMESPACE] = {
+        version: "test",
+        request: brokenRequest,
+        send: (event: EventPayload) => sent.push(event),
+      } satisfies Bridge;
+
+      await bootRuntime();
+
+      const bridge = (win as unknown as Record<string, Bridge>)[NAMESPACE];
+      expect(doc.querySelector("[data-adpop]"), "前提: 不正な imageKey では描かれない").toBeNull();
+      expect(bridge.drawing, "draw() 内の例外の後も drawing が true のまま").not.toBe(true);
+      expect(bridge.shown).not.toBe(true);
+
+      // 正しい imageKey に差し替えて、同じ bridge の render() をもう一度呼ぶ
+      stubImageLoad("load");
+      bridge.request = { ...brokenRequest, variant: { ...brokenRequest.variant, content: { imageKey: IMAGE_KEY } } };
+      bridge.render?.();
+      await flush();
+
+      expect(doc.querySelector("[data-adpop]"), "drawing が false に戻ったはずなのに、次の render() で描けない").not.toBeNull();
+    });
   });
 });
