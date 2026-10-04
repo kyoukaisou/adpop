@@ -7,8 +7,16 @@
   `relative` を前提にするので、既に `relative` を持つ要素には位置用のクラスを足さない。
 */
 
-/** テキストリンク・小さいボタン用。-14px の余白で、だいたいの文字サイズでも44px角を超える。 */
-export const TAP_TARGET_44 = "relative before:absolute before:-inset-3.5 before:content-['']";
+/**
+ * テキストリンク・小さいボタン用。
+ * 🔴 Codex 2巡目 Should fix: 以前の `-inset-3.5`(左右14px)は、`gap-x-4`(16px)で並ぶ
+ *   「編集/停止/アーカイブ」等の間で隣の疑似要素と約12px重なり、押し間違いが起きた
+ *   (重なった領域はDOM順で後の要素が手前になる)。
+ * 📌 **横は隣との間隔の半分まで(8px)にとどめて重ならないことを優先し、縦だけ44pxを確保する**
+ *   (本部裁定)。見た目の大きさ・位置は変えない。横の実効幅は要素によって44pxに届かないことがあるが、
+ *   「重ならない」を優先する。
+ */
+export const TAP_TARGET_44 = "relative before:absolute before:-inset-y-3 before:-inset-x-2 before:content-['']";
 
 /** 縦方向だけが足りない要素用(例: h-6 のトグルスイッチ)。横幅は変えずに高さだけ44pxに広げる。 */
 export const TAP_TARGET_44_V = "relative before:absolute before:-inset-y-2.5 before:inset-x-0 before:content-['']";

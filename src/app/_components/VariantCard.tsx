@@ -24,6 +24,16 @@
   🔴 Codex 1巡目 Should fix(P-012): 保存・アップロード・画像の削除が成功したら、
     サーバーへ `GET /variants/:id` を取りに行って**サーバーが実際に持っている値で画面の状態を置き換える**
     (`syncFromServer`)。trimされた値やimageKeyを、送った値をそのまま仮定して表示しない。
+
+  🔴 Codex 2巡目 Blocker: 新規画像パターンで、作成直後のアップロードが失敗したときの補償DELETEの
+    結果を確かめていなかった(404・409・通信失敗を黙って握りつぶしていた)。
+    `src/app/_lib/variantRecovery.ts` の `recoverFailedImageUpload` に分岐ロジックを切り出し、
+    まずGETで実際の状態を確認してから、消す/消さないを決める(詳細はそのファイルのコメント参照)。
+
+  🔴 Codex 2巡目 Should fix 1(P-012の残り): `syncFromServer` が失敗したときに成功扱いしない
+    (`onSaved({ silent: true, errorMessage })` で親にエラーを伝える)。また、親から新しい
+    `variant` props が来たとき(他のカードの保存・一覧の再読み込み等)にもこのカードの表示を
+    合わせる(`useEffect` で同期。保存・アップロード中は上書きしない)。
 */
 import { useEffect, useRef, useState } from "react";
 import { deleteJson, getJson, postJson, putJson, uploadVariantImage } from "../_lib/api";
@@ -38,7 +48,10 @@ import {
   variantImageAlt,
   variantImageKey,
 } from "../_lib/types";
+import { recoverFailedImageUpload } from "../_lib/variantRecovery";
 import { FieldError } from "../_components/ErrorBanner";
+
+export type VariantSavedOptions = { silent?: boolean; errorMessage?: string };
 
 const FIELD_LABELS: Record<string, string> = {
   headline: "見出し",
@@ -70,7 +83,7 @@ export function VariantCard({
   variant: ApiVariant | null;
   isDeliverable: boolean;
   popupId: string;
-  onSaved: () => Promise<void> | void;
+  onSaved: (options?: VariantSavedOptions) => Promise<void> | void;
   onArchived: (() => Promise<void> | void) | null;
   onCancelDraft: (() => void) | null;
 }) {
@@ -107,11 +120,9 @@ export function VariantCard({
     };
   }, [pendingPreviewUrl]);
 
-  /** 保存・アップロード・画像削除の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。 */
-  async function syncFromServer(id: string) {
-    const result = await getJson<ApiVariant>(`/variants/${id}`);
-    if (!result.ok) return; // ⚠ 直後の一覧再読み込み(onSaved)でも間接的に反映されるので、ここは黙って諦める
-    const v = result.data;
+  /** サーバーから取ってきた値で画面の状態を置き換える(表示値=保存値にする。P-012対応)。 */
+  function applyVariant(v: ApiVariant) {
+    setSavedId(v.id);
     setKind(v.kind === "image" ? "image" : "text");
     setHeadline(variantHeadline(v));
     setBody(variantBody(v));
@@ -119,6 +130,30 @@ export function VariantCard({
     setImageAlt(variantImageAlt(v));
     setDestinationUrl(v.destinationUrl);
     setImageKey(variantImageKey(v));
+  }
+
+  /**
+   * 🔴 Codex 2巡目 Should fix 1: 親から新しい `variant` props が来たら(他のカードの保存・
+   *   一覧の再読み込み等)、このカードの表示をそれに合わせる。保存・アップロード中(`busy`)は
+   *   自分の操作の結果を上書きしてしまうため同期しない。下書き(variant===null)も対象外。
+   */
+  useEffect(() => {
+    if (variant === null || busy) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 親から来た新しいvariantへ意図的に同期する(Codex 2巡目 Should fix 1)
+    applyVariant(variant);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- variant.content は毎回新しいオブジェクトなので、その変化だけを見る
+  }, [variant?.id, variant?.content, variant?.destinationUrl, variant?.archivedAt]);
+
+  /**
+   * 保存・アップロード・画像削除の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。
+   * 🔴 Codex 2巡目 Should fix 1: この取得自体が失敗したら呼び出し側は**成功の通知を出さない**
+   *   (戻り値で知らせる。黙って諦めない)。
+   */
+  async function syncFromServer(id: string): Promise<boolean> {
+    const result = await getJson<ApiVariant>(`/variants/${id}`);
+    if (!result.ok) return false;
+    applyVariant(result.data);
+    return true;
   }
 
   function selectFile() {
@@ -155,7 +190,12 @@ export function VariantCard({
       setError(imageErrorMessage(result.reason, result.message));
       return;
     }
-    await syncFromServer(id);
+    const synced = await syncFromServer(id);
+    if (!synced) {
+      setError("アップロードはできましたが、最新の状態を確認できませんでした。画面を再読み込みしてください。");
+      await onSaved({ silent: true });
+      return;
+    }
     await onSaved();
   }
 
@@ -217,17 +257,49 @@ export function VariantCard({
         const uploaded = await uploadVariantImage(id, pendingFile, setUploadProgress);
         setUploadProgress(null);
         if (!uploaded.ok) {
-          // 🔴 Blocker 2: アップロードが失敗したら、作ったパターンを消す(中身の無いパターンを残さない)
-          await deleteJson<unknown>(`/variants/${id}`, { confirm: "delete" }).catch(() => {});
+          /*
+            🔴 Codex 2巡目 Blocker: 「失敗したら消す」の結果を確かめずに握りつぶしていた
+            (404・409・通信失敗を無視)。まずGETで実際の状態を確かめてから、消す/消さないを決める
+            (`recoverFailedImageUpload`。詳細はファイル先頭のコメントと variantRecovery.ts 参照)。
+          */
+          const outcome = await recoverFailedImageUpload(id, {
+            getVariant: (vid) => getJson<ApiVariant>(`/variants/${vid}`),
+            deleteVariant: (vid) => deleteJson<unknown>(`/variants/${vid}`, { confirm: "delete" }),
+          });
           submittingRef.current = false;
           setStatus("idle");
-          setError(imageErrorMessage(uploaded.reason, uploaded.message));
+          if (outcome.kind === "recovered") {
+            // 応答だけが失われていた。実際には成功していたので、保存済みとして同期する(成功の通知は出さない)
+            clearPendingFile();
+            applyVariant(outcome.variant);
+            await onSaved({ silent: true });
+            return;
+          }
+          if (outcome.kind === "reverted-to-draft") {
+            // 画像が無いことを確認し、補償DELETEも成功した。まっさらな下書きに戻す
+            setError(imageErrorMessage(uploaded.reason, uploaded.message));
+            return;
+          }
+          // kept-without-image / unknown: 作ったIDを手放さない。保存済み・画像なしとして再同期する
+          clearPendingFile();
+          setSavedId(id);
+          setError(outcome.message);
+          await onSaved({ silent: true });
           return;
         }
       }
       clearPendingFile();
       setSavedId(id);
-      await syncFromServer(id);
+      const synced = await syncFromServer(id);
+      submittingRef.current = false;
+      setStatus("idle");
+      if (!synced) {
+        setError("保存はできましたが、最新の状態を確認できませんでした。画面を再読み込みしてください。");
+        await onSaved({ silent: true });
+        return;
+      }
+      await onSaved();
+      return;
     } else {
       const result = await putJson<unknown>(`/variants/${savedId}`, payload);
       if (!result.ok) {
@@ -241,11 +313,16 @@ export function VariantCard({
         }
         return;
       }
-      await syncFromServer(savedId as string);
+      const synced = await syncFromServer(savedId as string);
+      submittingRef.current = false;
+      setStatus("idle");
+      if (!synced) {
+        setError("保存はできましたが、最新の状態を確認できませんでした。画面を再読み込みしてください。");
+        await onSaved({ silent: true });
+        return;
+      }
     }
 
-    submittingRef.current = false;
-    setStatus("idle");
     await onSaved();
   }
 

@@ -388,9 +388,10 @@ function PopupContent() {
                 variant={variant}
                 isDeliverable={variant.id === deliverableId}
                 popupId={popupId}
-                onSaved={async () => {
+                onSaved={async (opts) => {
                   await load();
-                  setToast("変更を保存しました");
+                  if (opts?.errorMessage) setVariantActionError(opts.errorMessage);
+                  else if (!opts?.silent) setToast("変更を保存しました");
                 }}
                 onArchived={async () => {
                   if (archiveInFlightRef.current) return;
@@ -414,10 +415,11 @@ function PopupContent() {
                 variant={null}
                 isDeliverable={false}
                 popupId={popupId}
-                onSaved={async () => {
+                onSaved={async (opts) => {
                   setDraftKeys((keys) => keys.filter((k) => k !== key));
                   await load();
-                  setToast("変更を保存しました");
+                  if (opts?.errorMessage) setVariantActionError(opts.errorMessage);
+                  else if (!opts?.silent) setToast("変更を保存しました");
                 }}
                 onArchived={null}
                 onCancelDraft={() => setDraftKeys((keys) => keys.filter((k) => k !== key))}

@@ -24,9 +24,14 @@ import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44 } from "../_lib/a11y";
 import { DELIVERY_ORIGIN } from "../_lib/delivery";
 
-function embedTag(siteKey: string): string {
-  const origin = DELIVERY_ORIGIN !== "" ? DELIVERY_ORIGIN : "(配信元のURLが未設定)";
-  return `<script async src="${origin}/embed/t.js" data-adpop-site="${siteKey}"></script>`;
+/**
+ * 🔴 Codex 2巡目 Should fix: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
+ *   できてしまっていた。未設定なら `null` を返し、呼び出し側はタグ自体を組み立てない
+ *   (サムネイルの `deliveryImageUrl` と同じ考え方)。
+ */
+function embedTag(siteKey: string): string | null {
+  if (DELIVERY_ORIGIN === "") return null;
+  return `<script async src="${DELIVERY_ORIGIN}/embed/t.js" data-adpop-site="${siteKey}"></script>`;
 }
 
 function SiteContent() {
@@ -157,12 +162,24 @@ function SiteContent() {
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-8">
               <div>
                 <div className="mb-1.5 text-xs font-medium text-ink/60">埋め込みタグ</div>
-                <div className="flex items-center gap-2 rounded-lg border border-line bg-paper px-3 py-2.5">
-                  <code className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-ink/70">
-                    {embedTag(site.siteKey)}
-                  </code>
-                  <CopyButton text={embedTag(site.siteKey)} label="埋め込みタグをコピー" />
-                </div>
+                {(() => {
+                  const tag = embedTag(site.siteKey);
+                  if (tag === null) {
+                    return (
+                      <div className="rounded-lg border border-dashed border-line bg-paper px-3 py-2.5 text-xs text-ink/60">
+                        配信先が未設定です
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-2 rounded-lg border border-line bg-paper px-3 py-2.5">
+                      <code className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-ink/70">
+                        {tag}
+                      </code>
+                      <CopyButton text={tag} label="埋め込みタグをコピー" />
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <div className="mb-1.5 text-xs font-medium text-ink/60">許可ドメイン</div>
