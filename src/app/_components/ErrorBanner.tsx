@@ -2,7 +2,16 @@
   通信失敗のバナー(画面設計 §7-4)。原因の操作の近くに出す。謝辞・内訳・仕組みの説明は書かない。
   🔴 P-011(fail-open): 失敗は失敗として表示する。成功に見せない。
 */
-export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorBanner({
+  message,
+  onRetry,
+  retryLabel = "再試行",
+}: {
+  message: string;
+  onRetry?: () => void;
+  /** Codex 1巡目 Nit: 用途ごとに渡せるようにする(保存なら「もう一度保存」、読み込みなら「再読み込み」)。 */
+  retryLabel?: string;
+}) {
   return (
     <div role="alert" className="mb-6 flex items-start gap-3 rounded-lg border border-danger/30 bg-danger-soft px-4 py-3">
       <svg className="mt-0.5 h-4 w-4 shrink-0 text-danger" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -19,7 +28,7 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
           className="h-8 shrink-0 rounded-lg border border-danger/40 px-3 text-xs font-semibold text-danger hover:bg-danger/10
                      focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
         >
-          もう一度保存
+          {retryLabel}
         </button>
       )}
     </div>

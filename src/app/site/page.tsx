@@ -6,9 +6,9 @@
     (events テーブルはあるが admin.ts に読む関数が無い)。実在しない数字を "0" と見せると
     「0件」に読めてしまう事故になる(§3-3 の成約列の裁定と同じ理由)ので、プレースホルダ「—」を出す。
 */
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { deleteJson, getJson, postJson } from "../_lib/api";
+import { deleteJson, getJson, postJson, putJson } from "../_lib/api";
 import { ApiPopup, ApiSite, POPUP_LIMIT } from "../_lib/types";
 import { Header } from "../_components/Header";
 import { Breadcrumb } from "../_components/Breadcrumb";
@@ -18,10 +18,11 @@ import { EmptyState, PopupIcon } from "../_components/EmptyState";
 import { CopyButton } from "../_components/CopyButton";
 import { PopupStatusChip } from "../_components/StatusChip";
 import { AddPopupModal } from "../_components/AddPopupModal";
+import { EditSiteModal } from "../_components/AddSiteModal";
 import { ConfirmDeleteDialog } from "../_components/ConfirmDeleteDialog";
 import { useRequireSession } from "../_lib/useRequireSession";
-
-const DELIVERY_ORIGIN = (process.env.NEXT_PUBLIC_DELIVERY_ORIGIN ?? "").replace(/\/$/, "");
+import { TAP_TARGET_44 } from "../_lib/a11y";
+import { DELIVERY_ORIGIN } from "../_lib/delivery";
 
 function embedTag(siteKey: string): string {
   const origin = DELIVERY_ORIGIN !== "" ? DELIVERY_ORIGIN : "(配信元のURLが未設定)";
@@ -41,6 +42,10 @@ function SiteContent() {
   const [deleteTarget, setDeleteTarget] = useState<ApiPopup | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [showEditSite, setShowEditSite] = useState(false);
+  // 🔴 Codex 1巡目 Blocker 1: busyId(state)だけでは連打の瞬間に間に合わないことがあるため、
+  //   同期的に読める ref で「いま進行中か」を二重に見る(操作系の共通ガード)。
+  const actionInFlightRef = useRef(false);
 
   const load = useCallback(async () => {
     if (siteId === "") return;
@@ -74,9 +79,12 @@ function SiteContent() {
   }
 
   async function runAction(popupId: string, action: "pause" | "activate" | "archive" | "restore") {
+    if (actionInFlightRef.current) return; // 🔴 同期ラッチで二重送信を防ぐ
+    actionInFlightRef.current = true;
     setBusyId(popupId);
     setActionError(null);
     const result = await postJson<null>(`/popups/${popupId}/${action}`, {});
+    actionInFlightRef.current = false;
     setBusyId(null);
     if (!result.ok) {
       if (result.reason === "no_deliverable_variant") {
@@ -90,9 +98,11 @@ function SiteContent() {
   }
 
   async function handleDelete() {
-    if (deleteTarget === null) return;
+    if (deleteTarget === null || actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setBusyId(deleteTarget.id);
     const result = await deleteJson<unknown>(`/popups/${deleteTarget.id}`, { confirm: "delete" });
+    actionInFlightRef.current = false;
     setBusyId(null);
     setDeleteTarget(null);
     if (!result.ok) {
@@ -100,6 +110,17 @@ function SiteContent() {
       return;
     }
     await load();
+  }
+
+  async function handleEditSite(input: { name: string; allowedOrigins: string[] }): Promise<string | null> {
+    const result = await putJson<null>(`/sites/${siteId}`, input);
+    if (!result.ok) {
+      if (result.status === 400) return "入力内容を確認してください";
+      return "保存できませんでした。もう一度お試しください。";
+    }
+    setShowEditSite(false);
+    await load();
+    return null;
   }
 
   if (sessionState !== "ready") return null;
@@ -114,13 +135,23 @@ function SiteContent() {
       <main className="mx-auto max-w-[960px] px-6 py-10">
         <Breadcrumb items={[{ label: "サイト", href: "/sites" }, { label: site?.name ?? "" }]} />
 
-        {loadError && <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} />}
+        {loadError && (
+          <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
+        )}
         {site === null && popups === null && !loadError && <Loading label="サイトを読み込み中" />}
 
         {site !== null && (
           <div className="mb-8 rounded-xl border border-line bg-surface p-6">
             <div className="mb-5 flex items-start justify-between">
               <h1 className="text-xl font-semibold tracking-tight">{site.name}</h1>
+              <button
+                type="button"
+                onClick={() => setShowEditSite(true)}
+                className={`text-sm font-medium text-ink/60 hover:text-ink
+                  focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
+              >
+                編集
+              </button>
             </div>
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-8">
               <div>
@@ -197,7 +228,7 @@ function SiteContent() {
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
                           <a
                             href={`/popup?id=${popup.id}`}
-                            className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                            className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
                           >
                             編集
                           </a>
@@ -205,7 +236,7 @@ function SiteContent() {
                             type="button"
                             disabled={busyId === popup.id}
                             onClick={() => runAction(popup.id, popup.status === "active" ? "pause" : "activate")}
-                            className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
+                            className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40 ${TAP_TARGET_44}`}
                           >
                             {popup.status === "active" ? "停止する" : "稼働にする"}
                           </button>
@@ -213,7 +244,7 @@ function SiteContent() {
                             type="button"
                             disabled={busyId === popup.id}
                             onClick={() => runAction(popup.id, "archive")}
-                            className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
+                            className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40 ${TAP_TARGET_44}`}
                           >
                             アーカイブ
                           </button>
@@ -255,7 +286,7 @@ function SiteContent() {
                             <div className="flex justify-end gap-4 text-sm font-medium">
                               <a
                                 href={`/popup?id=${popup.id}`}
-                                className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                                className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
                               >
                                 編集
                               </a>
@@ -263,7 +294,7 @@ function SiteContent() {
                                 type="button"
                                 disabled={busyId === popup.id}
                                 onClick={() => runAction(popup.id, popup.status === "active" ? "pause" : "activate")}
-                                className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
+                                className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40 ${TAP_TARGET_44}`}
                               >
                                 {popup.status === "active" ? "停止する" : "稼働にする"}
                               </button>
@@ -271,7 +302,7 @@ function SiteContent() {
                                 type="button"
                                 disabled={busyId === popup.id}
                                 onClick={() => runAction(popup.id, "archive")}
-                                className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
+                                className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40 ${TAP_TARGET_44}`}
                               >
                                 アーカイブ
                               </button>
@@ -333,14 +364,14 @@ function SiteContent() {
                                 type="button"
                                 disabled={busyId === popup.id}
                                 onClick={() => runAction(popup.id, "restore")}
-                                className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
+                                className={`text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40 ${TAP_TARGET_44}`}
                               >
                                 復元
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setDeleteTarget(popup)}
-                                className="text-danger/80 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                                className={`text-danger/80 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
                               >
                                 完全に削除
                               </button>
@@ -358,6 +389,14 @@ function SiteContent() {
       </main>
 
       {showAddPopup && <AddPopupModal onCancel={() => setShowAddPopup(false)} onCreate={handleCreatePopup} />}
+      {showEditSite && site !== null && (
+        <EditSiteModal
+          initialName={site.name}
+          initialOrigins={site.allowedOrigins}
+          onCancel={() => setShowEditSite(false)}
+          onSave={handleEditSite}
+        />
+      )}
       {deleteTarget && (
         <ConfirmDeleteDialog
           name={deleteTarget.name}

@@ -9,9 +9,24 @@
     厳密に固定している(`exactKeys`)ため、`imageAlt` を混ぜて送ると 400 になる。
     `imageAlt` のスキーマ追加は並行PR(画像ポップの配信)の範囲(画面設計 §7-5-2)。
     このPRでは入力欄とUI上の必須判定だけを用意し、値は保存しない(README・PR本文に明記)。
+
+  🔴 Codex 1巡目 Blocker 2 の対応方針(画像の無い画像パターンを保存させない):
+    **新しく作る画像パターンは、画像を選んでも「画面の中だけの下書き」のまま持ち、
+    実際にAPIへ送るのは「保存」を押した瞬間だけ**にした(先にバリアントだけ作る方式は採らない)。
+    「保存」ボタンは画像が選ばれていない間は無効化する。保存の処理順序は
+    ①パターンを作成 → ②選んでおいた画像をアップロード、の順で、
+    **②が失敗したら①で作ったパターンを消す**(補償のDELETE)。これにより、
+    アップロード失敗時に中身の無いパターンがDBに残らない。
+    既に保存済みのパターン(画像の差し替え・外した後の選び直し)は、この限りではなく即アップロードする
+    (そのパターン自体は差し替え前から有効なレコードとして既に存在しているため)。
+
+  🔴 Codex 1巡目 Should fix(P-012): 保存・アップロード・画像の削除が成功したら、
+    サーバーへ `GET /variants/:id` を取りに行って**サーバーが実際に持っている値で画面の状態を置き換える**
+    (`syncFromServer`)。trimされた値やimageKeyを、送った値をそのまま仮定して表示しない。
 */
-import { useRef, useState } from "react";
-import { postJson, putJson, uploadVariantImage, deleteJson } from "../_lib/api";
+import { useEffect, useRef, useState } from "react";
+import { deleteJson, getJson, postJson, putJson, uploadVariantImage } from "../_lib/api";
+import { deliveryImageUrl } from "../_lib/delivery";
 import { imageErrorMessage } from "../_lib/imageErrors";
 import {
   ApiVariant,
@@ -60,42 +75,70 @@ export function VariantCard({
   const [showErrors, setShowErrors] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(variant?.id ?? null);
   const [imageKey, setImageKey] = useState<string | null>(variant ? variantImageKey(variant) : null);
+  // 🔴 下書き(savedId===null)が選んだがまだアップロードしていないファイル(Blocker 2 対応)
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "saving" | "uploading" | "removing-image">("idle");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
 
   const isDraft = savedId === null;
   const destinationUrlOk = isValidHttpsUrl(destinationUrl);
   const altRequired = kind === "image" && buttonLabel.trim() === "";
   const altMissing = altRequired && imageAlt.trim() === "";
+  const hasImage = imageKey !== null || pendingFile !== null;
+  const imageMissing = kind === "image" && !hasImage;
   const busy = status !== "idle";
 
-  async function uploadFile(file: File) {
-    let id = savedId;
-    if (id === null) {
-      if (!destinationUrlOk) {
-        setShowErrors(true);
-        setError("先に遷移先URLを入力してください。");
-        return;
-      }
-      setStatus("saving");
-      setError(null);
-      const created = await postJson<{ id: string }>(`/popups/${popupId}/variants`, {
-        kind,
-        content: { headline: headline.trim(), body: "", buttonLabel: buttonLabel.trim() },
-        destinationUrl,
-      });
-      if (!created.ok) {
-        setStatus("idle");
-        setError("保存できませんでした。もう一度お試しください。");
-        return;
-      }
-      id = created.data.id;
-      setSavedId(id);
+  // オブジェクトURLの後始末
+  useEffect(() => {
+    return () => {
+      if (pendingPreviewUrl) URL.revokeObjectURL(pendingPreviewUrl);
+    };
+  }, [pendingPreviewUrl]);
+
+  /** 保存・アップロード・画像削除の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。 */
+  async function syncFromServer(id: string) {
+    const result = await getJson<ApiVariant>(`/variants/${id}`);
+    if (!result.ok) return; // ⚠ 直後の一覧再読み込み(onSaved)でも間接的に反映されるので、ここは黙って諦める
+    const v = result.data;
+    setKind(v.kind === "image" ? "image" : "text");
+    setHeadline(variantHeadline(v));
+    setBody(variantBody(v));
+    setButtonLabel(variantButtonLabel(v));
+    setDestinationUrl(v.destinationUrl);
+    setImageKey(variantImageKey(v));
+  }
+
+  function selectFile() {
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChosen(file: File) {
+    setError(null);
+    if (!isDraft) {
+      // 既に保存済みのパターン: このパターン自体は既に有効なレコードなので、差し替えは即アップロードする
+      void uploadToExisting(savedId!, file);
+      return;
     }
+    // 下書き: まだAPIに送らず、画面の中だけで持つ(保存を押すまでアップロードしない)
+    if (pendingPreviewUrl) URL.revokeObjectURL(pendingPreviewUrl);
+    setPendingFile(file);
+    setPendingPreviewUrl(URL.createObjectURL(file));
+  }
+
+  function clearPendingFile() {
+    if (pendingPreviewUrl) URL.revokeObjectURL(pendingPreviewUrl);
+    setPendingFile(null);
+    setPendingPreviewUrl(null);
+  }
+
+  async function uploadToExisting(id: string, file: File) {
     setStatus("uploading");
     setUploadProgress(0);
+    setError(null);
     const result = await uploadVariantImage(id, file, setUploadProgress);
     setStatus("idle");
     setUploadProgress(null);
@@ -103,14 +146,16 @@ export function VariantCard({
       setError(imageErrorMessage(result.reason, result.message));
       return;
     }
-    setError(null);
+    await syncFromServer(id);
     await onSaved();
   }
 
   async function removeImage() {
-    if (savedId === null) return;
+    if (savedId === null || submittingRef.current) return;
+    submittingRef.current = true;
     setStatus("removing-image");
     const result = await deleteJson<unknown>(`/variants/${savedId}/image`, {});
+    submittingRef.current = false;
     setStatus("idle");
     if (!result.ok) {
       setError("画像を外せませんでした。もう一度お試しください。");
@@ -122,8 +167,10 @@ export function VariantCard({
 
   async function handleSave() {
     setShowErrors(true);
+    if (submittingRef.current) return; // 🔴 同期ラッチで二重送信を防ぐ
     if (!destinationUrlOk) return;
-    if (kind === "image" && altMissing) return; // ⚠ UIだけの判定(上のコメント参照)。サーバーはまだ見ていない
+    if (kind === "image" && (imageMissing || altMissing)) return; // ⚠ 保存ボタン自体も無効化している(下の disabled 参照)
+    submittingRef.current = true;
     setStatus("saving");
     setError(null);
     const payload = {
@@ -131,18 +178,53 @@ export function VariantCard({
       content: { headline: headline.trim(), body: kind === "text" ? body.trim() : "", buttonLabel: buttonLabel.trim() },
       destinationUrl,
     };
-    const result = isDraft
-      ? await postJson<{ id: string }>(`/popups/${popupId}/variants`, payload)
-      : await putJson<unknown>(`/variants/${savedId}`, payload);
-    setStatus("idle");
-    if (!result.ok) {
-      const field = result.field ? FIELD_LABELS[result.field] ?? result.field : null;
-      setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
-      return;
+
+    if (isDraft) {
+      const created = await postJson<{ id: string }>(`/popups/${popupId}/variants`, payload);
+      if (!created.ok) {
+        submittingRef.current = false;
+        setStatus("idle");
+        const field = created.field ? FIELD_LABELS[created.field] ?? created.field : null;
+        setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        return;
+      }
+      const id = created.data.id;
+      if (kind === "image" && pendingFile) {
+        setStatus("uploading");
+        setUploadProgress(0);
+        const uploaded = await uploadVariantImage(id, pendingFile, setUploadProgress);
+        setUploadProgress(null);
+        if (!uploaded.ok) {
+          // 🔴 Blocker 2: アップロードが失敗したら、作ったパターンを消す(中身の無いパターンを残さない)
+          await deleteJson<unknown>(`/variants/${id}`, { confirm: "delete" }).catch(() => {});
+          submittingRef.current = false;
+          setStatus("idle");
+          setError(imageErrorMessage(uploaded.reason, uploaded.message));
+          return;
+        }
+      }
+      clearPendingFile();
+      setSavedId(id);
+      await syncFromServer(id);
+    } else {
+      const result = await putJson<unknown>(`/variants/${savedId}`, payload);
+      if (!result.ok) {
+        submittingRef.current = false;
+        setStatus("idle");
+        const field = result.field ? FIELD_LABELS[result.field] ?? result.field : null;
+        setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        return;
+      }
+      await syncFromServer(savedId as string);
     }
-    if (isDraft && "data" in result) setSavedId((result.data as { id: string }).id);
+
+    submittingRef.current = false;
+    setStatus("idle");
     await onSaved();
   }
+
+  const saveDisabled = busy || (kind === "image" && (imageMissing || (showErrors && altMissing)));
+  const imageUrl = imageKey !== null ? deliveryImageUrl(imageKey) : null;
 
   return (
     <div className="rounded-xl border border-line bg-surface p-5">
@@ -186,8 +268,12 @@ export function VariantCard({
           {isDraft && onCancelDraft && (
             <button
               type="button"
-              onClick={onCancelDraft}
-              className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+              disabled={busy}
+              onClick={() => {
+                clearPendingFile();
+                onCancelDraft();
+              }}
+              className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink disabled:opacity-40"
             >
               取り消す
             </button>
@@ -204,7 +290,7 @@ export function VariantCard({
           )}
           <button
             type="button"
-            disabled={busy}
+            disabled={saveDisabled}
             onClick={handleSave}
             className="h-8 rounded-lg bg-ink px-3.5 text-xs font-semibold text-paper hover:bg-ink/90
                        disabled:cursor-not-allowed disabled:bg-ink/30
@@ -286,15 +372,30 @@ export function VariantCard({
                   </div>
                 </div>
               </div>
-            ) : imageKey !== null ? (
+            ) : hasImage ? (
               <div className="flex items-center gap-4 rounded-lg border border-line bg-paper px-4 py-3">
-                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md border border-line bg-surface" />
+                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md border border-line bg-surface">
+                  {pendingPreviewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- 静的書き出しのため next/image の最適化サーバーが無い
+                    <img src={pendingPreviewUrl} alt="" className="h-full w-full object-cover" />
+                  ) : imageUrl !== null ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- 同上。配信元は別オリジン(delivery Worker)
+                    <img src={imageUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[10px] text-ink/40">
+                      配信元URL未設定
+                    </div>
+                  )}
+                </div>
                 <div className="min-w-0 flex-1">
-                  <div className="mt-1.5 flex items-center gap-4 text-sm font-medium">
+                  {pendingPreviewUrl && (
+                    <div className="mb-1 font-mono text-xs text-ink/60">保存時にアップロードされます</div>
+                  )}
+                  <div className="flex items-center gap-4 text-sm font-medium">
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => fileInputRef.current?.click()}
+                      onClick={selectFile}
                       className="text-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
                     >
                       差し替え
@@ -302,7 +403,7 @@ export function VariantCard({
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={removeImage}
+                      onClick={pendingPreviewUrl ? clearPendingFile : removeImage}
                       className="text-ink/60 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
                     >
                       外す
@@ -322,8 +423,8 @@ export function VariantCard({
                 <div>
                   <button
                     type="button"
-                    disabled={busy || (isDraft && !destinationUrlOk)}
-                    onClick={() => fileInputRef.current?.click()}
+                    disabled={busy}
+                    onClick={selectFile}
                     className="text-sm font-medium text-ink hover:underline disabled:cursor-not-allowed disabled:text-ink/40 disabled:no-underline
                                focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
                   >
@@ -332,9 +433,6 @@ export function VariantCard({
                   <div className="mt-1 font-mono text-xs text-ink/60">
                     PNG / JPEG / GIF / WebP・画像2MB・GIF3MBまで・長辺2,400pxまで
                   </div>
-                  {isDraft && !destinationUrlOk && (
-                    <div className="mt-1 text-xs text-ink/60">先に遷移先URLを入力してください</div>
-                  )}
                 </div>
               </div>
             )}
@@ -346,7 +444,7 @@ export function VariantCard({
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = "";
-                if (file) uploadFile(file);
+                if (file) handleFileChosen(file);
               }}
             />
           </div>

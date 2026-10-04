@@ -1,11 +1,13 @@
 "use client";
 
 /*
-  「サイトを追加」モーダル(画面設計 §3-2)。名前+許可ドメイン(チップ形式で複数追加)。
+  「サイトを追加」「サイトを編集」モーダル(画面設計 §3-2 / Codex 1巡目 Should fix: 編集導線の欠落)。
+  名前+許可ドメイン(チップ形式で複数追加)。追加・編集は同じ部品を使う(承認済み見本の部品を増やさない)。
 */
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { FieldError } from "./ErrorBanner";
+import { TAP_TARGET_44_ICON } from "../_lib/a11y";
 
 const MAX_ORIGINS = 20;
 
@@ -19,20 +21,31 @@ function looksLikeOrigin(value: string): boolean {
   }
 }
 
-export function AddSiteModal({
+function SiteFormModal({
+  title,
+  submitLabel,
+  submittingLabel,
+  initialName,
+  initialOrigins,
   onCancel,
-  onCreate,
+  onSubmit,
 }: {
+  title: string;
+  submitLabel: string;
+  submittingLabel: string;
+  initialName: string;
+  initialOrigins: string[];
   onCancel: () => void;
-  onCreate: (input: { name: string; allowedOrigins: string[] }) => Promise<string | null>;
+  onSubmit: (input: { name: string; allowedOrigins: string[] }) => Promise<string | null>;
 }) {
   const titleId = useId();
-  const [name, setName] = useState("");
-  const [origins, setOrigins] = useState<string[]>([]);
+  const [name, setName] = useState(initialName);
+  const [origins, setOrigins] = useState<string[]>(initialOrigins);
   const [draft, setDraft] = useState("");
   const [originError, setOriginError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   function addOrigin() {
     const value = draft.trim();
@@ -60,22 +73,25 @@ export function AddSiteModal({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (submittingRef.current) return; // 🔴 二重送信防止(同期ラッチ)
     if (name.trim() === "") {
       setFormError("名前を入力してください");
       return;
     }
+    submittingRef.current = true;
     setSubmitting(true);
     setFormError(null);
-    const error = await onCreate({ name: name.trim(), allowedOrigins: origins });
+    const error = await onSubmit({ name: name.trim(), allowedOrigins: origins });
+    submittingRef.current = false;
     setSubmitting(false);
     if (error !== null) setFormError(error);
   }
 
   return (
-    <Modal titleId={titleId} onClose={onCancel}>
+    <Modal titleId={titleId} onClose={submitting ? () => {} : onCancel}>
       <form onSubmit={handleSubmit}>
         <h2 id={titleId} className="mb-5 text-base font-semibold text-ink">
-          サイトを追加
+          {title}
         </h2>
 
         {formError && <FieldError id="site-form-error" message={formError} />}
@@ -89,6 +105,7 @@ export function AddSiteModal({
             type="text"
             placeholder="例: nkarte LP"
             value={name}
+            disabled={submitting}
             onChange={(e) => setName(e.target.value)}
             className="w-full rounded-lg border border-line bg-surface px-3.5 h-10 text-sm text-ink placeholder:text-ink/30
                        focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
@@ -108,8 +125,9 @@ export function AddSiteModal({
                   <button
                     type="button"
                     aria-label={`${origin} を削除`}
+                    disabled={submitting}
                     onClick={() => removeOrigin(origin)}
-                    className="text-ink/60 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                    className={`text-ink/60 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44_ICON}`}
                   >
                     ✕
                   </button>
@@ -124,6 +142,7 @@ export function AddSiteModal({
             placeholder="https://example.com"
             aria-label="許可ドメインを追加"
             value={draft}
+            disabled={submitting}
             onChange={(e) => {
               setDraft(e.target.value);
               setOriginError(null);
@@ -139,6 +158,7 @@ export function AddSiteModal({
           />
           <button
             type="button"
+            disabled={submitting}
             onClick={addOrigin}
             className="h-10 shrink-0 rounded-lg border border-line px-3.5 text-sm font-medium text-ink hover:bg-paper
                        focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
@@ -151,8 +171,10 @@ export function AddSiteModal({
         <div className="mt-6 flex justify-end gap-2">
           <button
             type="button"
+            disabled={submitting}
             onClick={onCancel}
             className="h-10 rounded-lg px-4 text-sm font-medium text-ink/60 hover:bg-paper
+                       disabled:cursor-not-allowed disabled:opacity-50
                        focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
             キャンセル
@@ -164,10 +186,54 @@ export function AddSiteModal({
                        disabled:cursor-not-allowed disabled:bg-ink/60
                        focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
-            {submitting ? "作成中…" : "作成"}
+            {submitting ? submittingLabel : submitLabel}
           </button>
         </div>
       </form>
     </Modal>
+  );
+}
+
+export function AddSiteModal({
+  onCancel,
+  onCreate,
+}: {
+  onCancel: () => void;
+  onCreate: (input: { name: string; allowedOrigins: string[] }) => Promise<string | null>;
+}) {
+  return (
+    <SiteFormModal
+      title="サイトを追加"
+      submitLabel="作成"
+      submittingLabel="作成中…"
+      initialName=""
+      initialOrigins={[]}
+      onCancel={onCancel}
+      onSubmit={onCreate}
+    />
+  );
+}
+
+export function EditSiteModal({
+  initialName,
+  initialOrigins,
+  onCancel,
+  onSave,
+}: {
+  initialName: string;
+  initialOrigins: string[];
+  onCancel: () => void;
+  onSave: (input: { name: string; allowedOrigins: string[] }) => Promise<string | null>;
+}) {
+  return (
+    <SiteFormModal
+      title="サイトを編集"
+      submitLabel="保存"
+      submittingLabel="保存中…"
+      initialName={initialName}
+      initialOrigins={initialOrigins}
+      onCancel={onCancel}
+      onSubmit={onSave}
+    />
   );
 }

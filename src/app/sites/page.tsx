@@ -13,7 +13,9 @@ import { EmptyState, SiteIcon } from "../_components/EmptyState";
 import { AddSiteModal } from "../_components/AddSiteModal";
 import { useRequireSession } from "../_lib/useRequireSession";
 
-type SiteRow = ApiSite & { activePopupName: string | null };
+// 🔴 Codex 1巡目 Should fix: サイトごとのポップ取得が失敗したことを「稼働ポップなし」に混ぜない。
+//   取得できたか(`popupsOk`)を別に持ち、失敗はその行にだけ明示する(一覧全体は失敗にしない=他のサイトは見える)。
+type SiteRow = ApiSite & { activePopupName: string | null; popupsOk: boolean };
 
 function shortenKey(key: string): string {
   if (key.length <= 10) return key;
@@ -39,8 +41,9 @@ export default function SitesPage() {
     const withActive = await Promise.all(
       sites.map(async (site) => {
         const popups = await getJson<ApiPopup[]>(`/sites/${site.id}/popups`);
-        const active = popups.ok ? popups.data.find((p) => p.archivedAt === null && p.status === "active") : undefined;
-        return { ...site, activePopupName: active?.name ?? null };
+        if (!popups.ok) return { ...site, activePopupName: null, popupsOk: false };
+        const active = popups.data.find((p) => p.archivedAt === null && p.status === "active");
+        return { ...site, activePopupName: active?.name ?? null, popupsOk: true };
       }),
     );
     setRows(withActive);
@@ -86,7 +89,9 @@ export default function SitesPage() {
           </div>
         </div>
 
-        {loadError && <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} />}
+        {loadError && (
+          <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
+        )}
         {rows === null && !loadError && <Loading label="サイトを読み込み中" />}
 
         {rows !== null && rows.length === 0 && (
@@ -124,7 +129,15 @@ export default function SitesPage() {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
-                  {site.activePopupName !== null ? (
+                  {!site.popupsOk ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-danger">
+                      <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                        <circle cx="10" cy="10" r="7.5" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M10 6.5v4M10 13.2v.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                      </svg>
+                      ポップの状態を取得できませんでした
+                    </span>
+                  ) : site.activePopupName !== null ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-signal-soft px-2.5 py-1 text-xs font-semibold text-signal">
                       <span className="h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true"></span>
                       稼働中: {site.activePopupName}

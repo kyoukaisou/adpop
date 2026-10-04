@@ -3,9 +3,9 @@
 /*
   ポップ編集(画面設計 §3-4)。設定(名前・出すきっかけ・頻度)+ パターン(バリアント)。
 */
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { getJson, postJson, putJson } from "../_lib/api";
+import { ApiResult, getJson, postJson, putJson } from "../_lib/api";
 import { ApiPopup, ApiSite, ApiTrigger, ApiTriggerKind, ApiVariant, VARIANT_LIMIT, deliverableVariantId } from "../_lib/types";
 import { Header } from "../_components/Header";
 import { Breadcrumb } from "../_components/Breadcrumb";
@@ -14,6 +14,21 @@ import { ErrorBanner, FieldError } from "../_components/ErrorBanner";
 import { Toast } from "../_components/Toast";
 import { VariantCard } from "../_components/VariantCard";
 import { useRequireSession } from "../_lib/useRequireSession";
+import { TAP_TARGET_44_V } from "../_lib/a11y";
+
+/**
+ * Codex 1巡目 Should fix: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
+ * 401・404・409 を個別に扱う。409 は並行PR(#8)で「稼働中のポップには、配信できるパターンが
+ * 1つ以上必要です。先に停止してください」が返るようになる想定で、その文言をそのまま出せるようにしておく。
+ */
+function variantActionErrorMessage(result: Extract<ApiResult<unknown>, { ok: false }>): string {
+  if (result.status === 401) return "セッションが切れました。再度ログインしてください。";
+  if (result.status === 404) return "見つかりませんでした。画面を再読み込みしてください。";
+  if (result.status === 409 && result.reason === "no_deliverable_variant") {
+    return "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください。";
+  }
+  return "操作できませんでした。もう一度お試しください。";
+}
 
 const TRIGGER_ORDER: ApiTriggerKind[] = ["exit_intent", "back", "scroll", "idle", "dwell", "visibility"];
 const TRIGGER_LABELS: Record<ApiTriggerKind, string> = {
@@ -61,6 +76,8 @@ function PopupContent() {
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [draftKeys, setDraftKeys] = useState<string[]>([]);
+  const [variantActionError, setVariantActionError] = useState<string | null>(null);
+  const archiveInFlightRef = useRef(false);
 
   const load = useCallback(async () => {
     if (popupId === "") return;
@@ -145,7 +162,7 @@ function PopupContent() {
       <>
         <Header />
         <main className="mx-auto max-w-[960px] px-6 py-10">
-          <ErrorBanner message="ポップを取得できませんでした。もう一度お試しください。" onRetry={load} />
+          <ErrorBanner message="ポップを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
         </main>
       </>
     );
@@ -201,7 +218,11 @@ function PopupContent() {
               </button>
             </div>
 
-            {settingsError && <div className="mb-6"><ErrorBanner message={settingsError} onRetry={saveSettings} /></div>}
+            {settingsError && (
+              <div className="mb-6">
+                <ErrorBanner message={settingsError} onRetry={saveSettings} retryLabel="もう一度保存" />
+              </div>
+            )}
 
             <div className="mb-8 max-w-sm">
               <label htmlFor="popup-name" className="mb-1.5 block text-sm font-medium text-ink">
@@ -238,7 +259,7 @@ function PopupContent() {
                         aria-checked={trigger.enabled}
                         aria-label={`${TRIGGER_LABELS[trigger.kind]}を有効にする`}
                         onClick={() => handleToggleExitIntent(trigger)}
-                        className={`relative h-6 w-11 shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${
+                        className={`h-6 w-11 shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44_V} ${
                           trigger.enabled ? "bg-ink" : "bg-line"
                         }`}
                       >
@@ -352,6 +373,12 @@ function PopupContent() {
             </span>
           </div>
 
+          {variantActionError && (
+            <div className="mb-4">
+              <ErrorBanner message={variantActionError} />
+            </div>
+          )}
+
           <div className="space-y-4">
             {activeVariants.map((variant) => (
               <VariantCard
@@ -364,7 +391,15 @@ function PopupContent() {
                   setToast("変更を保存しました");
                 }}
                 onArchived={async () => {
-                  await postJson<null>(`/variants/${variant.id}/archive`, {});
+                  if (archiveInFlightRef.current) return;
+                  archiveInFlightRef.current = true;
+                  setVariantActionError(null);
+                  const result = await postJson<null>(`/variants/${variant.id}/archive`, {});
+                  archiveInFlightRef.current = false;
+                  if (!result.ok) {
+                    setVariantActionError(variantActionErrorMessage(result));
+                    return;
+                  }
                   await load();
                 }}
                 onCancelDraft={null}
