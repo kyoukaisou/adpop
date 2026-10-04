@@ -770,10 +770,12 @@ function applyRows(target: Record<string, PopupStats>, rows: StatsRow[], field: 
  *   ・「累計」は保持期間の制約なし(§6 裁定4 の90日保持は PR5 本体の宿題。本PRでは削除を実装していないので
  *     累計 = 今 DB に残っている全件)。
  * 🔴 **取れなかったときは 0 を返さない(P-011)**: ここは読み取りだけで、`listSites` 等の既存の読み取り関数と
- *   同じ形(try/catch で握り潰さない)。D1 の例外はそのまま投げ、呼び出し側(`app.ts` の `onError`)が
- *   500(`upstream`)にする。**件数0件のポップと、取得そのものが失敗したときを、HTTP の状態コードで分ける**
- *   ——前者は 200 で `{ impression: 0, ... }`(グループ化した行が無い = そのキーの件数が0という読み取り)、
- *   後者は 500(画面は「—」を出す)。
+ *   同じ形(try/catch で握り潰さない)。D1 の例外はそのまま投げる。呼び出し側(`app.ts` の `onError`)は、
+ *   **バインド自体が無い(`MissingBindingError`)なら 503**(`config`。設定の不備)、**正常なバインドで
+ *   クエリ自体が失敗した(それ以外の例外)なら 500**(`upstream`)にする——どちらも画面には「—」を出す側。
+ *   **件数0件のポップと、取得そのものが失敗したときを、HTTP の状態コードで分ける**——前者は 200 で
+ *   `{ impression: 0, ... }`(グループ化した行が無い = そのキーの件数が0という読み取り)、後者は 500/503。
+ *   (tests/admin-stats.test.ts がバインド欠如の経路を・tests/admin-api.test.ts がHTTP層の500/503両方を撃つ)
  * ⚠ **索引**: `events_site_kind_occurred_at`(migration 0003)が無いと、events が増えるほど全表走査になる。
  */
 export async function getPopupStats(
