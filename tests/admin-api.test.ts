@@ -362,6 +362,7 @@ const ROUTES = [
   "PUT /api/admin/sites/:siteId",
   "DELETE /api/admin/sites/:siteId",
   "GET /api/admin/sites/:siteId/popups",
+  "GET /api/admin/sites/:siteId/popups/stats",
   "POST /api/admin/sites/:siteId/popups",
   "GET /api/admin/popups/:popupId",
   "PUT /api/admin/popups/:popupId/name",
@@ -788,5 +789,62 @@ describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
     expect(await t.images.head(key), "消し直されていない").toBeNull();
     const pending = await t.db.prepare("select count(*) as c from pending_image_deletions where key = ?1").bind(key).first<{ c: number }>();
     expect(pending?.c).toBe(0);
+  });
+});
+
+describe("数値(表示・クリック・閉じた。PR5a・Codex 1巡目 Should fix 2)", () => {
+  it("✅ イベントが1件も無いポップは 200 で、数字が0であること(0件と取得失敗を区別する前提)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "stats-empty", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+
+    const response = await call(`/api/admin/sites/${siteId}/popups/stats`, { cookie });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      data: {
+        [popupId]: {
+          sevenDay: { impression: 0, click: 0, close: 0 },
+          lifetime: { impression: 0, click: 0, close: 0 },
+        },
+      },
+    });
+  });
+
+  it("🔴 DBの問い合わせ自体(batch)が失敗したら 500(ok:false, reason:upstream)。0件(上のテスト)とは別のコード", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "stats-fail", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    // ⚠ popupIds.length === 0 のときは batch() 自体を呼ばず早期に ok({}) を返す実装なので、
+    //   batch() が実際に呼ばれる(= 失敗しうる)状況にするため、ポップを最低1つ作る
+    await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+
+    // DB の prepare/all/batch だけが落ちる環境(バインド自体は正常に存在する)
+    const failingDb = new Proxy(t.db, {
+      get(target, prop) {
+        if (prop === "batch") return () => Promise.reject(new Error("D1 unavailable"));
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await call(`/api/admin/sites/${siteId}/popups/stats`, { cookie }, { ...env(), DB: failingDb as unknown as typeof t.db });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ ok: false, reason: "upstream" });
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("🔴 DBバインドが丸ごと無いのは別の経路(設定の不備・MissingBindingError)で 503。500(上のテスト)と取り違えない", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "stats-noconfig", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    // ⚠ DB が無いと、この手前のセッション検査(auth.findSession)が先に MissingBindingError で落ちる
+    const response = await call(`/api/admin/sites/${siteId}/popups/stats`, { cookie }, env({ DB: undefined }));
+    expect(response.status).toBe(503);
+    errors.mockRestore();
   });
 });

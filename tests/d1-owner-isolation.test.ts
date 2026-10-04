@@ -83,6 +83,7 @@ const CASES: Record<string, [Case, Expect]> = {
     (r) => expect(r).toEqual(NOT_FOUND),
   ],
   listVariants: [(d) => admin.listVariants(d, OWNER_B, a.popup), (r) => expect(r).toEqual({ ok: true, value: [] })],
+  getPopupStats: [(d) => admin.getPopupStats(d, OWNER_B, a.site), (r) => expect(r).toEqual(NOT_FOUND)],
   getVariant: [(d) => admin.getVariant(d, OWNER_B, a.variant), (r) => expect(r).toEqual(NOT_FOUND)],
   createVariant: [(d) => admin.createVariant(d, OWNER_B, a.popup, variantInput), (r) => expect(r).toEqual(FOREIGN_KEY)],
   updateVariant: [(d) => admin.updateVariant(d, OWNER_B, a.variant, variantInput), (r) => expect(r).toEqual(NOT_FOUND)],
@@ -226,5 +227,10 @@ describe("所有者の分離(データ層の全関数)", () => {
     expect((await admin.getVariant(db, OWNER_A, a.variant)).ok).toBe(true);
     expect((await admin.listTriggers(db, OWNER_A, a.popup)) as { value: unknown[] }).toMatchObject({ ok: true });
     expect(((await admin.listTriggers(db, OWNER_A, a.popup)) as { value: unknown[] }).value).toHaveLength(6);
+    const stats = await admin.getPopupStats(db, OWNER_A, a.site);
+    expect(stats.ok).toBe(true);
+    expect(Object.keys((stats as { value: Record<string, unknown> }).value).sort()).toEqual(
+      [a.popup, a.archivedPopup].sort(),
+    );
   });
 });

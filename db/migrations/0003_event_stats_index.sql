@@ -1,0 +1,12 @@
+-- ADPOP 0003(D1): 管理画面の数値(表示・クリック・閉じた)を読むための索引だけを足す(PR5a)。
+--
+-- 🔴 **追加だけ**(索引を1本足すだけで、表・トリガ・既存の索引は1つも変えない。
+--   tests/d1-migration-additive.test.ts がスキーマの差分で見る)。
+--
+-- 背景(notes/プロダクト事業部/離脱ポップ-要件書.md §6 裁定4 の続き):
+--   管理画面のポップ一覧・アーカイブ一覧・完全削除の確認は、ポップごとに
+--   「表示(impression)・クリック(click)・閉じた(close)」の件数を出す(直近7日 or 累計)。
+--   既存の索引 events_popup_kind_occurred_at(popup_id, kind, occurred_at) は**1ポップ分**の問い合わせには効くが、
+--   サイト配下の全ポップ(最大50)をまとめて1クエリで数える admin.getPopupStats は `site_id` で絞る。
+--   `site_id` を先頭に持つ索引が無いと、events が増えるほど全表走査になる(件数が増えても重くならない作りにする、の要請)。
+create index events_site_kind_occurred_at on events (site_id, kind, occurred_at);

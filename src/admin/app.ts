@@ -293,6 +293,14 @@ export function createAdminApp(): Hono<AppEnv> {
     return fromResult(c, await admin.listPopups(c.env, c.get("ownerId"), siteId));
   });
 
+  // 🔴 数値(表示・クリック・閉じた。PR5a)。一覧は `data[popupId].sevenDay`、アーカイブ済み・完全削除の確認は
+  //   `data[popupId].lifetime` を読む(画面側の選び方は notes/プロダクト事業部/ADPOP-画面設計.md)。
+  app.get(`${API_PREFIX}/sites/:siteId/popups/stats`, async (c) => {
+    const siteId = param(c, "siteId");
+    if (siteId === null) return fail(c, 404, "not_found");
+    return fromResult(c, await admin.getPopupStats(c.env, c.get("ownerId"), siteId));
+  });
+
   app.post(`${API_PREFIX}/sites/:siteId/popups`, async (c) => {
     const siteId = param(c, "siteId");
     if (siteId === null) return fail(c, 404, "not_found");
