@@ -4,11 +4,12 @@
   パターン(バリアント)の編集カード(画面設計 §3-4・§7-2・§7-7)。
   `variant` が null = まだ作っていない空き枠(「+ パターンを追加」で生まれた下書き)。
 
-  🔴 代替テキスト(画像の説明)はこのバージョンではサーバーに送らない。
-    `src/admin/body.ts` の parseVariant は content の鍵を `headline`/`body`/`buttonLabel` の3つに
-    厳密に固定している(`exactKeys`)ため、`imageAlt` を混ぜて送ると 400 になる。
-    `imageAlt` のスキーマ追加は並行PR(画像ポップの配信)の範囲(画面設計 §7-5-2)。
-    このPRでは入力欄とUI上の必須判定だけを用意し、値は保存しない(README・PR本文に明記)。
+  🔴 代替テキスト(画像の説明・imageAlt)は #8(画像ポップの配信)でスキーマに入った。
+    `src/admin/body.ts` の `parseVariant` が `content` に4つ目の鍵として要求し、
+    `requiresImageAlt`(画像型・ボタン文言が空のときだけ必須)を入口とデータ層の両方で見る。
+    この画面の必須判定(`altRequired`/`altMissing`)は、その関数と同じ条件(kind==="image" かつ
+    buttonLabelが空かつimageAltが空)を使う——判定がサーバーとずれると、画面では送れたのに
+    サーバーが400で断る/画面で止めたのにサーバーは通る、という食い違いが起きるため。
 
   🔴 Codex 1巡目 Blocker 2 の対応方針(画像の無い画像パターンを保存させない):
     **新しく作る画像パターンは、画像を選んでも「画面の中だけの下書き」のまま持ち、
@@ -34,6 +35,7 @@ import {
   variantBody,
   variantButtonLabel,
   variantHeadline,
+  variantImageAlt,
   variantImageKey,
 } from "../_lib/types";
 import { FieldError } from "../_components/ErrorBanner";
@@ -42,10 +44,16 @@ const FIELD_LABELS: Record<string, string> = {
   headline: "見出し",
   body: "本文",
   buttonLabel: "ボタン文言",
+  imageAlt: "画像の説明",
   destinationUrl: "遷移先URL",
   kind: "種類",
   content: "入力内容",
 };
+
+/** #8 の `last_deliverable_variant`(409)。サーバーが message を一緒に返すので、それをそのまま出す。 */
+function lastDeliverableMessage(message: string | undefined): string {
+  return message ?? "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください";
+}
 
 function isValidHttpsUrl(value: string): boolean {
   return /^https:\/\/[^\s<>"']+$/.test(value) && value.length <= 2048;
@@ -71,7 +79,7 @@ export function VariantCard({
   const [body, setBody] = useState(variant ? variantBody(variant) : "");
   const [buttonLabel, setButtonLabel] = useState(variant ? variantButtonLabel(variant) : "");
   const [destinationUrl, setDestinationUrl] = useState(variant?.destinationUrl ?? "");
-  const [imageAlt, setImageAlt] = useState(""); // ⚠ ローカルのみ。サーバーには送らない(上のコメント参照)
+  const [imageAlt, setImageAlt] = useState(variant ? variantImageAlt(variant) : "");
   const [showErrors, setShowErrors] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(variant?.id ?? null);
   const [imageKey, setImageKey] = useState<string | null>(variant ? variantImageKey(variant) : null);
@@ -108,6 +116,7 @@ export function VariantCard({
     setHeadline(variantHeadline(v));
     setBody(variantBody(v));
     setButtonLabel(variantButtonLabel(v));
+    setImageAlt(variantImageAlt(v));
     setDestinationUrl(v.destinationUrl);
     setImageKey(variantImageKey(v));
   }
@@ -158,7 +167,11 @@ export function VariantCard({
     submittingRef.current = false;
     setStatus("idle");
     if (!result.ok) {
-      setError("画像を外せませんでした。もう一度お試しください。");
+      if (result.reason === "last_deliverable_variant") {
+        setError(lastDeliverableMessage(result.message));
+      } else {
+        setError("画像を外せませんでした。もう一度お試しください。");
+      }
       return;
     }
     setImageKey(null);
@@ -175,7 +188,12 @@ export function VariantCard({
     setError(null);
     const payload = {
       kind,
-      content: { headline: headline.trim(), body: kind === "text" ? body.trim() : "", buttonLabel: buttonLabel.trim() },
+      content: {
+        headline: headline.trim(),
+        body: kind === "text" ? body.trim() : "",
+        buttonLabel: buttonLabel.trim(),
+        imageAlt: kind === "image" ? imageAlt.trim() : "",
+      },
       destinationUrl,
     };
 
@@ -184,8 +202,12 @@ export function VariantCard({
       if (!created.ok) {
         submittingRef.current = false;
         setStatus("idle");
-        const field = created.field ? FIELD_LABELS[created.field] ?? created.field : null;
-        setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        if (created.reason === "last_deliverable_variant") {
+          setError(lastDeliverableMessage(created.message));
+        } else {
+          const field = created.field ? FIELD_LABELS[created.field] ?? created.field : null;
+          setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        }
         return;
       }
       const id = created.data.id;
@@ -211,8 +233,12 @@ export function VariantCard({
       if (!result.ok) {
         submittingRef.current = false;
         setStatus("idle");
-        const field = result.field ? FIELD_LABELS[result.field] ?? result.field : null;
-        setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        if (result.reason === "last_deliverable_variant") {
+          setError(lastDeliverableMessage(result.message));
+        } else {
+          const field = result.field ? FIELD_LABELS[result.field] ?? result.field : null;
+          setError(field ? `${field}を確認してください。` : "保存できませんでした。もう一度お試しください。");
+        }
         return;
       }
       await syncFromServer(savedId as string);

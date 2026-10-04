@@ -24,8 +24,10 @@ import { TAP_TARGET_44_V } from "../_lib/a11y";
 function variantActionErrorMessage(result: Extract<ApiResult<unknown>, { ok: false }>): string {
   if (result.status === 401) return "セッションが切れました。再度ログインしてください。";
   if (result.status === 404) return "見つかりませんでした。画面を再読み込みしてください。";
-  if (result.status === 409 && result.reason === "no_deliverable_variant") {
-    return "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください。";
+  // 🔴 #8 が返す値(src/admin/app.ts fromResult)。サーバーが message を一緒に返すのでそのまま出す
+  //   (「稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください」)。
+  if (result.status === 409 && (result.reason === "last_deliverable_variant" || result.reason === "no_deliverable_variant")) {
+    return result.message ?? "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください";
   }
   return "操作できませんでした。もう一度お試しください。";
 }

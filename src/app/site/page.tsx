@@ -88,7 +88,8 @@ function SiteContent() {
     setBusyId(null);
     if (!result.ok) {
       if (result.reason === "no_deliverable_variant") {
-        setActionError("配信できるパターンがありません。テキストのパターンを1つ保存してから稼働にしてください。");
+        // ⚠ #8 で画像型も「画像を設定済みなら配信できる」側に入った(deliverableVariantSql)。文言を合わせる
+        setActionError("配信できるパターンがありません。テキストか、画像を設定した画像のパターンを1つ保存してから稼働にしてください。");
       } else {
         setActionError("操作できませんでした。もう一度お試しください。");
       }

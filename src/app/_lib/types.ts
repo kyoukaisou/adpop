@@ -26,6 +26,7 @@ export type ApiVariantContent = {
   headline?: unknown;
   body?: unknown;
   buttonLabel?: unknown;
+  imageAlt?: unknown;
   imageKey?: unknown;
 };
 export type ApiVariant = {
@@ -41,10 +42,10 @@ export const SITE_LIMIT = 20;
 export const POPUP_LIMIT = 50;
 export const VARIANT_LIMIT = 5;
 
-/** `src/admin/body.ts` の parseVariant が受ける形。⚠ `imageAlt` はまだサーバーが受け付けない(§画面のREADME参照)。 */
+/** `src/admin/body.ts` の parseVariant が受ける形(#8 で `imageAlt` が4つ目の鍵として必須になった)。 */
 export type VariantSavePayload = {
   kind: "text" | "image";
-  content: { headline: string; body: string; buttonLabel: string };
+  content: { headline: string; body: string; buttonLabel: string; imageAlt: string };
   destinationUrl: string;
 };
 
@@ -61,13 +62,21 @@ export function variantBody(v: ApiVariant): string {
 export function variantButtonLabel(v: ApiVariant): string {
   return text(v.content.buttonLabel);
 }
+export function variantImageAlt(v: ApiVariant): string {
+  return text(v.content.imageAlt);
+}
 export function variantImageKey(v: ApiVariant): string | null {
   const key = v.content.imageKey;
   return typeof key === "string" ? key : null;
 }
 
-/** 「配信中」タグの判定(画面設計 §3-4 の申し送り4: 現状は先頭の非アーカイブ・テキスト種別バリアント)。 */
+/**
+ * 「配信中」タグの判定。`src/lib/data/delivery.ts` の `deliverableVariantSql`(#8)と同じ条件:
+ * 非アーカイブ・かつ(テキスト型 または imageKey が設定済みの画像型)。
+ */
 export function deliverableVariantId(variants: ApiVariant[]): string | null {
-  const candidate = variants.find((v) => v.archivedAt === null && v.kind === "text");
+  const candidate = variants.find(
+    (v) => v.archivedAt === null && (v.kind === "text" || (v.kind === "image" && variantImageKey(v) !== null)),
+  );
   return candidate?.id ?? null;
 }
