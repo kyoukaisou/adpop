@@ -410,7 +410,7 @@ function bodyFor(route: string): Init {
   }
   if (path.includes("/triggers/")) return { method, body: { enabled: false } };
   if (path.endsWith("/variants") && method === "POST" || route === "PUT /api/admin/variants/:variantId") {
-    return { method, body: { kind: "text", content: { headline: "x", body: "", buttonLabel: "" }, destinationUrl: "https://evil.example.com/" } };
+    return { method, body: { kind: "text", content: { headline: "x", body: "", buttonLabel: "", imageAlt: "" }, destinationUrl: "https://evil.example.com/" } };
   }
   return { method, body: method === "GET" ? undefined : {} };
 }
@@ -435,7 +435,7 @@ describe("ルートと所有者の分離(監査 L3 / L4・設計 3 章)", () => 
     other.popup = popup.value.id;
     const variant = await admin.createVariant(e, OTHER_OWNER, other.popup, {
       kind: "text",
-      content: { headline: "他人", body: "", buttonLabel: "" },
+      content: { headline: "他人", body: "", buttonLabel: "", imageAlt: "" },
       destinationUrl: "https://offer.example.com/",
     });
     if (!variant.ok) throw new Error("準備に失敗");
@@ -519,7 +519,7 @@ describe("サイト・ポップ・パターンの API(通る側)", () => {
     const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
     const variant = await call(`/api/admin/popups/${popupId}/variants`, {
       method: "POST",
-      body: { kind: "text", content: { headline: "見出し", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      body: { kind: "text", content: { headline: "見出し", body: "", buttonLabel: "", imageAlt: "" }, destinationUrl: "https://offer.example.com/" },
       cookie,
     });
     expect(variant.status).toBe(201);
@@ -548,12 +548,99 @@ describe("サイト・ポップ・パターンの API(通る側)", () => {
       method: "POST",
       body: {
         kind: "text",
-        content: { headline: "x", body: "", buttonLabel: "", imageKey: `images/${"a".repeat(32)}.png` },
+        content: { headline: "x", body: "", buttonLabel: "", imageAlt: "", imageKey: `images/${"a".repeat(32)}.png` },
         destinationUrl: "https://offer.example.com/",
       },
       cookie,
     });
     expect(response.status).toBe(400);
+  });
+
+  it("🔴 画像型・ボタン文言が空のときは画像の説明(imageAlt)が無いと 400(2026-10-04 追補v2 §7-7-1)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "alt", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const body = (imageAlt: string) => ({
+      kind: "image",
+      content: { headline: "", body: "", buttonLabel: "", imageAlt },
+      destinationUrl: "https://offer.example.com/",
+    });
+    const rejected = await call(`/api/admin/popups/${popupId}/variants`, { method: "POST", body: body(""), cookie });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ ok: false, reason: "invalid", field: "imageAlt" });
+
+    const accepted = await call(`/api/admin/popups/${popupId}/variants`, { method: "POST", body: body("商品の写真"), cookie });
+    expect(accepted.status).toBe(201);
+  });
+
+  it("✅ ボタン文言があれば画像の説明が空でも通る(必須なのはどちらか1つ)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "alt2", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const response = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("⚠ text 型は imageAlt が空でも通る(必須なのは画像型だけ)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "alt3", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const response = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "text", content: { headline: "", body: "", buttonLabel: "", imageAlt: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    expect(response.status).toBe(201);
+  });
+});
+
+describe("稼働中のポップから最後の配信可能パターンを奪う操作は 409(Codex #8 1巡目 Blocker 1)", () => {
+  it("🔴 唯一のパターンのアーカイブは 409・文言つき。削除・編集(画像の無い画像型へ)も同様", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "floor", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
+    const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
+    const variant = await call(`/api/admin/popups/${popupId}/variants`, {
+      method: "POST",
+      body: { kind: "text", content: { headline: "唯一", body: "", buttonLabel: "", imageAlt: "" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    const variantId = ((await variant.json()) as { data: { id: string } }).data.id;
+    expect((await call(`/api/admin/popups/${popupId}/activate`, { method: "POST", body: {}, cookie })).status).toBe(200);
+
+    const archived = await call(`/api/admin/variants/${variantId}/archive`, { method: "POST", body: {}, cookie });
+    expect(archived.status).toBe(409);
+    expect(await archived.json()).toEqual({
+      ok: false,
+      reason: "last_deliverable_variant",
+      message: "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください",
+    });
+
+    const edited = await call(`/api/admin/variants/${variantId}`, {
+      method: "PUT",
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明" }, destinationUrl: "https://offer.example.com/" },
+      cookie,
+    });
+    expect(edited.status).toBe(409);
+
+    const deleted = await call(`/api/admin/variants/${variantId}`, { method: "DELETE", body: { confirm: "delete" }, cookie });
+    expect(deleted.status).toBe(409);
+
+    // ⚠ どれも断られたので、パターンはまだ存在しテキスト型のまま
+    const still = await call(`/api/admin/variants/${variantId}`, { cookie });
+    expect(still.status).toBe(200);
+    expect(((await still.json()) as { data: { kind: string } }).data.kind).toBe("text");
   });
 });
 
@@ -568,7 +655,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
     const variant = await call(`/api/admin/popups/${popupId}/variants`, {
       method: "POST",
-      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "画像の説明" }, destinationUrl: "https://offer.example.com/" },
       cookie,
     });
     variantId = ((await variant.json()) as { data: { id: string } }).data.id;
@@ -629,7 +716,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
     const variant = await call(`/api/admin/popups/${popupId}/variants`, {
       method: "POST",
-      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "画像の説明" }, destinationUrl: "https://offer.example.com/" },
       cookie,
     });
     const id = ((await variant.json()) as { data: { id: string } }).data.id;
@@ -650,7 +737,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
     const variant = await call(`/api/admin/popups/${popupId}/variants`, {
       method: "POST",
-      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "画像の説明" }, destinationUrl: "https://offer.example.com/" },
       cookie,
     });
     const id = ((await variant.json()) as { data: { id: string } }).data.id;
@@ -671,7 +758,7 @@ describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
     const popupId = ((await popup.json()) as { data: { id: string } }).data.id;
     const variant = await call(`/api/admin/popups/${popupId}/variants`, {
       method: "POST",
-      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "" }, destinationUrl: "https://offer.example.com/" },
+      body: { kind: "image", content: { headline: "", body: "", buttonLabel: "", imageAlt: "画像の説明" }, destinationUrl: "https://offer.example.com/" },
       cookie,
     });
     const id = ((await variant.json()) as { data: { id: string } }).data.id;

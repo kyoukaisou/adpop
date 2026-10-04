@@ -6,7 +6,7 @@
 */
 import { TEXT_LIMITS } from "../../packages/embed/src/bridge";
 import type { VariantInput } from "../lib/data/admin";
-import { isHttpsUrl, isOrigin } from "../lib/data/shapes";
+import { isHttpsUrl, isOrigin, requiresImageAlt } from "../lib/data/shapes";
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; field: string };
 
@@ -83,24 +83,32 @@ export function parseVariant(body: unknown): Parsed<VariantInput> {
   if (!exactKeys(body, ["kind", "content", "destinationUrl"])) return { ok: false, field: "body" };
   if (body.kind !== "text" && body.kind !== "image") return { ok: false, field: "kind" };
   const content = body.content;
-  if (!exactKeys(content, ["headline", "body", "buttonLabel"])) return { ok: false, field: "content" };
-  for (const key of ["headline", "body", "buttonLabel"] as const) {
+  if (!exactKeys(content, ["headline", "body", "buttonLabel", "imageAlt"])) return { ok: false, field: "content" };
+  for (const key of ["headline", "body", "buttonLabel", "imageAlt"] as const) {
     const v = content[key];
     if (typeof v !== "string" || v.length > TEXT_LIMITS[key]) return { ok: false, field: key };
   }
   if (!isHttpsUrl(body.destinationUrl)) return { ok: false, field: "destinationUrl" };
-  return {
-    ok: true,
-    value: {
-      kind: body.kind,
-      content: {
-        headline: (content.headline as string).trim(),
-        body: (content.body as string).trim(),
-        buttonLabel: (content.buttonLabel as string).trim(),
-      },
-      destinationUrl: body.destinationUrl,
+  const buttonLabel = (content.buttonLabel as string).trim();
+  const imageAlt = (content.imageAlt as string).trim();
+  const value: VariantInput = {
+    kind: body.kind,
+    content: {
+      headline: (content.headline as string).trim(),
+      body: (content.body as string).trim(),
+      buttonLabel,
+      imageAlt,
     },
+    destinationUrl: body.destinationUrl,
   };
+  /*
+    🔴 **画像の説明は、画像型かつボタン文言が空のときだけ必須**(2026-10-04 追補v2 §7-7-1 の5番)。
+      ⚠ **1枚目の関門**(入口)。`src/lib/data/admin.ts` の `requiresImageAlt` を**そのまま import して使う**
+      ——定義を2か所に複製しない(Codex #8 1巡目 Blocker 3。片方だけ直して欠落値への fail-open が
+      再発することを防ぐ)。2枚目(データ層での再チェック)も同じ関数を呼ぶ。
+  */
+  if (requiresImageAlt(value)) return { ok: false, field: "imageAlt" };
+  return { ok: true, value };
 }
 
 /** 物理削除の確認(数字も消える)。本文は `{"confirm":"delete"}` ちょうど。 */

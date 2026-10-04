@@ -15,7 +15,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NAMESPACE, type Bridge, type EventPayload } from "../packages/embed/src/bridge";
 import { IMPLEMENTED_TRIGGERS, startAdpop } from "../packages/embed/src/loader";
-import { startRuntime } from "../packages/embed/src/runtime";
+import { IMAGE_LOAD_TIMEOUT_MS, startRuntime } from "../packages/embed/src/runtime";
 
 const SITE_KEY = "0123456789abcdef0123456789abcdef";
 const POPUP_KEY = "p".repeat(32);
@@ -656,5 +656,412 @@ describe("表示(本体)", () => {
 
     expect(doc.querySelector("[data-adpop]")).toBeNull();
     expect((win as unknown as Record<string, Bridge | undefined>)[NAMESPACE]).toBeUndefined();
+  });
+});
+
+describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
+  const IMAGE_KEY = `images/${"e".repeat(32)}.png`;
+  const IMAGE_URL = `${DELIVERY}/img/${"e".repeat(32)}.png`;
+
+  /*
+    🔴 jsdom は `resources` を有効にしていない限り `<img src>` を実際に取りに行かない
+      (`load`/`error` のどちらも自然には発火しない)。**本体は画像の読み込みを待ってから描く**
+      (Codex #8 1巡目 Blocker 2)ので、検査側で `HTMLImageElement.prototype.src` の setter を
+      差し替え、`src` が設定された瞬間に `load`/`error` を**非同期(マイクロタスク)**で発火させる
+      (ブラウザの実際の挙動=同期では発火しない、に合わせる)。`newDom()` が作る `win` ごとに
+      差し替えるので、他のテストへは漏れない。
+  */
+  function stubImageLoad(outcome: "load" | "error"): void {
+    const proto = win.HTMLImageElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "src");
+    Object.defineProperty(proto, "src", {
+      configurable: true,
+      get() {
+        return this.getAttribute("src") ?? "";
+      },
+      set(value: string) {
+        this.setAttribute("src", value);
+        queueMicrotask(() => this.dispatchEvent(new win.Event(outcome)));
+      },
+    });
+    void descriptor; // 元の descriptor は使わない(getAttribute 経由で十分)。型のためだけに参照。
+  }
+
+  async function showImage(content: Record<string, unknown>, imageOutcome: "load" | "error" = "load"): Promise<void> {
+    stubImageLoad(imageOutcome);
+    stubNetwork({
+      config: configBody({
+        variants: [
+          {
+            key: VARIANT_KEY,
+            kind: "image",
+            weight: 100,
+            content,
+            destinationUrl: "https://offer.example.com/a",
+          },
+        ],
+      }),
+    });
+    installTag();
+    await bootLoader();
+    exitIntent();
+    await flush();
+    await bootRuntime();
+    await flush(); // 画像の読み込み(マイクロタスク)が解決してから DOM 挿入が走るのを待つ
+  }
+
+  it("✅ 画像だけのバナー(ボタン文言が空)。画像全体が1つのリンクで、閉じるボタンは独立している", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "秋の新作キャンペーン", imageKey: IMAGE_KEY });
+
+    const root = popup() as ShadowRoot;
+    const link = root.querySelector(".image-link") as HTMLAnchorElement;
+    expect(link, "画像リンクが無い").not.toBeNull();
+    expect(link.getAttribute("href")).toBe("https://offer.example.com/a");
+    // 🔴 名前=alt。画像の説明がそのままリンクの名前になる
+    expect(link.getAttribute("aria-label")).toBe("秋の新作キャンペーン");
+    expect(link.querySelector("img")?.getAttribute("src")).toBe(IMAGE_URL);
+    // ⚠ 画像自身の alt は空(アクセシブルネームは <a> の aria-label が持つ。1つの画像に2つの名前を付けない)
+    expect(link.querySelector("img")?.getAttribute("alt")).toBe("");
+    // ボタン文言が空なので、フッター(見出し・ボタン)は出ない
+    expect(root.querySelector(".footer")).toBeNull();
+    expect(root.querySelector(".cta")).toBeNull();
+    // 閉じるボタンは独立した要素で、画像リンクの入れ子ではない
+    const close = root.querySelector(".close-image") as HTMLElement;
+    expect(close, "閉じるボタンが無い").not.toBeNull();
+    expect(link.contains(close)).toBe(false);
+    expect(close.getAttribute("aria-label")).toBe("閉じる");
+    // ダイアログの名前は画像の説明(見出しが無いので)
+    expect(root.querySelector(".panel")?.getAttribute("aria-label")).toBe("秋の新作キャンペーン");
+  });
+
+  it("✅ 画像+ボタン。画像リンクとボタンは同じ遷移先を指す別々の <a>(入れ子にしない)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+
+    const root = popup() as ShadowRoot;
+    const link = root.querySelector(".image-link") as HTMLAnchorElement;
+    const cta = root.querySelector(".footer .cta") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://offer.example.com/a");
+    expect(cta.getAttribute("href")).toBe("https://offer.example.com/a");
+    expect(link.contains(cta)).toBe(false);
+    expect(cta.textContent).toBe("友だち追加");
+    // imageAlt が空でもボタン文言があるので、画像リンクの名前はボタン文言に落ちる(空にはしない)
+    expect(link.getAttribute("aria-label")).toBe("友だち追加");
+  });
+
+  it("🔴 画像と誘導リンク(ボタン)のどちらを押しても click が記録される", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    (root.querySelector(".image-link") as HTMLElement).click();
+    (root.querySelector(".footer .cta") as HTMLElement).click();
+    await flush();
+
+    const clicks = sent.filter((e) => e.kind === "click");
+    expect(clicks).toHaveLength(2);
+  });
+
+  it("🔴 `imageKey` の形が崩れている(2枚目の関門)と、何も描かない・表示も数えない", async () => {
+    /*
+      🔴 配信(DELIVERABLE_VARIANT)は imageKey が入った画像型だけを配るが、
+        本体はそれを信用せず**描画の直前にもう一度確かめる**(要件書 §5-3 と同じ考え方)。
+        ローダを通さずに `bridge.request` を直接書き替えた状態と同じ経路で撃つ。
+    */
+    (win as unknown as Record<string, unknown>)[NAMESPACE] = {
+      version: "test",
+      request: {
+        popupKey: POPUP_KEY,
+        variant: {
+          key: VARIANT_KEY,
+          kind: "image",
+          weight: 100,
+          content: { imageKey: "../../etc/passwd" },
+          destinationUrl: "https://offer.example.com/a",
+        },
+        triggerKind: "exit_intent",
+        visitorHash: "0".repeat(32),
+        device: "desktop",
+        pageUrl: "https://lp.example.com/lp",
+        impressionId: "aaaaaaaa-0000-0000-0000-000000000003",
+        deliveryOrigin: DELIVERY,
+      },
+      send: (event: EventPayload) => sent.push(event),
+    } satisfies Bridge;
+
+    await bootRuntime();
+
+    expect(doc.querySelector("[data-adpop]"), "崩れた imageKey なのに描いてしまった").toBeNull();
+    expect(sent, "描いていないのにイベントを送った").toEqual([]);
+  });
+
+  it("🔴 `deliveryOrigin` が欠けていると、同じく描かない(配信ホストが無ければ画像 URL を組めない)", async () => {
+    (win as unknown as Record<string, unknown>)[NAMESPACE] = {
+      version: "test",
+      request: {
+        popupKey: POPUP_KEY,
+        variant: {
+          key: VARIANT_KEY,
+          kind: "image",
+          weight: 100,
+          content: { imageKey: IMAGE_KEY },
+          destinationUrl: "https://offer.example.com/a",
+        },
+        triggerKind: "exit_intent",
+        visitorHash: "0".repeat(32),
+        device: "desktop",
+        pageUrl: "https://lp.example.com/lp",
+        impressionId: "aaaaaaaa-0000-0000-0000-000000000004",
+        // ⚠ deliveryOrigin を渡さない
+      },
+      send: (event: EventPayload) => sent.push(event),
+    } satisfies Bridge;
+
+    await bootRuntime();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+  });
+
+  it("a11y: Tab は 閉じる → 画像リンク → ボタン → (末尾から戻る)の順に閉じ込める", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    const close = root.querySelector(".close-image") as HTMLElement;
+    const link = root.querySelector(".image-link") as HTMLElement;
+    const cta = root.querySelector(".footer .cta") as HTMLElement;
+    expect(root.activeElement, "開いたら閉じるボタンにフォーカスが移る").toBe(close);
+
+    const tab = () => doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    tab();
+    expect(root.activeElement).toBe(link);
+    tab();
+    expect(root.activeElement).toBe(cta);
+    tab();
+    expect(root.activeElement, "末尾から先頭へ戻る(背後へ抜けない)").toBe(close);
+  });
+
+  it("Esc で閉じる(画像型でも§4-3の共通)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY });
+    doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape" }));
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+    expect(sent.at(-1)?.kind).toBe("close");
+    expect(sent.at(-1)?.closeReason).toBe("esc");
+  });
+
+  it("背景タップでも閉じる(§4-3の共通)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    (root.querySelector(".backdrop") as HTMLElement).click();
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+    expect(sent.at(-1)?.closeReason).toBe("backdrop");
+  });
+
+  it("🔴 a11y: 画像の読み込みを待っている間にフォーカスを移していたら、閉じたときはその新しい場所へ戻る(Codex #8 2巡目 Should fix)", async () => {
+    /*
+      再現: exit intent が発火した時点(トリガー時点)では要素Aにフォーカスがあったが、画像の読み込みを
+      待っている最大8秒の間に、利用者が(ポップとは無関係に)LP の別の要素Bへフォーカスを移した。
+      ポップが実際に挿し込まれる(=読み込みが終わった)のはその後なので、**「開く前」はBを指すべき**で、
+      閉じたときはBへ戻る(トリガー時点のAへ戻ってしまうと、利用者が後から動かした先を見失う)。
+    */
+    const elementA = doc.createElement("button");
+    elementA.textContent = "A(発火時点の要素)";
+    doc.body.appendChild(elementA);
+    elementA.focus();
+    expect(doc.activeElement, "前提: 発火時点では A にフォーカス").toBe(elementA);
+
+    // ⚠ 本体がまだ DOM に挿していない <img> を直接つかむため、`doc.createElement` を捕まえる
+    const createdImages: HTMLImageElement[] = [];
+    const originalCreateElement = doc.createElement.bind(doc);
+    (doc as unknown as { createElement: typeof doc.createElement }).createElement = ((tag: string) => {
+      const el = originalCreateElement(tag as keyof HTMLElementTagNameMap);
+      if (tag === "img") createdImages.push(el as HTMLImageElement);
+      return el;
+    }) as typeof doc.createElement;
+
+    stubNetwork({
+      config: configBody({
+        variants: [
+          {
+            key: VARIANT_KEY,
+            kind: "image",
+            weight: 100,
+            content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+            destinationUrl: "https://offer.example.com/a",
+          },
+        ],
+      }),
+    });
+    installTag();
+    await bootLoader();
+    exitIntent();
+    await flush();
+    startRuntime(win, doc);
+    await flush();
+
+    expect(createdImages, "<img> が作られていない(この検査の前提が壊れている)").toHaveLength(1);
+    expect(doc.querySelector("[data-adpop]"), "読み込みを待っている間にもう描いてしまった").toBeNull();
+
+    // 読み込みを待っている間に、利用者が要素Bへフォーカスを移す
+    const elementB = doc.createElement("button");
+    elementB.textContent = "B(待っている間に移した先)";
+    doc.body.appendChild(elementB);
+    elementB.focus();
+    expect(doc.activeElement).toBe(elementB);
+
+    // 画像の読み込みが終わる
+    createdImages[0].dispatchEvent(new win.Event("load"));
+    await flush();
+    expect(doc.querySelector("[data-adpop]"), "読み込みが終わったのに描いていない").not.toBeNull();
+
+    (popup()?.querySelector(".close-image") as HTMLElement).click();
+    await flush();
+
+    expect(doc.activeElement, "発火時点の A へ戻ってしまった(B へ戻るべき)").toBe(elementB);
+  });
+
+  describe("🔴 画像の読み込みに失敗したら、何も出さない(Codex #8 1巡目 Blocker 2)", () => {
+    /*
+      再現(Blocker 2 の原文どおり): LP が旧 imageKey を含む config を取得済みの状態で、管理側が
+      画像を差し替え・削除して旧キーが `/img/<old-key>` で 404 になってから exit intent が発火する。
+      本体は**画像の読み込みが成功してから** DOM 挿入・`shown`・impression を成立させる。
+      失敗(404 相当のエラー)・タイムアウトのどちらでも、何も描かず計測も送らない
+      (`fire` は発火条件を満たした時点で既に送られているので、それだけは残る)。
+    */
+    it("画像が404(error)— DOM・shown・impression のどれも成立しない", async () => {
+      await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY }, "error");
+
+      expect(doc.querySelector("[data-adpop]"), "読み込み失敗なのに描いてしまった").toBeNull();
+      expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+      // bridge.shown が立っていないことも確認する(ローダ側が「出せなかった」と判定できる)
+      const bridge = (win as unknown as Record<string, { shown?: boolean }>)[NAMESPACE];
+      expect(bridge?.shown).not.toBe(true);
+    });
+
+    it(`画像の読み込みが ${IMAGE_LOAD_TIMEOUT_MS}ms を超えてもタイムアウトし、何も描かない`, async () => {
+      vi.useFakeTimers();
+      try {
+        stubNetwork({
+          config: configBody({
+            variants: [
+              {
+                key: VARIANT_KEY,
+                kind: "image",
+                weight: 100,
+                content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+                destinationUrl: "https://offer.example.com/a",
+              },
+            ],
+          }),
+        });
+        installTag();
+        startAdpop(win, doc);
+        await vi.advanceTimersByTimeAsync(0); // 設定の取得(fetch の Promise)を解決させる
+        exitIntent();
+        await vi.advanceTimersByTimeAsync(0); // fire → 本体(<script>)の挿入まで
+        startRuntime(win, doc); // 本体が読み込まれた状況を作る(画像の `load`/`error` は一度も発火させない)
+        await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + 1000); // 上限を越える
+
+        expect(doc.querySelector("[data-adpop]"), "タイムアウトしたのに描いてしまった").toBeNull();
+        expect(sent.filter((e) => e.kind === "impression")).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("🔴 画像を待っている間に本体がもう一度読み込まれても、ポップは1つしか出ない(Codex #8 2巡目 Blocker)", async () => {
+      // ⚠ 本体がまだ DOM に挿していない <img> を直接つかむため、`doc.createElement` を捕まえる
+      const createdImages: HTMLImageElement[] = [];
+      const originalCreateElement = doc.createElement.bind(doc);
+      (doc as unknown as { createElement: typeof doc.createElement }).createElement = ((tag: string) => {
+        const el = originalCreateElement(tag as keyof HTMLElementTagNameMap);
+        if (tag === "img") createdImages.push(el as HTMLImageElement);
+        return el;
+      }) as typeof doc.createElement;
+
+      stubNetwork({
+        config: configBody({
+          variants: [
+            {
+              key: VARIANT_KEY,
+              kind: "image",
+              weight: 100,
+              content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+              destinationUrl: "https://offer.example.com/a",
+            },
+          ],
+        }),
+      });
+      installTag();
+      await bootLoader();
+      exitIntent();
+      await flush();
+
+      /*
+        🔴 **画像の `load` を保留したまま、`startRuntime()` を2回呼ぶ**(Codex 原文どおりの再現)。
+          以前は `drawing` が `startRuntime()` のローカル変数だったため、1回目が画像を待っている間に
+          2回目を呼ぶと、2回目は**別の `drawing = false`** を見て、同じ画像をもう一度読み込みに行けた
+          (両方成功すると DOM が2つ・impression も2件になっていた)。
+      */
+      startRuntime(win, doc);
+      startRuntime(win, doc);
+      await flush();
+
+      // 🔴 <img> が1つしか作られていない(2つ目の startRuntime が bridge.drawing を見て何もしなかった)
+      expect(createdImages, "<img> が複数作られた = 二重に読み込みに行った").toHaveLength(1);
+
+      // 両方(実際には1つだけ存在する)の <img> に load を送っても、出来上がるポップは1つだけ
+      for (const img of createdImages) img.dispatchEvent(new win.Event("load"));
+      await flush();
+
+      expect(doc.querySelectorAll("[data-adpop]"), "ポップが複数出た").toHaveLength(1);
+      expect(sent.filter((e) => e.kind === "impression"), "impression が複数送られた").toHaveLength(1);
+    });
+
+    it("🔴 タイムアウトの後に load が遅れて届いても、DOM・shown・impression のどれも成立しない(Codex #8 2巡目 Should fix)", async () => {
+      // ⚠ 本体がまだ DOM に挿していない <img> を直接つかむため、`doc.createElement` を捕まえる
+      const createdImages: HTMLImageElement[] = [];
+      const originalCreateElement = doc.createElement.bind(doc);
+      (doc as unknown as { createElement: typeof doc.createElement }).createElement = ((tag: string) => {
+        const el = originalCreateElement(tag as keyof HTMLElementTagNameMap);
+        if (tag === "img") createdImages.push(el as HTMLImageElement);
+        return el;
+      }) as typeof doc.createElement;
+
+      vi.useFakeTimers();
+      try {
+        stubNetwork({
+          config: configBody({
+            variants: [
+              {
+                key: VARIANT_KEY,
+                kind: "image",
+                weight: 100,
+                content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY },
+                destinationUrl: "https://offer.example.com/a",
+              },
+            ],
+          }),
+        });
+        installTag();
+        startAdpop(win, doc);
+        await vi.advanceTimersByTimeAsync(0);
+        exitIntent();
+        await vi.advanceTimersByTimeAsync(0);
+        startRuntime(win, doc);
+        await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + 1000); // ここで一度タイムアウトが確定している
+
+        expect(createdImages, "<img> が1つも作られていない(この検査の前提が壊れている)").toHaveLength(1);
+        // 🔴 遅れて届いた load(低速回線で、タイムアウト扱いにした後にブラウザが読み込みを終えた場合を模す)
+        createdImages[0].dispatchEvent(new win.Event("load"));
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(doc.querySelector("[data-adpop]"), "遅れて届いた load で描いてしまった").toBeNull();
+        expect(sent.filter((e) => e.kind === "impression")).toEqual([]);
+        const bridge = (win as unknown as Record<string, { shown?: boolean }>)[NAMESPACE];
+        expect(bridge?.shown, "遅れて届いた load で shown が立った").not.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

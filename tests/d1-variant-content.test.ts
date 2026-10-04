@@ -39,18 +39,36 @@ const injected = (headline: string) =>
   }) as unknown as admin.VariantInput;
 
 describe("content の組み直し", () => {
-  it("🔴 createVariant に余計な鍵を混ぜても、3欄だけが入る", async () => {
+  it("🔴 createVariant に余計な鍵を混ぜても、4欄だけが入る", async () => {
     const created = await admin.createVariant(db, OWNER_A, popupId, injected("作る"));
     if (!created.ok) throw new Error("作れない");
-    expect(await contentOf(created.value.id)).toEqual({ headline: "作る", body: "", buttonLabel: "" });
+    expect(await contentOf(created.value.id)).toEqual({ headline: "作る", body: "", buttonLabel: "", imageAlt: "" });
   });
 
-  it("🔴 updateVariant に imageKey を混ぜても、元の imageKey が残る / 3欄は差し替わる", async () => {
+  it("🔴 updateVariant に imageKey を混ぜても、元の imageKey が残る / 4欄は差し替わる", async () => {
     const created = await admin.createVariant(db, OWNER_A, popupId, injected("前"));
     if (!created.ok) throw new Error("作れない");
     expect(await admin.setVariantImage(db, OWNER_A, created.value.id, KEY)).toEqual({ ok: true, value: { previousKey: null } });
     expect((await admin.updateVariant(db, OWNER_A, created.value.id, injected("後"))).ok).toBe(true);
-    expect(await contentOf(created.value.id)).toEqual({ headline: "後", body: "", buttonLabel: "", imageKey: KEY });
+    expect(await contentOf(created.value.id)).toEqual({ headline: "後", body: "", buttonLabel: "", imageAlt: "", imageKey: KEY });
+  });
+
+  it("🔴 画像型・ボタン文言が空で imageAlt も空なら、データ層でも断る(body.ts を経由しない呼び出しへの2枚目の関門)", async () => {
+    const bad: admin.VariantInput = {
+      kind: "image",
+      content: { headline: "", body: "", buttonLabel: "", imageAlt: "" },
+      destinationUrl: "https://offer.example.com/",
+    };
+    expect(await admin.createVariant(db, OWNER_A, popupId, bad)).toEqual({
+      ok: false,
+      failure: { kind: "invalid", field: "imageAlt" },
+    });
+    const created = await admin.createVariant(db, OWNER_A, popupId, { ...bad, content: { ...bad.content, imageAlt: "説明" } });
+    if (!created.ok) throw new Error("作れない");
+    expect(await admin.updateVariant(db, OWNER_A, created.value.id, bad)).toEqual({
+      ok: false,
+      failure: { kind: "invalid", field: "imageAlt" },
+    });
   });
 
   it("🔴 setVariantImage は形の違うキーを断る / 前のキーを返す / null で外す", async () => {

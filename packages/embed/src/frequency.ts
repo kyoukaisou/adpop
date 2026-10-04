@@ -81,3 +81,31 @@ export function textOf(value: unknown, maxLength = 300): string {
   const trimmed = value.trim();
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 }
+
+/**
+ * 画像のキーの形(`images/<32桁の16進>.<拡張子>`)。
+ * 🔴 **`src/lib/data/shapes.ts` の `isImageKey` と同じ規則の写し**(埋め込みは MIT なので AGPL 側を import できない。
+ *   `isSafeDestination` が `isHttpsUrl` の写しであるのと同じ理由)。
+ */
+export function isImageKey(value: unknown): value is string {
+  return typeof value === "string" && /^images\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(value);
+}
+
+/**
+ * 配信ホスト(`deliveryOrigin`)の**形**の検査(`https?://host`。`/` や空白を含まない。開発は http も許す)。
+ * ⚠ 値の出どころ(ローダが自分で読んだタグの `src` の origin かどうか)までは確かめない —— この形の文字列なら通る。
+ */
+function isDeliveryOrigin(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 300 && /^https?:\/\/[^\s/]+$/.test(value);
+}
+
+/**
+ * 画像の URL を組み立てる。🔴 **配信ホストは固定(ローダが自分の `<script src>` から読んだ値)で、
+ *   利用者の入力からは1バイトも使わない** —— `imageKey` はサーバーの応答(§4-3 の `content`)由来なので、
+ *   **描画の直前にもう一度形を確かめる**(`isSafeDestination` と同じ「2枚目の関門」)。
+ * @returns 形が崩れていたら `null`(呼び出し側は「出せない」扱いにする。fail-closed)。
+ */
+export function imageUrlOf(deliveryOrigin: unknown, imageKey: unknown): string | null {
+  if (!isDeliveryOrigin(deliveryOrigin) || !isImageKey(imageKey)) return null;
+  return `${deliveryOrigin}/img/${imageKey.slice("images/".length)}`;
+}

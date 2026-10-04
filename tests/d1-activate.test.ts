@@ -10,7 +10,7 @@ import { openTestD1, OWNER_A, type TestD1 } from "./helpers/d1";
 
 let t: TestD1;
 let db: D1Database;
-const p = { first: "", second: "", imageOnly: "", empty: "", archivedOnly: "" };
+const p = { first: "", second: "", imageOnly: "", imageWithKey: "", empty: "", archivedOnly: "" };
 
 function value<T>(result: admin.Result<T>): T {
   if (!result.ok) throw new Error(`準備に失敗: ${JSON.stringify(result.failure)}`);
@@ -18,7 +18,8 @@ function value<T>(result: admin.Result<T>): T {
 }
 const input = (kind: admin.VariantKind): admin.VariantInput => ({
   kind,
-  content: { headline: "h", body: "", buttonLabel: "" },
+  // ⚠ imageAlt を入れておく(画像型・ボタン文言なしの組み合わせは必須なので、text 型にも同じ形で揃える)
+  content: { headline: "h", body: "", buttonLabel: "", imageAlt: "説明" },
   destinationUrl: "https://offer.example.com/",
 });
 const statusOf = async (id: string) =>
@@ -37,6 +38,9 @@ beforeAll(async () => {
   value(await admin.createVariant(db, OWNER_A, p.imageOnly, input("image")));
   const archived = value(await admin.createVariant(db, OWNER_A, p.archivedOnly, input("text"))).id;
   value(await admin.archiveVariant(db, OWNER_A, archived));
+  // 🔴 画像が設定された画像型(PR4a で配信対象になった)。`imageOnly` とは違い imageKey が入っている
+  const withImage = value(await admin.createVariant(db, OWNER_A, p.imageWithKey, input("image"))).id;
+  value(await admin.setVariantImage(db, OWNER_A, withImage, `images/${"c".repeat(32)}.png`));
 });
 afterAll(async () => {
   await t?.dispose();
@@ -56,7 +60,7 @@ describe("稼働の切り替え", () => {
 
   it.each([
     ["パターンが無い", "empty"],
-    ["画像型しか無い(配信が画像型を配らないのと同じ定義)", "imageOnly"],
+    ["画像型だが画像が未設定(配信の定義と同じ = PR4a でも配らない)", "imageOnly"],
     ["アーカイブ済みのパターンしか無い", "archivedOnly"],
   ] as const)("🔴 %s ポップは稼働にせず、いまの稼働中も止めない", async (_label, key) => {
     expect(await admin.activatePopup(db, OWNER_A, p[key])).toEqual({
@@ -77,5 +81,10 @@ describe("稼働の切り替え", () => {
   it("🔴 稼働中をアーカイブすると、同じ更新で停止になる(稼働中のままアーカイブ済みにならない)", async () => {
     value(await admin.archivePopup(db, OWNER_A, p.second));
     expect(await statusOf(p.second)).toBe("paused");
+  });
+
+  it("✅ 画像が設定された画像型パターンは配信対象になり、稼働にできる(PR4a)", async () => {
+    expect(await admin.activatePopup(db, OWNER_A, p.imageWithKey)).toEqual({ ok: true, value: null });
+    expect(await statusOf(p.imageWithKey)).toBe("active");
   });
 });

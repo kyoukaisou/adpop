@@ -61,3 +61,33 @@ export function normalizePageUrl(raw: unknown): { ok: true; value: string | null
 export function isImageKey(value: unknown): value is string {
   return typeof value === "string" && /^images\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(value);
 }
+
+/**
+ * 値を「比較してよい文字列」に正規化する(欠落・`null`・文字列でないもの・空白だけ → すべて空扱い)。
+ * 🔴 **fail-closed に倒す側**(Codex #8 1巡目 Blocker 3): `undefined?.trim()`(= `undefined`)を
+ *   `""` と直接比較すると常に偽になり、「空」を見逃して必須判定が素通りする。先に空文字へ倒してから
+ *   比較することで、欠落も空文字も同じ扱いになる。
+ */
+export function normalizeToText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * 🔴 **画像の説明(`imageAlt`)は、画像型かつボタン文言が空のときだけ必須**
+ *   (2026-10-04 追補v2 §7-7-1 の5番。画像だけのバナーでは、空のままだと読み上げの手がかりが
+ *   汎用文言(`buttonLabel` の既定値)だけになる)。
+ * 🔴 **保存 API の入口(`src/admin/body.ts`)とデータ層(`src/lib/data/admin.ts`)の両方が、
+ *   この1つの関数をそのまま呼ぶ**(Codex #8 1巡目 Blocker 3。定義を2か所に複製すると、片方だけ
+ *   直して fail-open が再発する)。`admin.ts` に置かないのは、`tests/d1-owner-isolation.test.ts` が
+ *   「データ層が公開する関数はすべて `ownerId` を2番目の引数に取る」ことを機械で検査しており、
+ *   DB に触らないこの純粋関数を `admin.ts` から export すると無関係にその検査を壊すため
+ *   (`shapes.ts` は配信・管理画面が共有する「値の形の判定」の置き場 = 元からその種の関数の家)。
+ * ⚠ **DB の CHECK には入れていない**(限界として記録): SQLite の CHECK は同じ行の他の列を
+ *   参照できるので条件自体は書けるが、既存の表に CHECK を追加するには表の再生成が要り、
+ *   0002 の「追加だけ」の方針(security 監査 M9)と緊張する。v1 はこの2枚(body.ts + admin.ts)を正とする。
+ * ⚠ **既存データの移行は不要**(本部裁定): 本番の Cloudflare には ADPOP のリソースがまだ0件で、
+ *   移行すべき既存の行が無い(D-299)。
+ */
+export function requiresImageAlt(input: { kind: unknown; content?: { buttonLabel?: unknown; imageAlt?: unknown } }): boolean {
+  return input.kind === "image" && normalizeToText(input.content?.buttonLabel) === "" && normalizeToText(input.content?.imageAlt) === "";
+}

@@ -27,7 +27,7 @@ const NOT_FOUND = { ok: false, failure: { kind: "not_found" } };
 const FOREIGN_KEY = { ok: false, failure: { kind: "foreign_key" } };
 const variantInput: admin.VariantInput = {
   kind: "text",
-  content: { headline: "B が書いた", body: "", buttonLabel: "" },
+  content: { headline: "B が書いた", body: "", buttonLabel: "", imageAlt: "" },
   destinationUrl: "https://evil.example.com/",
 };
 

@@ -30,7 +30,7 @@ beforeAll(async () => {
   if (!popup.ok) throw new Error("準備に失敗");
   await admin.createVariant(db, OWNER_A, popup.value.id, {
     kind: "text",
-    content: { headline: "見出し", body: "", buttonLabel: "" },
+    content: { headline: "見出し", body: "", buttonLabel: "", imageAlt: "" },
     destinationUrl: "https://offer.example.com/",
   });
   await admin.activatePopup(db, OWNER_A, popup.value.id);

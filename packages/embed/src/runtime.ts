@@ -2,9 +2,11 @@
   ADPOP の本体 —— **発火が決まってから取りに行く側**(要件書 §4-1 の2段構え)。
   MIT(このディレクトリのみ)。
 
-  🔴 **見た目は仮置き。** 枠・閉じるボタン・見出し・本文・ボタンだけ。
-    **デザインは PR3 で、実寸のモックを承認してから**入れる
-    (見た目を変える修正は、実物の寸法で見せて合意してから書く)。
+  🔴 **テキスト型(§4-3 A)の見た目は仮置き**。枠・閉じるボタン・見出し・本文・ボタンだけ。
+    デザインは別の工程(実寸のモックの承認)を通してから入れる。
+  🔴 **画像型(§4-3 B)は 2026-10-04 追補 v2 の実寸モック(拓実さん承認済み)に合わせた**(PR4a)。
+    画像全体が1つのリンクで、閉じるボタンは独立した要素。見た目を変える修正は、実物の寸法で
+    見せて合意してから書く(組織の運転ルール)。
     ⚠ ここに色や余白を足すときは、必ずその工程を通す。
 
   🔴 **埋め込み先の CSS と混ざらない**(要件書 §5-2):
@@ -19,7 +21,7 @@
     見出し・本文・ボタン文言は **`textContent` にしか入れない**。`innerHTML` を使わない。
 */
 import { readBridge, TEXT_LIMITS, type Bridge, type CloseReason, type RenderRequest } from "./bridge";
-import { isSafeDestination, textOf } from "./frequency";
+import { imageUrlOf, isSafeDestination, textOf } from "./frequency";
 
 export const ADPOP_RUNTIME_VERSION = "0.1.0";
 
@@ -30,7 +32,15 @@ const DIALOG_LABEL = "お知らせ";
 /*
   ⚠ この文字列だけが `textContent` 経由でスタイルとして入る。**利用者の入力は1文字も混ざらない。**
 */
-const STYLE = `
+/*
+  🔴 **`rem`/`em` を1つも使わない**(Codex #8 1巡目 Should fix)。`rem` は文書ルート(`<html>`)の
+    `font-size` を基準にする —— `:host { all: initial }` は `:host` 自身の継承プロパティを遮るだけで、
+    **`rem` の基準点(ルート要素)までは遮らない**。埋め込み先が `html { font-size: 10px }` のような
+    LP だと、`2.75rem` は 44px ではなく 27.5px になり、「閉じるボタンは44px以上」が崩れる。
+    **寸法は全部 px の絶対値**にする(1rem=16px だった値をそのまま px に置き換えた。見た目は変わらない)。
+  ⚠ `vh`(`.image` の `max-height`)はビューポート基準で、文書ルートの `font-size` に左右されないので対象外。
+*/
+export const STYLE = `
 :host { all: initial; }
 .backdrop {
   position: fixed; inset: 0; z-index: 2147483647;
@@ -41,28 +51,65 @@ const STYLE = `
 }
 .panel {
   position: relative; box-sizing: border-box;
-  width: calc(100% - 2rem); max-width: 20rem;
-  background: #fff; border: 1px solid #d4d4d4; border-radius: .5rem;
-  padding: 1.25rem 1rem 1rem;
+  width: calc(100% - 32px); max-width: 320px;
+  background: #fff; border: 1px solid #d4d4d4; border-radius: 8px;
+  padding: 20px 16px 16px;
 }
-.headline { margin: 0 0 .5rem; font-size: 1rem; font-weight: 700; }
-.body { margin: 0 0 1rem; font-size: .875rem; }
+.headline { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.body { margin: 0 0 16px; font-size: 14px; }
 .cta {
   /* ⚠ min-height は意匠ではなく**タッチターゲットの下限**(44px)。padding だけだと約40px になる */
-  display: flex; align-items: center; justify-content: center; min-height: 2.75rem;
+  display: flex; align-items: center; justify-content: center; min-height: 44px;
   text-align: center; text-decoration: none;
-  padding: .5rem 1rem; border-radius: .375rem;
-  background: #1a1a1a; color: #fff; font-size: .875rem; font-weight: 700;
+  padding: 8px 16px; border-radius: 6px;
+  background: #1a1a1a; color: #fff; font-size: 14px; font-weight: 700;
 }
 .close {
-  position: absolute; top: .25rem; right: .25rem;
-  min-width: 2.75rem; min-height: 2.75rem;
+  position: absolute; top: 4px; right: 4px;
+  min-width: 44px; min-height: 44px;
   display: flex; align-items: center; justify-content: center;
-  background: none; border: 0; border-radius: .375rem;
-  font-size: 1rem; color: #1a1a1a; cursor: pointer;
+  background: none; border: 0; border-radius: 6px;
+  font-size: 16px; color: #1a1a1a; cursor: pointer;
 }
 /* 🔴 フォーカスリングを消さない(キーボードで操作できることが分かる) */
 .cta:focus-visible, .close:focus-visible { outline: 2px solid #1a1a1a; outline-offset: 2px; }
+
+/*
+  ── 画像型(§4-3 B)。実寸モック(2026-10-04 追補 v2)の決定に合わせた ───────
+  🔴 画像の高さは固定しない。比率どおりに高さが決まり、画面の高さの70%(スマホで検算した値)を
+    超えたときだけ縮んで、そのときだけ左右に余白が出る(帯は出さない)。
+  🔴 「GIF」の印は出さない(2026-10-04 追補v2: 訪問者には不要。管理画面の種類の印はそのまま=LPには影響しない)。
+*/
+/* 🔴 実寸モック(06a〜06e)に合わせた値(text 型の 320px/角丸8px とは別の値)。 */
+.image-panel {
+  padding: 0; max-width: 352px; border: 0; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,.25), 0 8px 10px -6px rgba(0,0,0,.2);
+}
+.image-link { position: relative; display: block; }
+.image-link:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.image {
+  display: block; width: 100%; height: auto; max-height: 70vh;
+  object-fit: contain; background: #f2f1ec;
+}
+.image-overlay {
+  position: absolute; inset: 0; background: rgba(0,0,0,0); pointer-events: none;
+  transition: background-color .15s;
+}
+.image-link:hover .image-overlay { background: rgba(0,0,0,.18); }
+@media (prefers-reduced-motion: reduce) { .image-overlay { transition: none; } }
+/* 🔴 閉じるボタンは画像に重なるため独立した要素(押し間違えない間隔・44px 以上を維持) */
+.close-image {
+  position: absolute; top: 12px; right: 12px;
+  min-width: 44px; min-height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55); border: 0; border-radius: 50%;
+  font-size: 16px; color: #fff; cursor: pointer;
+}
+.close-image:hover { background: rgba(0,0,0,.7); }
+.close-image:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.footer { padding: 20px 16px 16px; }
+.footer .headline { margin: 0 0 12px; }
+.footer .cta { margin: 0; }
 `;
 
 type Win = Window & typeof globalThis;
@@ -75,16 +122,52 @@ function quiet(run: () => void): void {
   }
 }
 
+/*
+  🔴 **画像の読み込みを待つ上限**(Codex #8 1巡目 Blocker 2)。
+    8 秒。根拠: 画像の上限は 2MB・GIF は 3MB(要件書 §4-3)で、低速回線でも常識的な時間で決着する
+    大きさ。離脱の瞬間に出すポップなので早く諦めたいが、**短すぎるとモバイル回線で正しい画像まで
+    「出せなかった」ことにしてしまう**(fail-closed の代償は「出ない」なので、閾値を切りすぎない側に倒す)。
+    ⚠ 外部根拠は無い(本部が置いた設計値)。待っている間は何も描かれない(訪問者には「出ないだけ」)ので、
+    長めに倒しても実害は「タブが閉じられるまで見えない読み込みが続く」程度。
+*/
+export const IMAGE_LOAD_TIMEOUT_MS = 8000;
+
+/**
+ * 画像の読み込みを待つ(Codex #8 1巡目 Blocker 2)。
+ * 🔴 **読み込みが成功するまで `src` を付けない呼び出し側と対**: `load` に先に耳を傾けてから `src` を立てる
+ *   (キャッシュ即時発火でも取りこぼさない)。失敗(`error`)・上限超過はどちらも reject = **呼び出し側は
+ *   「何も描かない」の1本で扱える**(成功と失敗のどちらで止まったかを区別しない)。
+ */
+function loadImage(win: Win, img: HTMLImageElement, src: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onError);
+      win.clearTimeout(timer);
+      if (ok) resolve();
+      else reject(new Error("adpop: image load failed or timed out"));
+    };
+    const onLoad = () => finish(true);
+    const onError = () => finish(false);
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onError);
+    const timer = win.setTimeout(() => finish(false), timeoutMs);
+    img.src = src;
+  });
+}
+
 /** 本体が読み込まれたときに1度だけ呼ばれる入口。 */
 export function startRuntime(win: Win, doc: Document): boolean {
   const bridge = readBridge(win);
   // 🔴 ローダより先に読まれた / 別の何かが先に居る = 何もしない(fail-closed)
   if (bridge === undefined) return false;
 
-  let drawing = false;
   const render = (): void => {
     quiet(() => {
-      if (bridge.shown === true || drawing) return;
+      if (bridge.shown === true || bridge.drawing === true) return;
       const request = bridge.request;
       if (request === undefined) return;
       if (!isSafeDestination(request.variant?.destinationUrl)) return;
@@ -93,16 +176,31 @@ export function startRuntime(win: Win, doc: Document): boolean {
           前は先に立てていたので、**描画が途中で落ちても「表示済み」になっていた** ——
           ローダはそれを見て「出せた」と判断し、**戻るトリガが「戻る」を吸収したままになる**。
           = ポップも出ないのに操作だけ奪う(要件書 §5-2 の約束を破る)。
-        ⚠ `drawing` は**再入だけ**を止める(`draw` の途中で render がもう一度呼ばれても二重に描かない)。
-          **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
+        🔴🔴 **`drawing` は `bridge` に持たせる(Codex #8 2巡目 Blocker)**。
+          以前はこの関数のローカル変数だったため、**画像の読み込みを待っている間に本体がもう一度
+          読み込まれる**(= `startRuntime()` がもう一度呼ばれる)と、2つ目の呼び出しは**別の
+          ローカル変数**(常に `false` から始まる)を見てしまい、再入防止が効かなかった ——
+          両方が同じ画像を並行に読み込み、両方成功すると**ポップが2つ・impressionも2件**になる
+          (「本体が2回読み込まれても1つ」の約束=要件書 §5-2 の多重読み込み耐性に反する)。
+          `bridge` は `readBridge(win)` でどの呼び出しからも**同じオブジェクト**が返るので、
+          ここに置けば2つ目の `startRuntime()` が作る `render` からも正しく見える。
+        ⚠ **失敗したら `shown` は false のまま**なので、ローダ側が「出せなかった」と判定できる。
+        🔴 **画像型は `draw()` が画像の読み込みを待つ間 `Promise` のまま**(Codex #8 1巡目 Blocker 2)。
+          `bridge.drawing` は、その**待っている間ずっと**立てたままにする。`bridge.render` 自体の
+          型は同期(`() => void`)なので、ここで `await` はできない —— `.then`/`.catch` で結果を
+          受けて `bridge.drawing`/`bridge.shown` を更新する。
       */
-      drawing = true;
-      try {
-        draw(win, doc, bridge, request);
-        bridge.shown = true;
-      } finally {
-        drawing = false;
-      }
+      bridge.drawing = true;
+      draw(win, doc, bridge, request).then(
+        () => {
+          bridge.shown = true;
+          bridge.drawing = false;
+        },
+        () => {
+          // 🔴 失敗(画像読み込みの失敗・タイムアウト・不正な imageKey 等)。shown は立てない。
+          bridge.drawing = false;
+        },
+      );
     });
   };
 
@@ -112,12 +210,26 @@ export function startRuntime(win: Win, doc: Document): boolean {
   return true;
 }
 
-function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): void {
+async function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): Promise<void> {
   const send = bridge.send;
   const content = request.variant.content ?? {};
   const headline = textOf(content.headline, TEXT_LIMITS.headline);
   const body = textOf(content.body, TEXT_LIMITS.body);
-  const buttonLabel = textOf(content.buttonLabel, TEXT_LIMITS.buttonLabel) || FALLBACK_BUTTON_LABEL;
+  const rawButtonLabel = textOf(content.buttonLabel, TEXT_LIMITS.buttonLabel);
+  const buttonLabel = rawButtonLabel || FALLBACK_BUTTON_LABEL;
+  const imageAlt = textOf(content.imageAlt, TEXT_LIMITS.imageAlt);
+  const isImage = request.variant.kind === "image";
+
+  /*
+    🔴 **画像型の2枚目の関門**(要件書 §5-3 の「保存時と描画時の両方で検査する」と同じ考え方)。
+      配信(`DELIVERABLE_VARIANT`)は「`imageKey` が入っている画像型」だけを配るが、
+      **この本体は配信の判定を信用しない** —— ローダを通さずに `bridge.request` を直接
+      書き替えられた状態(上の `tests/embed-flow.test.ts` の「2枚目」と同じ経路)でも、
+      形が崩れていれば何も描かない。
+    ⚠ ここで throw すると `render()` は `bridge.shown` を立てない(=「出せなかった」が伝わる)。
+  */
+  const imageUrl = isImage ? imageUrlOf(request.deliveryOrigin, content.imageKey) : null;
+  if (isImage && imageUrl === null) throw new Error("adpop: invalid image variant");
 
   const host = doc.createElement("div");
   // ⚠ LP の CSS が拾える手掛かりを1つだけ残す(ポップの存在は隠さない)
@@ -132,44 +244,103 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   backdrop.className = "backdrop";
 
   const panel = doc.createElement("div");
-  panel.className = "panel";
+  panel.className = isImage ? "panel image-panel" : "panel";
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-modal", "true");
 
   const closeButton = doc.createElement("button");
-  closeButton.className = "close";
+  closeButton.className = isImage ? "close-image" : "close";
   closeButton.type = "button";
   // 🔴 記号だけに意味を持たせない —— スクリーンリーダーには「閉じる」と読ませる
   closeButton.setAttribute("aria-label", "閉じる");
   closeButton.textContent = "✕";
-  panel.appendChild(closeButton);
 
+  let heading: HTMLHeadingElement | null = null;
   if (headline !== "") {
-    const heading = doc.createElement("h2");
+    heading = doc.createElement("h2");
     heading.className = "headline";
     heading.id = "adpop-headline";
     heading.textContent = headline;
-    panel.appendChild(heading);
-    // 見出しが在るならそれをダイアログの名前にする(二重に読ませない)
+  }
+
+  // ダイアログの名前。見出し > (画像型なら)画像の説明 > 既定の "お知らせ" の順(二重に読ませない)。
+  if (heading !== null) {
     panel.setAttribute("aria-labelledby", heading.id);
+  } else if (isImage && imageAlt !== "") {
+    panel.setAttribute("aria-label", imageAlt);
   } else {
     panel.setAttribute("aria-label", DIALOG_LABEL);
   }
 
-  if (body !== "") {
-    const paragraph = doc.createElement("p");
-    paragraph.className = "body";
-    paragraph.textContent = body;
-    panel.appendChild(paragraph);
-  }
+  // 画像リンクの名前(アクセシブルネーム)。**空にはしない**(imageAlt → headline → buttonLabel の順)。
+  const imageLinkLabel = imageAlt || headline || buttonLabel;
 
-  const cta = doc.createElement("a");
-  cta.className = "cta";
-  // 🔴 描画の直前にもう一度確かめた URL しかここへ来ない(上の isSafeDestination)
-  cta.href = request.variant.destinationUrl;
-  cta.rel = "noopener noreferrer";
-  cta.textContent = buttonLabel;
-  panel.appendChild(cta);
+  let imageLink: HTMLAnchorElement | null = null;
+  let imageElement: HTMLImageElement | null = null;
+  let cta: HTMLAnchorElement | null = null;
+
+  if (isImage) {
+    /*
+      ── 画像型(§4-3 B・2026-10-04 追補 v2)─────────────────────────
+      🔴 **画像全体が1つのリンク**(拓実さん指示「画像やGIF自体がボタンの役割を果たす」)。
+        ボタンは任意 —— ボタン文言が空なら画像だけのバナー、入っていれば画像の下にも同じ遷移先の
+        ボタンを出す(同じ href を指す**別々の `<a>`**。入れ子にしない)。
+    */
+    imageLink = doc.createElement("a");
+    imageLink.className = "image-link";
+    imageLink.href = request.variant.destinationUrl;
+    imageLink.rel = "noopener noreferrer";
+    imageLink.setAttribute("aria-label", imageLinkLabel);
+
+    imageElement = doc.createElement("img");
+    imageElement.className = "image";
+    // ⚠ 画像の説明は <a> の aria-label が持つ(1つの画像に2つの名前を付けない)
+    imageElement.alt = "";
+    // 🔴 `src` はまだ付けない。読み込みの成否を待ってから差し込む(下の Blocker 2 の対処)。
+    imageLink.appendChild(imageElement);
+
+    const overlay = doc.createElement("div");
+    overlay.className = "image-overlay";
+    imageLink.appendChild(overlay);
+
+    panel.appendChild(imageLink);
+    panel.appendChild(closeButton);
+
+    // フッター(見出し・ボタン)。どちらも無ければフッターそのものを出さない(画像だけのバナー)。
+    if (heading !== null || rawButtonLabel !== "") {
+      const footer = doc.createElement("div");
+      footer.className = "footer";
+      if (heading !== null) footer.appendChild(heading);
+      if (rawButtonLabel !== "") {
+        cta = doc.createElement("a");
+        cta.className = "cta";
+        cta.href = request.variant.destinationUrl;
+        cta.rel = "noopener noreferrer";
+        cta.textContent = buttonLabel;
+        footer.appendChild(cta);
+      }
+      panel.appendChild(footer);
+    }
+  } else {
+    // ── テキスト型(既存の見た目。§4-3 A)────────────────────────
+    panel.appendChild(closeButton);
+    if (heading !== null) panel.appendChild(heading);
+
+    if (body !== "") {
+      const paragraph = doc.createElement("p");
+      paragraph.className = "body";
+      paragraph.textContent = body;
+      panel.appendChild(paragraph);
+    }
+
+    cta = doc.createElement("a");
+    cta.className = "cta";
+    // 🔴 描画の直前にもう一度確かめた URL しかここへ来ない(上の isSafeDestination)
+    cta.href = request.variant.destinationUrl;
+    cta.rel = "noopener noreferrer";
+    cta.textContent = buttonLabel;
+    panel.appendChild(cta);
+  }
 
   backdrop.appendChild(panel);
   shadow.appendChild(backdrop);
@@ -180,8 +351,13 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
       閉じたあと `host.remove()` するだけだと、フォーカスは `body` の先頭へ飛び、
       **キーボードで読んでいた人は位置を失う**。
     ⚠ `document.activeElement` は Shadow root の外側の要素を指す(ポップはまだ挿していない)。
+    🔴🔴 **「開く前」は DOM に差し込む直前を指す(Codex #8 2巡目 Should fix)**。
+      画像型は `await loadImage(...)` で最大8秒待つ —— ここで先に読んでしまうと、
+      **待っている間に利用者が別の要素へフォーカスを移していても、発火した瞬間の古い要素へ
+      戻してしまう**。値を入れるのは下(画像の読み込みを待ったあと・`appendChild` の直前)。
+      `close()` は `let` を閉包で捕まえているので、代入する場所を後にずらすだけでよい。
   */
-  const previouslyFocused = doc.activeElement as HTMLElement | null;
+  let previouslyFocused: HTMLElement | null = null;
 
   /**
    * 🔴 **`aria-modal="true"` を名乗るなら、フォーカスも実際に閉じ込める**
@@ -198,7 +374,10 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
     }
     if (event.key !== "Tab") return;
     quiet(() => {
-      const focusable: HTMLElement[] = [closeButton, cta];
+      // ⚠ **閉じ込める要素はここで決める**(フォーカスできる要素を足したら、ここにも足す)。
+      const focusable = ([closeButton, imageLink, cta] as (HTMLElement | null)[]).filter(
+        (el): el is HTMLElement => el !== null,
+      );
       const index = focusable.indexOf(shadow.activeElement as HTMLElement);
       // ⚠ ポップの外に居るなら、まず中へ引き戻す(index が -1 のとき)
       const next = event.shiftKey
@@ -242,12 +421,15 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   backdrop.addEventListener("click", (event) => {
     if (event.target === backdrop) close("backdrop");
   });
-  cta.addEventListener("click", () => {
-    /*
-      ⚠ **`preventDefault` を呼ばない。** 遷移はブラウザに任せ、送信は `sendBeacon` に任せる
-        (遷移で中断されない = そのための API)。
-      ⚠ 同じ表示で何度押されても**その数だけ**記録する(要件書 §4-7。CTR は畳んで出す)。
-    */
+
+  /*
+    ⚠ **`preventDefault` を呼ばない。** 遷移はブラウザに任せ、送信は `sendBeacon` に任せる
+      (遷移で中断されない = そのための API)。
+    ⚠ 同じ表示で何度押されても**その数だけ**記録する(要件書 §4-7。CTR は畳んで出す)。
+    🔴 **画像型は「画像リンク」「ボタン」が別々の `<a>`**(同じ遷移先)。どちらを押しても
+      「ポップ内の誘導リンク / ボタンの押下」として同じ `click` イベントを送る(どちらで押したかは分けない)。
+  */
+  const sendClick = (): void => {
     send?.({
       kind: "click",
       popupKey: request.popupKey,
@@ -257,8 +439,25 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
       device: request.device,
       pageUrl: request.pageUrl,
     });
-  });
+  };
+  imageLink?.addEventListener("click", sendClick);
+  cta?.addEventListener("click", sendClick);
 
+  /*
+    🔴 **画像の読み込みが成功するまで、何も差し込まない**(Codex #8 1巡目 Blocker 2)。
+      既に設定を取得済みの LP が、差し替え・削除で消えた画像キーを持ったまま exit intent を発火させても、
+      `/img/<key>` が 404(または読み込み中にタイムアウト)なら、ここで `loadImage` が reject し、
+      `draw()` ごと失敗する(quiet() が外側で握る)。**DOM 挿入・`shown`・impression のどれも成立しない**
+      = fail-closed(壊れた画像リンクを訪問者に見せない)。
+    ⚠ **既知の限界**(本PRでは作らない猶予保持の代わり): 差し替え・削除の直後にちょうど発火した訪問者は、
+      そのページを再読み込みするまでポップが出ない(README に書く)。
+  */
+  if (isImage && imageElement !== null) {
+    await loadImage(win, imageElement, imageUrl as string, IMAGE_LOAD_TIMEOUT_MS);
+  }
+
+  // 🔴 差し込む直前のフォーカス位置(上の注記どおり、待った**あと**に読む)。
+  previouslyFocused = doc.activeElement as HTMLElement | null;
   const parent = doc.body ?? doc.documentElement;
   parent.appendChild(host);
   doc.addEventListener("keydown", onKeyDown);
