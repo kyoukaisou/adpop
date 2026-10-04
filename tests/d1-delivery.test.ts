@@ -56,7 +56,7 @@ async function variantKeyOf(variantId: string): Promise<string> {
     .public_key;
 }
 
-const text = (headline: string) => ({ headline, body: "", buttonLabel: "" });
+const text = (headline: string) => ({ headline, body: "", buttonLabel: "", imageAlt: "" });
 
 beforeAll(async () => {
   t = await openTestD1();
@@ -204,7 +204,11 @@ describe("配信: siteConfig", () => {
 
   it.each([
     ["アーカイブしたパターン", "update variants set archived_at = '2026-01-01T00:00:00.000Z' where id = ?1", "update variants set archived_at = null where id = ?1"],
-    ["画像型のパターン(埋め込みがまだ描けない = PR4)", "update variants set kind = 'image' where id = ?1", "update variants set kind = 'text' where id = ?1"],
+    [
+      "画像型だが画像が未設定のパターン(PR4a でも配らない。配信の壊れたポップを作らないため)",
+      "update variants set kind = 'image' where id = ?1",
+      "update variants set kind = 'text' where id = ?1",
+    ],
     ["🕐 chatbot のパターン(v1.1)", "update variants set kind = 'chatbot' where id = ?1", "update variants set kind = 'text' where id = ?1"],
   ])("🔴 %s は配らない", async (_label, breakSql, restoreSql) => {
     await db.prepare(breakSql).bind(ref.variantIdA2).run();
@@ -216,15 +220,43 @@ describe("配信: siteConfig", () => {
     }
   });
 
-  it("🔴 `content` に無関係な鍵を入れても、配信の応答には出ない(出てよい鍵の集合ちょうど)", async () => {
+  it("✅ 画像が設定された画像型パターンは配る(PR4a。配信と稼働の切り替えが同じ定義を使う)", async () => {
+    const key = `images/${"d".repeat(32)}.png`;
+    await db
+      .prepare("update variants set kind = 'image', content = ?2 where id = ?1")
+      .bind(ref.variantIdA2, JSON.stringify({ headline: "もう1つの案", body: "", buttonLabel: "", imageAlt: "説明", imageKey: key }))
+      .run();
+    try {
+      const c = (await config(ref.siteKeyA, ORIGIN_A))!;
+      expect(c.popup.variants.map((v) => v.key).sort()).toEqual([ref.variantKeyA, ref.variantKeyA2].sort());
+      const variant = c.popup.variants.find((v) => v.key === ref.variantKeyA2)!;
+      expect(variant.kind).toBe("image");
+      expect(variant.content).toEqual({ headline: "もう1つの案", body: "", buttonLabel: "", imageAlt: "説明", imageKey: key });
+    } finally {
+      await db
+        .prepare("update variants set kind = 'text', content = ?2 where id = ?1")
+        .bind(ref.variantIdA2, JSON.stringify({ headline: "もう1つの案", body: "", buttonLabel: "" }))
+        .run();
+    }
+  });
+
+  it("🔴 `content` に無関係な鍵を入れても、配信の応答には出ない(出てよい鍵の集合ちょうど。imageKey/imageAlt は PR4a で足した)", async () => {
     await db.prepare("update variants set content = ?2 where id = ?1").bind(
       ref.variantIdA,
-      JSON.stringify({ headline: "見出し", body: "本文", buttonLabel: "押す", internalNote: "社外秘", ownerEmail: "a@example.test", imageKey: "images/x.png" }),
+      JSON.stringify({
+        headline: "見出し",
+        body: "本文",
+        buttonLabel: "押す",
+        imageAlt: "説明",
+        imageKey: `images/${"a".repeat(32)}.png`,
+        internalNote: "社外秘",
+        ownerEmail: "a@example.test",
+      }),
     ).run();
     try {
       const c = (await config(ref.siteKeyA, ORIGIN_A))!;
       const variant = c.popup.variants.find((v) => v.key === ref.variantKeyA)!;
-      expect(Object.keys(variant.content).sort()).toEqual(["body", "buttonLabel", "headline"]);
+      expect(Object.keys(variant.content).sort()).toEqual(["body", "buttonLabel", "headline", "imageAlt", "imageKey"]);
       expect(JSON.stringify(c)).not.toContain("社外秘");
       expect(JSON.stringify(c)).not.toContain("a@example.test");
     } finally {

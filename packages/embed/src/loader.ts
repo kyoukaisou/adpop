@@ -394,6 +394,7 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
         device: ctx.device,
         pageUrl,
         impressionId: uuid(ctx.win),
+        deliveryOrigin: ctx.deliveryOrigin,
       });
     });
   }

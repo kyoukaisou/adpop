@@ -23,7 +23,7 @@ function value<T>(result: admin.Result<T>): T {
 
 const variantInput = (n: number): admin.VariantInput => ({
   kind: "text",
-  content: { headline: `案${n}`, body: "", buttonLabel: "" },
+  content: { headline: `案${n}`, body: "", buttonLabel: "", imageAlt: "" },
   destinationUrl: `https://offer.example.com/${n}`,
 });
 

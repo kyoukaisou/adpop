@@ -62,7 +62,13 @@ type PopupRow = {
 type TriggerRow = { kind: string; threshold: number | null };
 type VariantRow = { public_key: string; kind: string; weight: number; content: string; destination_url: string };
 
-/** 表示に要る鍵だけを名指しで取り出す(`content` を丸ごと渡さない)。null と欠けた鍵は落とす。 */
+/**
+ * 表示に要る鍵だけを名指しで取り出す(`content` を丸ごと渡さない)。null と欠けた鍵は落とす。
+ * 🔴 **`imageKey` / `imageAlt` を足した(PR4a)**。画像型(§4-3 B)の配信に要る——
+ *   埋め込みの本体(`packages/embed/src/runtime.ts`)が描くのに使うのは、この関数が返す鍵だけ。
+ *   ⚠ ここに無い鍵(`internalNote` 等)は、DB に何が入っていても配信の応答に出ない
+ *     (`tests/d1-delivery.test.ts` の「出てよい鍵の集合ちょうど」)。
+ */
 function pickContent(raw: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -73,7 +79,7 @@ function pickContent(raw: string): Record<string, unknown> {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
   const source = parsed as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  for (const key of ["headline", "body", "buttonLabel"]) {
+  for (const key of ["headline", "body", "buttonLabel", "imageKey", "imageAlt"]) {
     if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
   }
   return out;
@@ -119,8 +125,8 @@ export async function siteConfig(env: DeliveryBindings, siteKey: string, origin:
       .prepare(`select kind, threshold from popup_triggers where enabled = 1 and popup_id = (${ACTIVE_POPUP})`)
       .bind(siteKey, origin),
     /*
-      ⚠ 配らないもの: アーカイブ済み / 画像型(埋め込みがまだ描けない = PR4)/ 🕐 chatbot(v1.1)。
-        「配れる」の定義は `admin.ts` の稼働の切り替えと同じ(DELIVERABLE_VARIANT)。
+      ⚠ 配らないもの: アーカイブ済み / 画像が未設定の画像型(§4-3 B。アップロードしていない=配っても壊れたポップになる)/
+        🕐 chatbot(v1.1)。「配れる」の定義は `admin.ts` の稼働の切り替えと同じ(DELIVERABLE_VARIANT)。
       ⚠ 並びは決定的だが「作った順」とは限らない(同じ時刻の行は id の順)。PR5 の割り当てはこの並びに依存させない。
     */
     db
@@ -164,8 +170,14 @@ export async function siteConfig(env: DeliveryBindings, siteKey: string, origin:
   };
 }
 
-/** 配信に載るバリアントの条件(SQL の断片)。**配信と稼働の切り替えが同じ1つを使う。** */
-export const DELIVERABLE_VARIANT = "archived_at is null and kind = 'text'";
+/**
+ * 配信に載るバリアントの条件(SQL の断片)。**配信と稼働の切り替えが同じ1つを使う。**
+ * 🔴 **画像型は `imageKey` が入っているものだけ配る**(PR4a。発注の決まりごと「画像が未設定の画像パターンは
+ *   配信しない」)。アップロードしていない画像パターンを配ると、埋め込みの本体が描けずに
+ *   壊れたポップを出すか(2枚目の関門で)何も出さないことになる——どちらも「出せる」と見せかけるだけ無駄。
+ */
+export const DELIVERABLE_VARIANT =
+  "archived_at is null and (kind = 'text' or (kind = 'image' and json_extract(content, '$.imageKey') is not null))";
 
 export type RecordOutcome = { ok: true; stored: boolean } | { ok: false; reason: string };
 

@@ -2,9 +2,11 @@
   ADPOP の本体 —— **発火が決まってから取りに行く側**(要件書 §4-1 の2段構え)。
   MIT(このディレクトリのみ)。
 
-  🔴 **見た目は仮置き。** 枠・閉じるボタン・見出し・本文・ボタンだけ。
-    **デザインは PR3 で、実寸のモックを承認してから**入れる
-    (見た目を変える修正は、実物の寸法で見せて合意してから書く)。
+  🔴 **テキスト型(§4-3 A)の見た目は仮置き**。枠・閉じるボタン・見出し・本文・ボタンだけ。
+    デザインは別の工程(実寸のモックの承認)を通してから入れる。
+  🔴 **画像型(§4-3 B)は 2026-10-04 追補 v2 の実寸モック(拓実さん承認済み)に合わせた**(PR4a)。
+    画像全体が1つのリンクで、閉じるボタンは独立した要素。見た目を変える修正は、実物の寸法で
+    見せて合意してから書く(組織の運転ルール)。
     ⚠ ここに色や余白を足すときは、必ずその工程を通す。
 
   🔴 **埋め込み先の CSS と混ざらない**(要件書 §5-2):
@@ -19,7 +21,7 @@
     見出し・本文・ボタン文言は **`textContent` にしか入れない**。`innerHTML` を使わない。
 */
 import { readBridge, TEXT_LIMITS, type Bridge, type CloseReason, type RenderRequest } from "./bridge";
-import { isSafeDestination, textOf } from "./frequency";
+import { imageUrlOf, isSafeDestination, textOf } from "./frequency";
 
 export const ADPOP_RUNTIME_VERSION = "0.1.0";
 
@@ -63,6 +65,42 @@ const STYLE = `
 }
 /* 🔴 フォーカスリングを消さない(キーボードで操作できることが分かる) */
 .cta:focus-visible, .close:focus-visible { outline: 2px solid #1a1a1a; outline-offset: 2px; }
+
+/*
+  ── 画像型(§4-3 B)。実寸モック(2026-10-04 追補 v2)の決定に合わせた ───────
+  🔴 画像の高さは固定しない。比率どおりに高さが決まり、画面の高さの70%(スマホで検算した値)を
+    超えたときだけ縮んで、そのときだけ左右に余白が出る(帯は出さない)。
+*/
+/* 🔴 実寸モック(06a〜06e)に合わせた値(text 型の 20rem/角丸 .5rem とは別の値)。 */
+.image-panel {
+  padding: 0; max-width: 22rem; border: 0; border-radius: 1rem; overflow: hidden;
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,.25), 0 8px 10px -6px rgba(0,0,0,.2);
+}
+.image-link { position: relative; display: block; }
+.image-link:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.image {
+  display: block; width: 100%; height: auto; max-height: 70vh;
+  object-fit: contain; background: #f2f1ec;
+}
+.image-overlay {
+  position: absolute; inset: 0; background: rgba(0,0,0,0); pointer-events: none;
+  transition: background-color .15s;
+}
+.image-link:hover .image-overlay { background: rgba(0,0,0,.18); }
+@media (prefers-reduced-motion: reduce) { .image-overlay { transition: none; } }
+/* 🔴 閉じるボタンは画像に重なるため独立した要素(押し間違えない間隔・44px 以上を維持) */
+.close-image {
+  position: absolute; top: .75rem; right: .75rem;
+  min-width: 2.75rem; min-height: 2.75rem;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55); border: 0; border-radius: 50%;
+  font-size: 1rem; color: #fff; cursor: pointer;
+}
+.close-image:hover { background: rgba(0,0,0,.7); }
+.close-image:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.footer { padding: 1.25rem 1rem 1rem; }
+.footer .headline { margin: 0 0 .75rem; }
+.footer .cta { margin: 0; }
 `;
 
 type Win = Window & typeof globalThis;
@@ -117,7 +155,21 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   const content = request.variant.content ?? {};
   const headline = textOf(content.headline, TEXT_LIMITS.headline);
   const body = textOf(content.body, TEXT_LIMITS.body);
-  const buttonLabel = textOf(content.buttonLabel, TEXT_LIMITS.buttonLabel) || FALLBACK_BUTTON_LABEL;
+  const rawButtonLabel = textOf(content.buttonLabel, TEXT_LIMITS.buttonLabel);
+  const buttonLabel = rawButtonLabel || FALLBACK_BUTTON_LABEL;
+  const imageAlt = textOf(content.imageAlt, TEXT_LIMITS.imageAlt);
+  const isImage = request.variant.kind === "image";
+
+  /*
+    🔴 **画像型の2枚目の関門**(要件書 §5-3 の「保存時と描画時の両方で検査する」と同じ考え方)。
+      配信(`DELIVERABLE_VARIANT`)は「`imageKey` が入っている画像型」だけを配るが、
+      **この本体は配信の判定を信用しない** —— ローダを通さずに `bridge.request` を直接
+      書き替えられた状態(上の `tests/embed-flow.test.ts` の「2枚目」と同じ経路)でも、
+      形が崩れていれば何も描かない。
+    ⚠ ここで throw すると `render()` は `bridge.shown` を立てない(=「出せなかった」が伝わる)。
+  */
+  const imageUrl = isImage ? imageUrlOf(request.deliveryOrigin, content.imageKey) : null;
+  if (isImage && imageUrl === null) throw new Error("adpop: invalid image variant");
 
   const host = doc.createElement("div");
   // ⚠ LP の CSS が拾える手掛かりを1つだけ残す(ポップの存在は隠さない)
@@ -132,44 +184,102 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   backdrop.className = "backdrop";
 
   const panel = doc.createElement("div");
-  panel.className = "panel";
+  panel.className = isImage ? "panel image-panel" : "panel";
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-modal", "true");
 
   const closeButton = doc.createElement("button");
-  closeButton.className = "close";
+  closeButton.className = isImage ? "close-image" : "close";
   closeButton.type = "button";
   // 🔴 記号だけに意味を持たせない —— スクリーンリーダーには「閉じる」と読ませる
   closeButton.setAttribute("aria-label", "閉じる");
   closeButton.textContent = "✕";
-  panel.appendChild(closeButton);
 
+  let heading: HTMLHeadingElement | null = null;
   if (headline !== "") {
-    const heading = doc.createElement("h2");
+    heading = doc.createElement("h2");
     heading.className = "headline";
     heading.id = "adpop-headline";
     heading.textContent = headline;
-    panel.appendChild(heading);
-    // 見出しが在るならそれをダイアログの名前にする(二重に読ませない)
+  }
+
+  // ダイアログの名前。見出し > (画像型なら)画像の説明 > 既定の "お知らせ" の順(二重に読ませない)。
+  if (heading !== null) {
     panel.setAttribute("aria-labelledby", heading.id);
+  } else if (isImage && imageAlt !== "") {
+    panel.setAttribute("aria-label", imageAlt);
   } else {
     panel.setAttribute("aria-label", DIALOG_LABEL);
   }
 
-  if (body !== "") {
-    const paragraph = doc.createElement("p");
-    paragraph.className = "body";
-    paragraph.textContent = body;
-    panel.appendChild(paragraph);
-  }
+  // 画像リンクの名前(アクセシブルネーム)。**空にはしない**(imageAlt → headline → buttonLabel の順)。
+  const imageLinkLabel = imageAlt || headline || buttonLabel;
 
-  const cta = doc.createElement("a");
-  cta.className = "cta";
-  // 🔴 描画の直前にもう一度確かめた URL しかここへ来ない(上の isSafeDestination)
-  cta.href = request.variant.destinationUrl;
-  cta.rel = "noopener noreferrer";
-  cta.textContent = buttonLabel;
-  panel.appendChild(cta);
+  let imageLink: HTMLAnchorElement | null = null;
+  let cta: HTMLAnchorElement | null = null;
+
+  if (isImage) {
+    /*
+      ── 画像型(§4-3 B・2026-10-04 追補 v2)─────────────────────────
+      🔴 **画像全体が1つのリンク**(拓実さん指示「画像やGIF自体がボタンの役割を果たす」)。
+        ボタンは任意 —— ボタン文言が空なら画像だけのバナー、入っていれば画像の下にも同じ遷移先の
+        ボタンを出す(同じ href を指す**別々の `<a>`**。入れ子にしない)。
+    */
+    imageLink = doc.createElement("a");
+    imageLink.className = "image-link";
+    imageLink.href = request.variant.destinationUrl;
+    imageLink.rel = "noopener noreferrer";
+    imageLink.setAttribute("aria-label", imageLinkLabel);
+
+    const img = doc.createElement("img");
+    img.className = "image";
+    img.src = imageUrl as string;
+    // ⚠ 画像の説明は <a> の aria-label が持つ(1つの画像に2つの名前を付けない)
+    img.alt = "";
+    imageLink.appendChild(img);
+
+    const overlay = doc.createElement("div");
+    overlay.className = "image-overlay";
+    imageLink.appendChild(overlay);
+
+    panel.appendChild(imageLink);
+    panel.appendChild(closeButton);
+
+    // フッター(見出し・ボタン)。どちらも無ければフッターそのものを出さない(画像だけのバナー)。
+    if (heading !== null || rawButtonLabel !== "") {
+      const footer = doc.createElement("div");
+      footer.className = "footer";
+      if (heading !== null) footer.appendChild(heading);
+      if (rawButtonLabel !== "") {
+        cta = doc.createElement("a");
+        cta.className = "cta";
+        cta.href = request.variant.destinationUrl;
+        cta.rel = "noopener noreferrer";
+        cta.textContent = buttonLabel;
+        footer.appendChild(cta);
+      }
+      panel.appendChild(footer);
+    }
+  } else {
+    // ── テキスト型(既存の見た目。§4-3 A)────────────────────────
+    panel.appendChild(closeButton);
+    if (heading !== null) panel.appendChild(heading);
+
+    if (body !== "") {
+      const paragraph = doc.createElement("p");
+      paragraph.className = "body";
+      paragraph.textContent = body;
+      panel.appendChild(paragraph);
+    }
+
+    cta = doc.createElement("a");
+    cta.className = "cta";
+    // 🔴 描画の直前にもう一度確かめた URL しかここへ来ない(上の isSafeDestination)
+    cta.href = request.variant.destinationUrl;
+    cta.rel = "noopener noreferrer";
+    cta.textContent = buttonLabel;
+    panel.appendChild(cta);
+  }
 
   backdrop.appendChild(panel);
   shadow.appendChild(backdrop);
@@ -198,7 +308,10 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
     }
     if (event.key !== "Tab") return;
     quiet(() => {
-      const focusable: HTMLElement[] = [closeButton, cta];
+      // ⚠ **閉じ込める要素はここで決める**(フォーカスできる要素を足したら、ここにも足す)。
+      const focusable = ([closeButton, imageLink, cta] as (HTMLElement | null)[]).filter(
+        (el): el is HTMLElement => el !== null,
+      );
       const index = focusable.indexOf(shadow.activeElement as HTMLElement);
       // ⚠ ポップの外に居るなら、まず中へ引き戻す(index が -1 のとき)
       const next = event.shiftKey
@@ -242,12 +355,15 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
   backdrop.addEventListener("click", (event) => {
     if (event.target === backdrop) close("backdrop");
   });
-  cta.addEventListener("click", () => {
-    /*
-      ⚠ **`preventDefault` を呼ばない。** 遷移はブラウザに任せ、送信は `sendBeacon` に任せる
-        (遷移で中断されない = そのための API)。
-      ⚠ 同じ表示で何度押されても**その数だけ**記録する(要件書 §4-7。CTR は畳んで出す)。
-    */
+
+  /*
+    ⚠ **`preventDefault` を呼ばない。** 遷移はブラウザに任せ、送信は `sendBeacon` に任せる
+      (遷移で中断されない = そのための API)。
+    ⚠ 同じ表示で何度押されても**その数だけ**記録する(要件書 §4-7。CTR は畳んで出す)。
+    🔴 **画像型は「画像リンク」「ボタン」が別々の `<a>`**(同じ遷移先)。どちらを押しても
+      「ポップ内の誘導リンク / ボタンの押下」として同じ `click` イベントを送る(どちらで押したかは分けない)。
+  */
+  const sendClick = (): void => {
     send?.({
       kind: "click",
       popupKey: request.popupKey,
@@ -257,7 +373,9 @@ function draw(win: Win, doc: Document, bridge: Bridge, request: RenderRequest): 
       device: request.device,
       pageUrl: request.pageUrl,
     });
-  });
+  };
+  imageLink?.addEventListener("click", sendClick);
+  cta?.addEventListener("click", sendClick);
 
   const parent = doc.body ?? doc.documentElement;
   parent.appendChild(host);

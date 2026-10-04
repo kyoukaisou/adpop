@@ -83,12 +83,19 @@ export function parseVariant(body: unknown): Parsed<VariantInput> {
   if (!exactKeys(body, ["kind", "content", "destinationUrl"])) return { ok: false, field: "body" };
   if (body.kind !== "text" && body.kind !== "image") return { ok: false, field: "kind" };
   const content = body.content;
-  if (!exactKeys(content, ["headline", "body", "buttonLabel"])) return { ok: false, field: "content" };
-  for (const key of ["headline", "body", "buttonLabel"] as const) {
+  if (!exactKeys(content, ["headline", "body", "buttonLabel", "imageAlt"])) return { ok: false, field: "content" };
+  for (const key of ["headline", "body", "buttonLabel", "imageAlt"] as const) {
     const v = content[key];
     if (typeof v !== "string" || v.length > TEXT_LIMITS[key]) return { ok: false, field: key };
   }
   if (!isHttpsUrl(body.destinationUrl)) return { ok: false, field: "destinationUrl" };
+  const buttonLabel = (content.buttonLabel as string).trim();
+  const imageAlt = (content.imageAlt as string).trim();
+  /*
+    🔴 **画像の説明は、画像型かつボタン文言が空のときだけ必須**(2026-10-04 追補v2 §7-7-1 の5番)。
+      ⚠ **1枚目の関門**(入口)。2枚目は `src/lib/data/admin.ts` の `requiresImageAlt`(API を直叩きしても素通りしない)。
+  */
+  if (body.kind === "image" && buttonLabel === "" && imageAlt === "") return { ok: false, field: "imageAlt" };
   return {
     ok: true,
     value: {
@@ -96,7 +103,8 @@ export function parseVariant(body: unknown): Parsed<VariantInput> {
       content: {
         headline: (content.headline as string).trim(),
         body: (content.body as string).trim(),
-        buttonLabel: (content.buttonLabel as string).trim(),
+        buttonLabel,
+        imageAlt,
       },
       destinationUrl: body.destinationUrl,
     },

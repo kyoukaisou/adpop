@@ -508,13 +508,13 @@ export async function getVariant(source: DbSource, ownerId: string, variantId: s
 
 export type VariantInput = {
   kind: VariantKind;
-  content: { headline: string; body: string; buttonLabel: string };
+  content: { headline: string; body: string; buttonLabel: string; imageAlt: string };
   destinationUrl: string;
 };
 
 /**
- * 🔴 `content` の JSON は**3欄から自分で組み直す**(呼び出し側のオブジェクトを `stringify` しない)。
- *   型は3欄でも、実行時には何でも通る。そのまま入れると `imageKey` を外から書けた(security 監査 M6)。
+ * 🔴 `content` の JSON は**4欄から自分で組み直す**(呼び出し側のオブジェクトを `stringify` しない)。
+ *   型は4欄でも、実行時には何でも通る。そのまま入れると `imageKey` を外から書けた(security 監査 M6)。
  *   `imageKey` を書けるのは `setVariantImage` だけ。
  */
 function textContent(input: VariantInput): string {
@@ -523,7 +523,22 @@ function textContent(input: VariantInput): string {
     headline: text(input.content?.headline),
     body: text(input.content?.body),
     buttonLabel: text(input.content?.buttonLabel),
+    imageAlt: text(input.content?.imageAlt),
   });
+}
+
+/**
+ * 🔴 **画像の説明(`imageAlt`)は、画像型かつボタン文言が空のときだけ必須**
+ *   (2026-10-04 追補v2 §7-7-1 の5番。画像だけのバナーでは、空のままだと読み上げの手がかりが
+ *   汎用文言(`buttonLabel` の既定値)だけになる)。
+ *   ⚠ **保存 API(画面側)だけに置かない** —— ここ(データ層)でも断る、という2枚目の関門
+ *   (`src/admin/body.ts` が1枚目)。この層は「API を直叩きしても素通りしない」ための場所(M6 と同じ考え方)。
+ * ⚠ **DB の CHECK には入れていない**(限界として記録): SQLite の CHECK は同じ行の他の列を
+ *   参照できるので条件自体は書けるが、**既存の表に CHECK を追加するには表の再生成が要り**、
+ *   0002 の「追加だけ」の方針(security 監査 M9)と緊張する。v1 はこの2枚(body.ts + ここ)を正とする。
+ */
+function requiresImageAlt(input: VariantInput): boolean {
+  return input.kind === "image" && input.content?.buttonLabel?.trim() === "" && input.content?.imageAlt?.trim() === "";
 }
 
 
@@ -536,6 +551,7 @@ export async function createVariant(
 ): Promise<Result<{ id: string }>> {
   const db = resolveDb(source);
   if (!isHttpsUrl(input.destinationUrl)) return invalid("destinationUrl");
+  if (requiresImageAlt(input)) return invalid("imageAlt");
   const id = crypto.randomUUID();
   return write(async () => {
     await db
@@ -561,6 +577,7 @@ export async function updateVariant(
 ): Promise<Result<null>> {
   const db = resolveDb(source);
   if (!isHttpsUrl(input.destinationUrl)) return invalid("destinationUrl");
+  if (requiresImageAlt(input)) return invalid("imageAlt");
   const result = await write(() =>
     db
       .prepare(

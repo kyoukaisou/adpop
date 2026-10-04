@@ -658,3 +658,175 @@ describe("表示(本体)", () => {
     expect((win as unknown as Record<string, Bridge | undefined>)[NAMESPACE]).toBeUndefined();
   });
 });
+
+describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
+  const IMAGE_KEY = `images/${"e".repeat(32)}.png`;
+  const IMAGE_URL = `${DELIVERY}/img/${"e".repeat(32)}.png`;
+
+  async function showImage(content: Record<string, unknown>): Promise<void> {
+    stubNetwork({
+      config: configBody({
+        variants: [
+          {
+            key: VARIANT_KEY,
+            kind: "image",
+            weight: 100,
+            content,
+            destinationUrl: "https://offer.example.com/a",
+          },
+        ],
+      }),
+    });
+    installTag();
+    await bootLoader();
+    exitIntent();
+    await flush();
+    await bootRuntime();
+  }
+
+  it("✅ 画像だけのバナー(ボタン文言が空)。画像全体が1つのリンクで、閉じるボタンは独立している", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "秋の新作キャンペーン", imageKey: IMAGE_KEY });
+
+    const root = popup() as ShadowRoot;
+    const link = root.querySelector(".image-link") as HTMLAnchorElement;
+    expect(link, "画像リンクが無い").not.toBeNull();
+    expect(link.getAttribute("href")).toBe("https://offer.example.com/a");
+    // 🔴 名前=alt。画像の説明がそのままリンクの名前になる
+    expect(link.getAttribute("aria-label")).toBe("秋の新作キャンペーン");
+    expect(link.querySelector("img")?.getAttribute("src")).toBe(IMAGE_URL);
+    // ⚠ 画像自身の alt は空(アクセシブルネームは <a> の aria-label が持つ。1つの画像に2つの名前を付けない)
+    expect(link.querySelector("img")?.getAttribute("alt")).toBe("");
+    // ボタン文言が空なので、フッター(見出し・ボタン)は出ない
+    expect(root.querySelector(".footer")).toBeNull();
+    expect(root.querySelector(".cta")).toBeNull();
+    // 閉じるボタンは独立した要素で、画像リンクの入れ子ではない
+    const close = root.querySelector(".close-image") as HTMLElement;
+    expect(close, "閉じるボタンが無い").not.toBeNull();
+    expect(link.contains(close)).toBe(false);
+    expect(close.getAttribute("aria-label")).toBe("閉じる");
+    // ダイアログの名前は画像の説明(見出しが無いので)
+    expect(root.querySelector(".panel")?.getAttribute("aria-label")).toBe("秋の新作キャンペーン");
+  });
+
+  it("✅ 画像+ボタン。画像リンクとボタンは同じ遷移先を指す別々の <a>(入れ子にしない)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+
+    const root = popup() as ShadowRoot;
+    const link = root.querySelector(".image-link") as HTMLAnchorElement;
+    const cta = root.querySelector(".footer .cta") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://offer.example.com/a");
+    expect(cta.getAttribute("href")).toBe("https://offer.example.com/a");
+    expect(link.contains(cta)).toBe(false);
+    expect(cta.textContent).toBe("友だち追加");
+    // imageAlt が空でもボタン文言があるので、画像リンクの名前はボタン文言に落ちる(空にはしない)
+    expect(link.getAttribute("aria-label")).toBe("友だち追加");
+  });
+
+  it("🔴 画像と誘導リンク(ボタン)のどちらを押しても click が記録される", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    (root.querySelector(".image-link") as HTMLElement).click();
+    (root.querySelector(".footer .cta") as HTMLElement).click();
+    await flush();
+
+    const clicks = sent.filter((e) => e.kind === "click");
+    expect(clicks).toHaveLength(2);
+  });
+
+  it("🔴 `imageKey` の形が崩れている(2枚目の関門)と、何も描かない・表示も数えない", async () => {
+    /*
+      🔴 配信(DELIVERABLE_VARIANT)は imageKey が入った画像型だけを配るが、
+        本体はそれを信用せず**描画の直前にもう一度確かめる**(要件書 §5-3 と同じ考え方)。
+        ローダを通さずに `bridge.request` を直接書き替えた状態と同じ経路で撃つ。
+    */
+    (win as unknown as Record<string, unknown>)[NAMESPACE] = {
+      version: "test",
+      request: {
+        popupKey: POPUP_KEY,
+        variant: {
+          key: VARIANT_KEY,
+          kind: "image",
+          weight: 100,
+          content: { imageKey: "../../etc/passwd" },
+          destinationUrl: "https://offer.example.com/a",
+        },
+        triggerKind: "exit_intent",
+        visitorHash: "0".repeat(32),
+        device: "desktop",
+        pageUrl: "https://lp.example.com/lp",
+        impressionId: "aaaaaaaa-0000-0000-0000-000000000003",
+        deliveryOrigin: DELIVERY,
+      },
+      send: (event: EventPayload) => sent.push(event),
+    } satisfies Bridge;
+
+    await bootRuntime();
+
+    expect(doc.querySelector("[data-adpop]"), "崩れた imageKey なのに描いてしまった").toBeNull();
+    expect(sent, "描いていないのにイベントを送った").toEqual([]);
+  });
+
+  it("🔴 `deliveryOrigin` が欠けていると、同じく描かない(配信ホストが無ければ画像 URL を組めない)", async () => {
+    (win as unknown as Record<string, unknown>)[NAMESPACE] = {
+      version: "test",
+      request: {
+        popupKey: POPUP_KEY,
+        variant: {
+          key: VARIANT_KEY,
+          kind: "image",
+          weight: 100,
+          content: { imageKey: IMAGE_KEY },
+          destinationUrl: "https://offer.example.com/a",
+        },
+        triggerKind: "exit_intent",
+        visitorHash: "0".repeat(32),
+        device: "desktop",
+        pageUrl: "https://lp.example.com/lp",
+        impressionId: "aaaaaaaa-0000-0000-0000-000000000004",
+        // ⚠ deliveryOrigin を渡さない
+      },
+      send: (event: EventPayload) => sent.push(event),
+    } satisfies Bridge;
+
+    await bootRuntime();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+  });
+
+  it("a11y: Tab は 閉じる → 画像リンク → ボタン → (末尾から戻る)の順に閉じ込める", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "友だち追加", imageAlt: "", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    const close = root.querySelector(".close-image") as HTMLElement;
+    const link = root.querySelector(".image-link") as HTMLElement;
+    const cta = root.querySelector(".footer .cta") as HTMLElement;
+    expect(root.activeElement, "開いたら閉じるボタンにフォーカスが移る").toBe(close);
+
+    const tab = () => doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    tab();
+    expect(root.activeElement).toBe(link);
+    tab();
+    expect(root.activeElement).toBe(cta);
+    tab();
+    expect(root.activeElement, "末尾から先頭へ戻る(背後へ抜けない)").toBe(close);
+  });
+
+  it("Esc で閉じる(画像型でも§4-3の共通)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY });
+    doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape" }));
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+    expect(sent.at(-1)?.kind).toBe("close");
+    expect(sent.at(-1)?.closeReason).toBe("esc");
+  });
+
+  it("背景タップでも閉じる(§4-3の共通)", async () => {
+    await showImage({ headline: "", body: "", buttonLabel: "", imageAlt: "説明", imageKey: IMAGE_KEY });
+    const root = popup() as ShadowRoot;
+    (root.querySelector(".backdrop") as HTMLElement).click();
+    await flush();
+
+    expect(doc.querySelector("[data-adpop]")).toBeNull();
+    expect(sent.at(-1)?.closeReason).toBe("backdrop");
+  });
+});

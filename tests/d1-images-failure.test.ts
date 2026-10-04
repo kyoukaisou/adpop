@@ -47,7 +47,7 @@ async function newVariant(siteId: string, archived = false): Promise<string> {
   if (!popup.ok) throw new Error("準備に失敗");
   const variant = await admin.createVariant(t.db, OWNER_A, popup.value.id, {
     kind: "image",
-    content: { headline: "", body: "", buttonLabel: "" },
+    content: { headline: "", body: "", buttonLabel: "", imageAlt: "説明" },
     destinationUrl: "https://offer.example.com/",
   });
   if (!variant.ok) throw new Error("準備に失敗");
