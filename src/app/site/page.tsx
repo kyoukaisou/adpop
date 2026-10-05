@@ -2,14 +2,18 @@
 
 /*
   サイト内・ポップ一覧(画面設計 §3-3)。
-  ⚠ 表示/クリック/閉じた の集計値は、管理 API にまだ集計を返すエンドポイントが無い
-    (events テーブルはあるが admin.ts に読む関数が無い)。実在しない数字を "0" と見せると
-    「0件」に読めてしまう事故になる(§3-3 の成約列の裁定と同じ理由)ので、プレースホルダ「—」を出す。
+  🔴 表示/クリック/閉じた の集計値は `GET /sites/:siteId/popups/stats`(PR5a)から読む。
+    一覧は `sevenDay`、アーカイブ済み・完全削除の確認は `lifetime`(ADPOP-画面設計.md の決め)。
+    取得そのものが失敗(通信失敗・500・503)したら `stats` を `null` にし、`formatStatCount`/
+    `deleteConfirmStatsText` が「—」を返す(0件と取得失敗を混同しない。P-011)。
+    site・popups の取得失敗(loadError/reloadError)とは**別に**扱う——集計が落ちても
+    一覧自体は表示できる(集計の列・削除確認の文言だけが「—」になる)。
 */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { deleteJson, getJson, postJson, putJson } from "../_lib/api";
 import { ApiPopup, ApiSite, POPUP_LIMIT } from "../_lib/types";
+import { ApiPopupStatsMap, deleteConfirmStatsText, formatStatCount } from "../_lib/stats";
 import { Header } from "../_components/Header";
 import { Breadcrumb } from "../_components/Breadcrumb";
 import { Loading } from "../_components/Loading";
@@ -42,6 +46,10 @@ function SiteContent() {
 
   const [site, setSite] = useState<ApiSite | null>(null);
   const [popups, setPopups] = useState<ApiPopup[] | null>(null);
+  // 🔴 集計(表示・クリック・閉じた)は site/popups とは別の fetch。取得できなければ null にし、
+  //   一覧自体の表示は妨げない(「APIが終わっている」前提を鵜呑みにせず、画面が読む値ごとに
+  //   取得の成否を分けて持つ——§2026-10-04-09 の型と同じ考え方)。
+  const [stats, setStats] = useState<ApiPopupStatsMap | null>(null);
   const [loadError, setLoadError] = useState(false);
   // 🔴 Codex 5巡目: 最初の読み込みと、一度表示した後の再取得(各種操作後のload())を区別する。
   //   このページは元々再取得失敗でも一覧を消していなかったが、文言と扱いをポップ編集画面と揃える。
@@ -59,9 +67,10 @@ function SiteContent() {
 
   const load = useCallback(async () => {
     if (siteId === "") return;
-    const [siteResult, popupsResult] = await Promise.all([
+    const [siteResult, popupsResult, statsResult] = await Promise.all([
       getJson<ApiSite>(`/sites/${siteId}`),
       getJson<ApiPopup[]>(`/sites/${siteId}/popups`),
+      getJson<ApiPopupStatsMap>(`/sites/${siteId}/popups/stats`),
     ]);
     if (!siteResult.ok || !popupsResult.ok) {
       const next = nextLoadErrorState(false, loadedOnceRef.current);
@@ -74,6 +83,9 @@ function SiteContent() {
     loadedOnceRef.current = true;
     setSite(siteResult.data);
     setPopups(popupsResult.data);
+    // 🔴 集計の失敗は一覧自体のエラーにしない。失敗したら null(= 「—」表示)に戻す
+    //   (前回の値を残すと、取得できていないのに古い数字が出続ける)。
+    setStats(statsResult.ok ? statsResult.data : null);
   }, [siteId]);
 
   useEffect(() => {
@@ -283,9 +295,9 @@ function SiteContent() {
                       </div>
                       <div className="mb-3 text-sm font-medium text-ink">{popup.name}</div>
                       <div className="flex gap-5 font-mono text-xs text-ink/60">
-                        <span>表示 <span className="text-ink">—</span></span>
-                        <span>クリック <span className="text-ink">—</span></span>
-                        <span>閉じた <span className="text-ink">—</span></span>
+                        <span>表示 <span className="text-ink">{formatStatCount(stats, popup.id, "sevenDay", "impression")}</span></span>
+                        <span>クリック <span className="text-ink">{formatStatCount(stats, popup.id, "sevenDay", "click")}</span></span>
+                        <span>閉じた <span className="text-ink">{formatStatCount(stats, popup.id, "sevenDay", "close")}</span></span>
                       </div>
                     </div>
                   ))}
@@ -310,9 +322,15 @@ function SiteContent() {
                             <PopupStatusChip status={popup.status} />
                           </td>
                           <td className="px-3 py-3.5 text-sm font-medium text-ink">{popup.name}</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">—</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">—</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">—</td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">
+                            {formatStatCount(stats, popup.id, "sevenDay", "impression")}
+                          </td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">
+                            {formatStatCount(stats, popup.id, "sevenDay", "click")}
+                          </td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink">
+                            {formatStatCount(stats, popup.id, "sevenDay", "close")}
+                          </td>
                           <td className="px-5 py-3.5">
                             <div className="flex justify-end gap-4 text-sm font-medium">
                               <a
@@ -386,9 +404,15 @@ function SiteContent() {
                       {archived.map((popup) => (
                         <tr key={popup.id}>
                           <td className="px-5 py-3.5 text-sm font-medium text-ink/60">{popup.name}</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">—</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">—</td>
-                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">—</td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">
+                            {formatStatCount(stats, popup.id, "lifetime", "impression")}
+                          </td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">
+                            {formatStatCount(stats, popup.id, "lifetime", "click")}
+                          </td>
+                          <td className="px-3 py-3.5 text-right font-mono text-sm text-ink/60">
+                            {formatStatCount(stats, popup.id, "lifetime", "close")}
+                          </td>
                           <td className="px-5 py-3.5">
                             <div className="flex justify-end gap-4 text-sm font-medium">
                               <button
@@ -431,7 +455,7 @@ function SiteContent() {
       {deleteTarget && (
         <ConfirmDeleteDialog
           name={deleteTarget.name}
-          stats={null}
+          stats={deleteConfirmStatsText(stats, deleteTarget.id)}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={handleDelete}
         />

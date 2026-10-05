@@ -27,3 +27,33 @@ body {
 .font-mono {
   font-variant-numeric: tabular-nums;
 }
+
+/*
+  🔴 アップロード進捗バー(VariantCard)。管理画面の CSP(style-src)が unsafe-inline を
+  許していないため、幅を `style={{ width }}` で動かす実装から `<progress>` の value/max 属性に
+  変えた(外部スタイルシート=ここ はinline styleではないのでCSPの対象外)。見た目(高さ6px・
+  角丸・track=line色・bar=ink色)は元のdiv実装に揃える。
+*/
+.upload-progress {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  border: none;
+  border-radius: 9999px;
+  overflow: hidden;
+  background-color: var(--color-line);
+}
+.upload-progress::-webkit-progress-bar {
+  background-color: transparent;
+  border-radius: 9999px;
+}
+.upload-progress::-webkit-progress-value {
+  background-color: var(--color-ink);
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+.upload-progress::-moz-progress-bar {
+  background-color: var(--color-ink);
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
