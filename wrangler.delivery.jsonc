@@ -1,9 +1,7 @@
 // 配信の Worker(`/api/v1/config`・`/api/v1/events`・`/embed/*`)。
 // 管理画面は別の Worker(PR3b)。**配信の不具合と管理画面の不具合を切り離す**ため(D-296 3)。
 //
-// ⚠ `database_id` はまだ無い(Cloudflare 側に D1 を作っていない)。ローカル(wrangler dev / Miniflare)は
-//   この値を識別子として使うだけなので、形が UUID ならそのまま動く。
-//   本番に出すときは `wrangler d1 create adpop` の出力の id に差し替える(README「Cloudflare に立てる」)。
+// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。D-344)の id(docs/deploy.md §2)。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adpop-delivery",
@@ -27,7 +25,7 @@
     {
       "binding": "DB",
       "database_name": "adpop",
-      "database_id": "00000000-0000-4000-8000-000000000000",
+      "database_id": "2d56e040-2e9a-4cb2-b431-2829cb488a96",
       "migrations_dir": "db/migrations"
     }
   ],

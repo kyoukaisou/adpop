@@ -22,13 +22,12 @@ let siteKey = "";
 let popupKey = "";
 
 beforeAll(async () => {
-  // 🔴 実物の `wrangler.delivery.jsonc` は一切書き換えない。`build.command`(deploy 前に
-  //   database_id の仮の値を断る検査を含む)は `unstable_startWorker` でも走るが、このリポジトリは
-  //   本番の D1 をまだ作っていないので `database_id` は仮の値のまま(docs/deploy.md §2)。
-  //   その検査自体は `tests/admin-config.test.ts` で別途固定済みなので、ここでは本番には
+  // 🔴 実物の `wrangler.delivery.jsonc` は一切書き換えない。`database_id` は本番の D1(D-344)の
+  //   id を指している(docs/deploy.md §2)ので、このテストで本番に触らないよう、本番には
   //   deploy できない形の一時設定(`createTestWorkerConfig`。Worker 名・D1/R2 とも本番とは
-  //   絶対に一致しない)を使う。`build.command` が本来担っていた `build:embed`
-  //   (/embed/t.js を配るための束ね)は、ここで明示的に実行してから worker を起動する。
+  //   絶対に一致しない)を使う。`build.command`(deploy 前に database_id の仮の値を断る検査を含む)
+  //   の検査自体は `tests/admin-config.test.ts` で別途固定済み。`build.command` が本来担っていた
+  //   `build:embed`(/embed/t.js を配るための束ね)は、ここで明示的に実行してから worker を起動する。
   execFileSync(process.execPath, ["scripts/build-embed.mjs"], { cwd: REPO_ROOT, stdio: "pipe" });
   testConfig = createTestWorkerConfig(DELIVERY_WRANGLER_PATH);
 
