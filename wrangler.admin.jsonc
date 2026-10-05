@@ -10,6 +10,12 @@
   "name": "adpop-admin",
   "main": "src/admin/worker.ts",
   "compatibility_date": "2026-09-30",
+  // 🔴 `wrangler deploy` は `out/` をそのまま配り、`_headers` の有無を見ない(security 監査 P1)。
+  //   `next build` だけで止めた `out/` を deploy すると CSP 無しで本番に出る(fail-open)。
+  //   deploy の前に必ず「埋め込み → next build → _headers 組み立て → CSP の有無を見る検査」の
+  //   全工程(`npm run build && node scripts/check-admin-headers.mjs`)を通す。
+  //   `NEXT_PUBLIC_DELIVERY_ORIGIN` はこのコマンドを呼ぶシェルの環境変数で渡す(docs/deploy.md)。
+  "build": { "command": "npm run build && node scripts/check-admin-headers.mjs" },
   // 🔴 既定値に頼らず明示する(security 監査 M7)。
   //   Version URL(preview_urls)は、修正前の版を本番の secret と D1 のまま動かし続けるので切る。
   "workers_dev": true,

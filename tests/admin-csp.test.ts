@@ -43,12 +43,21 @@ function directiveTokens(csp: string, name: string): string[] {
   return directive.slice(name.length + 1).split(" ");
 }
 
+const originalDeliveryOrigin = process.env.NEXT_PUBLIC_DELIVERY_ORIGIN;
+
 beforeAll(async () => {
   // 🔴 実物の `next build` を実際に走らせてから `_headers` を作る(手で書いた値・固定した
   //   サンプルHTMLではなく、ビルドが実際に出す HTML を検査する)。
   const env = { ...process.env, NEXT_PUBLIC_DELIVERY_ORIGIN: DELIVERY_ORIGIN_FOR_TEST };
   execFileSync("npx", ["next", "build"], { cwd: REPO_ROOT, env, stdio: "pipe" });
   execFileSync(process.execPath, [path.join(REPO_ROOT, "scripts/build-admin-headers.mjs")], { cwd: REPO_ROOT, env, stdio: "pipe" });
+
+  // 🔴 `wrangler.admin.jsonc` の `build.command`(本番前の総点検 P1 で追加)は `wrangler dev` /
+  //   `unstable_startWorker` でも走る(Wrangler Custom builds の仕様)。このプロセスの
+  //   `process.env` を直接書き換えないと、wrangler が内部で起動する build がここより下の
+  //   `DELIVERY_ORIGIN_FOR_TEST` を持たずに `out/_headers` を上書きし、直前に作った `_headers`
+  //   が消える(img-src から配信元が抜ける)。
+  process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = DELIVERY_ORIGIN_FOR_TEST;
 
   worker = await unstable_startWorker({
     config: ADMIN_WRANGLER_PATH,
@@ -59,6 +68,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await worker?.dispose();
+  if (originalDeliveryOrigin === undefined) {
+    delete process.env.NEXT_PUBLIC_DELIVERY_ORIGIN;
+  } else {
+    process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = originalDeliveryOrigin;
+  }
 });
 
 describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
