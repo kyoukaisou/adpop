@@ -1,13 +1,21 @@
+"use client";
+
 /*
-  管理画面(PR3b)が入るまでの仮のページ。
-  このページが在る理由は、`next build` と `npm run typecheck` が
-  「App Router のアプリとして成立していること」を毎 PR 測れる状態にするため。
-  ⚠ 配信(`/api/v1/*`・`/embed/*`)はこのアプリではなく、配信の Worker(`src/delivery/worker.ts`)。
+  ルート。セッションがあれば /sites へ、無ければ /login へ送るだけ(静的書き出しなので判定はクライアント側)。
 */
+import { useEffect } from "react";
+import { getJson } from "./_lib/api";
+
 export default function Home() {
+  useEffect(() => {
+    getJson("/session").then((res) => {
+      window.location.href = res.ok ? "/sites" : "/login";
+    });
+  }, []);
+
   return (
-    <main>
-      <h1>ADPOP</h1>
+    <main className="flex min-h-screen items-center justify-center">
+      <h1 className="sr-only">ADPOP</h1>
     </main>
   );
 }

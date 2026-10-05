@@ -56,3 +56,8 @@ Copyright (c) 2026 kyoukaisou
 ⚠ **なぜ放置しなかったか**: 要件書 §5-6 は**他社の判定結果**
 (Plausible = `agpl-3.0` / PostHog = `NOASSERTION`)を根拠に使っている。
 **自分が `NOASSERTION` 側に立ったままだと、その根拠と矛盾する。**
+
+## 同梱しているフォント(PR3c)
+
+`public/fonts/*.woff2`(IBM Plex Sans / IBM Plex Mono)は **SIL Open Font License 1.1**
+(再配布・改変・商用利用が自由なライセンス)。本体のコードのライセンス(MIT / AGPL-3.0)とは別物。

@@ -1,4 +1,4 @@
-// 管理画面の Worker(いまは API `/api/admin/*` だけ。画面 = Next の静的書き出しは、見本の承認後の PR で静的配信に載せる)。
+// 管理画面の Worker(API `/api/admin/*` + Next の静的書き出し = PR3c で画面が入った)。
 // 配信の Worker(wrangler.delivery.jsonc)とは別。**配信の不具合と管理画面の不具合を切り離す**(D-296)。
 //
 // 🔴 **秘密はここに書かない**(ADMIN_PASSWORD_HASH / ADMIN_EMAIL / ADMIN_OWNER_ID / ADMIN_RATE_LIMIT_KEY)。
@@ -14,6 +14,9 @@
   //   Version URL(preview_urls)は、修正前の版を本番の secret と D1 のまま動かし続けるので切る。
   "workers_dev": true,
   "preview_urls": false,
+  // 🔴 `/api/*` だけ Worker を先に走らせる(Hono)。それ以外は Next の静的書き出し(`out/`)を静的配信する
+  //   (ADPOP-PR3b-設計 改訂v2 §0)。静的ファイルがある URL は Worker を起こさず配る(課金されない)。
+  "assets": { "directory": "./out", "run_worker_first": ["/api/*"] },
   "d1_databases": [
     {
       "binding": "DB",

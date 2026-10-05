@@ -1,0 +1,29 @@
+@import "tailwindcss";
+@import "./fonts.css";
+
+/*
+  ADPOP 管理画面 — デザイントークン(notes/プロダクト事業部/ADPOP-画面設計.md §1 のとおり)。
+  🔴 色は6個のみ。`signal` は「稼働中」だけ、`danger` は取り消せない操作・エラーだけに使う(他には使わない)。
+  和文は system-ui(游ゴシック/ヒラギノ)に委ね、IBM Plex Sans/Mono はラテン文字・数字だけに効く
+  (フォントの unicode-range がラテン圏のみを指しているため、自然に役割分担になる)。
+*/
+@theme {
+  --font-sans: "IBM Plex Sans", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+
+  --color-ink: #12161c;
+  --color-paper: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-line: #dde1e6;
+  --color-signal: #0f766e;
+  --color-signal-soft: #e3f2f0;
+  --color-danger: #b91c1c;
+  --color-danger-soft: #fbe9e9;
+}
+
+body {
+  font-feature-settings: "tnum" 1;
+}
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
