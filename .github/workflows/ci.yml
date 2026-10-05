@@ -58,13 +58,28 @@ jobs:
       - name: build
         run: npm run build
 
-      # 🔴 両 Worker の build.command は、本番の D1 を作るまで `database_id` が仮の値のままなら
-      #   deploy 前の検査(check-database-ids-match.mjs)で落ちる(このリポジトリは Cloudflare の
-      #   実リソースをまだ作っていないので、現状は常にこの状態。docs/deploy.md §2)。
-      #   `CI_DRY_RUN=1` は「本番 deploy の確認ではない」ことを明示する専用のフラグで、
-      #   仮の値どうしが一致している場合に限って通す(実際の id の不一致はこれでも通らない)。
-      #   このフラグは、ここと `tests/*.test.ts` の `unstable_startWorker` 呼び出しの前以外では設定しない
-      #   (本番の `wrangler deploy` には絶対に渡さないこと)。
+      # 🔴 両 Worker の build.command には、本番向けの検査(database_id の仮の値を断る・
+      #   配信元が deploy/delivery-origin.txt の確定値と完全一致するかを見る)を**省略する経路が
+      #   無い**(前巡の `CI_DRY_RUN` フラグは、そのフラグを立てたまま `wrangler deploy` を直接
+      #   実行すれば本番でも検査を回避できる欠陥だったため削除した。Codex r3 Blocker)。
+      #   このリポジトリはまだ本番の D1 を作っておらず(database_id は仮の値のまま)、配信元も
+      #   確定していない(deploy/delivery-origin.txt は UNSET のまま。docs/deploy.md §2・§5)ので、
+      #   CI がこのまま dry-run しても検査は必ず落ちる。
+      #   このステップは、**コミットしない一時的な書き換え**を CI ジョブのワークスペースの中だけに行い、
+      #   検査を通常の経路のまま(省略せず)満たす。使う値は本番の値になりえない形にする:
+      #   - `database_id` には `.workers.dev`/UUID のどちらにも見えない固定の文字列を使う
+      #   - 配信元には RFC 2606 が予約する `.invalid` ドメインを使う(Cloudflare は絶対にこの
+      #     ドメインを発行しないので、本番の値と構文的にも衝突しない)
+      #   ジョブが終わればランナーごと消えるので、これらの値がコミットや本番の deploy に渡ることは無い。
+      #   ⚠ 既に本番の database_id / 確定した配信元がコミットされていれば(deploy 後)、下の sed は
+      #   何も一致せず素通りする(real な値のまま検査されるのが正しい挙動)。
+      - name: database_id・配信元に CI 専用の値を一時的に入れる(コミットしない)
+        run: |
+          sed -i 's/00000000-0000-4000-8000-000000000000/ci-dryrun-not-a-real-database-id/' \
+            wrangler.delivery.jsonc wrangler.admin.jsonc
+          if [ "$(cat deploy/delivery-origin.txt)" = "UNSET" ]; then
+            printf '%s' "https://adpop-delivery.ci-dryrun.invalid" > deploy/delivery-origin.txt
+          fi
 
       # 配信の Worker を、デプロイと同じ束ね方で束ねる(アップロードはしない = 認証は要らない)。
       # ⚠ 束ねられないもの(Node 専用の import など)はここで落ちる。
@@ -72,21 +87,13 @@ jobs:
         run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/delivery-worker" -c wrangler.delivery.jsonc
         env:
           WRANGLER_SEND_METRICS: "false"
-          CI_DRY_RUN: "1"
 
-      # 🔴 管理画面の build.command は、`NEXT_PUBLIC_DELIVERY_ORIGIN` が
-      #   `deploy/delivery-origin.txt` の確定値と完全一致しないと deploy 前の検査
-      #   (check-admin-headers.mjs)で落ちる(docs/deploy.md §5・§6)。このファイルは
-      #   本番の配信元を確定するまで `UNSET` のままで、CI は実際の account 名を知らないので
-      #   比べられる値を持たない。`CI_DRY_RUN=1` を立てて「配信元が確定値と一致しているか」の
-      #   検査だけを省略する(CSP の形・ビルド出力への埋め込みの検査は省略しない。
-      #   ダミー値はそれらを exercise するためだけに渡す)。
-      #   `deploy/delivery-origin.txt` に実際の値が入った後は、このステップで
-      #   `NEXT_PUBLIC_DELIVERY_ORIGIN: $(cat deploy/delivery-origin.txt)` に変えて
-      #   `CI_DRY_RUN` を外すのが筋が良い(確定値そのものは公開情報なので CI に出しても問題ない)。
+      # 🔴 `NEXT_PUBLIC_DELIVERY_ORIGIN` は、1つ前のステップで(必要なら)書き換えた
+      #   `deploy/delivery-origin.txt` の値と完全一致させる(シェルでファイルから読む。
+      #   YAML の `env:` は静的な文字列しか書けないため、ここは `run:` の中で評価する)。
       - name: 管理画面の Worker を束ねる(dry-run)
-        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/admin-worker" -c wrangler.admin.jsonc
+        run: |
+          NEXT_PUBLIC_DELIVERY_ORIGIN="$(cat deploy/delivery-origin.txt)" \
+            npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/admin-worker" -c wrangler.admin.jsonc
         env:
           WRANGLER_SEND_METRICS: "false"
-          CI_DRY_RUN: "1"
-          NEXT_PUBLIC_DELIVERY_ORIGIN: "https://adpop-delivery.ci-dryrun.workers.dev"

@@ -5,10 +5,11 @@
   `wrangler.delivery.jsonc` / `wrangler.admin.jsonc` の `build.command` から両方で呼ぶ
   (どちらを先に deploy してもこの検査を通る)。
 
-  ⚠ `CI_DRY_RUN=1` のときだけ、**両方が仮の値のまま一致している**(= まだ D1 を作っていないだけで、
-  config が壊れているわけではない)場合に限って許可する。実際の値のずれ(仮の値どうしでも違う値・
-  片方だけ仮の値・一致しない実在値)は `CI_DRY_RUN=1` でも通さない。この変数は
-  `.github/workflows/ci.yml` の dry-run ステップ以外では設定しない(本番の deploy では絶対に渡さないこと)。
+  🔴 **省略する経路は無い。** 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま
+  `wrangler deploy` を直接実行すれば本番でも仮の値を許してしまう欠陥だったため削除した
+  (Codex r3 Blocker)。CI は、この2ファイルを書き換える代わりに、実行するジョブのワークスペースの
+  中だけで仮の値を CI 専用の実在しない値(コミットしない)に一時的に置き換えてから、この検査を
+  **通常の経路のまま**通す(`.github/workflows/ci.yml` 参照)。
 */
 import { databaseIdMismatchProblems } from "./database-id-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./wrangler-config.mjs";
@@ -22,16 +23,6 @@ const adminDatabaseId = admin.d1_databases?.[0]?.database_id;
 const problems = databaseIdMismatchProblems({ deliveryDatabaseId, adminDatabaseId });
 
 if (problems.length > 0) {
-  const onlyPlaceholderAndEqual =
-    problems.every((p) => p.kind === "placeholder") && deliveryDatabaseId === adminDatabaseId;
-
-  if (process.env.CI_DRY_RUN === "1" && onlyPlaceholderAndEqual) {
-    console.log(
-      "OK  (CI_DRY_RUN=1) database_id は仮の値のまま揃っている。本番の D1 を作るまでの既知の状態として許可する(docs/deploy.md 参照)。",
-    );
-    process.exit(0);
-  }
-
   for (const problem of problems) console.error(`NG  ${problem.message}`);
   console.error("\n両方の wrangler.*.jsonc の d1_databases[0].database_id を、本番の D1 の id に差し替えてください(docs/deploy.md §2)。");
   process.exit(1);

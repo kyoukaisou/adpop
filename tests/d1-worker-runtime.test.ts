@@ -6,28 +6,31 @@
 //     ② **設定(wrangler.delivery.jsonc)どおりに** D1 のバインドと静的配信がつながる
 //     ③ 埋め込みスクリプトが `/embed/t.js` で配られ、キャッシュの指定(`_headers`)が載る
 //   ⚠ D1 はローカルの複写(型紙 = 本番と同じ `wrangler d1 migrations apply` の結果)。本番の D1 ではない。
+import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
 import * as admin from "../src/lib/data/admin";
 import { openTestD1, OWNER_A, type TestD1 } from "./helpers/d1";
-import { DELIVERY_WRANGLER_PATH } from "./helpers/wrangler-config";
+import { createTestWorkerConfig, DELIVERY_WRANGLER_PATH, REPO_ROOT } from "./helpers/wrangler-config";
 
 const ORIGIN = "https://lp.example.com";
 
 let t: TestD1;
 let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
+let testConfig: ReturnType<typeof createTestWorkerConfig>;
 let siteKey = "";
 let popupKey = "";
 
-const originalCiDryRun = process.env.CI_DRY_RUN;
-
 beforeAll(async () => {
-  // 🔴 `wrangler.delivery.jsonc` の `build.command`(deploy 前に database_id の仮の値を断る検査を含む)
-  //   は `unstable_startWorker` でも走る。このリポジトリは本番の D1 をまだ作っていないので
-  //   `database_id` は仮の値のまま(docs/deploy.md §2)。ここはテスト用のローカル D1 への接続を見る
-  //   目的で、本番 deploy の確認ではないので `CI_DRY_RUN=1` を立てて通す
-  //   (`scripts/check-database-ids-match.mjs` 参照。実際の id の不一致はこれでも通らない)。
-  process.env.CI_DRY_RUN = "1";
+  // 🔴 実物の `wrangler.delivery.jsonc` は一切書き換えない。`build.command`(deploy 前に
+  //   database_id の仮の値を断る検査を含む)は `unstable_startWorker` でも走るが、このリポジトリは
+  //   本番の D1 をまだ作っていないので `database_id` は仮の値のまま(docs/deploy.md §2)。
+  //   その検査自体は `tests/admin-config.test.ts` で別途固定済みなので、ここでは `build` を外した
+  //   一時ファイルを使い、`unstable_startWorker` がカスタムビルドを一切起動しないようにする。
+  //   `build.command` が本来担っていた `build:embed`(/embed/t.js を配るための束ね)は、ここで明示的に
+  //   実行してから worker を起動する。
+  execFileSync(process.execPath, ["scripts/build-embed.mjs"], { cwd: REPO_ROOT, stdio: "pipe" });
+  testConfig = createTestWorkerConfig(DELIVERY_WRANGLER_PATH);
 
   // 同じ永続化ディレクトリにデータを置いてから、Worker をそこへ向けて起動する
   t = await openTestD1();
@@ -47,7 +50,7 @@ beforeAll(async () => {
   popupKey = (await db.prepare("select public_key from popups").first<{ public_key: string }>())!.public_key;
 
   worker = await unstable_startWorker({
-    config: DELIVERY_WRANGLER_PATH,
+    config: testConfig.path,
     dev: {
       // ⚠ ここは `--persist-to` と同じ根(`v3` は wrangler が足す)。getPlatformProxy とは渡し方が違う
       persist: t.persistDir,
@@ -63,8 +66,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await worker?.dispose();
   await t?.dispose();
-  if (originalCiDryRun === undefined) delete process.env.CI_DRY_RUN;
-  else process.env.CI_DRY_RUN = originalCiDryRun;
+  testConfig?.cleanup();
 });
 
 describe("配信の Worker(workerd で起動)", () => {

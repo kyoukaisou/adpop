@@ -6,22 +6,23 @@
   `scripts/delivery-origin-guard.mjs`(配信元の確定値との一致)の2本だけが持つ
   (テストで「落ちる例」と「通る例」の両方を固定してある)。
 
-  `wrangler.admin.jsonc` の `build.command` から呼ぶ(deploy の直前に必ず走る)。
+  🔴 **省略する経路は無い。** `wrangler.admin.jsonc` の `build.command` から呼ぶ(deploy の直前に
+  必ず走る)。`deploy/delivery-origin.txt` が `UNSET`(未確定)のままなら必ず非ゼロで終わる
+  (Codex r3 Blocker: 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま `wrangler deploy` を
+  直接実行すれば本番でも検査を回避できてしまう欠陥だったため削除した)。
+  CI は、このファイルを書き換える代わりに、実行するジョブのワークスペースの中だけで
+  `deploy/delivery-origin.txt` と `NEXT_PUBLIC_DELIVERY_ORIGIN` に CI 専用の値(コミットしない)を
+  一時的に入れてから、この検査を**通常の経路のまま**通す(`.github/workflows/ci.yml` 参照)。
+
   手元で確かめるときは:
   NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npm run build \
     && node scripts/check-admin-headers.mjs
-
-  ⚠ `CI_DRY_RUN=1` のときだけ、`deploy/delivery-origin.txt` が未確定(`UNSET`)でも
-  「配信元が確定値と一致しているか」の検査だけを省略する(CSP の形・ビルド出力への埋め込みの
-  検査は省略しない)。CI はバンドルが壊れていないかを見るためのものであり、まだ実在しない
-  本番の origin とは比べられないため。この変数は `.github/workflows/ci.yml` の dry-run ステップ
-  以外では設定しない(本番の deploy では絶対に渡さないこと)。
 */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { deliveryOriginEmbeddedProblems, headersGuardProblems } from "./admin-headers-guard.mjs";
-import { deliveryOriginGuardProblems, readExpectedDeliveryOrigin, UNSET_DELIVERY_ORIGIN } from "./delivery-origin-guard.mjs";
+import { deliveryOriginGuardProblems, readExpectedDeliveryOrigin } from "./delivery-origin-guard.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = path.join(REPO_ROOT, "out");
@@ -38,7 +39,6 @@ try {
 
 const deliveryOrigin = (process.env.NEXT_PUBLIC_DELIVERY_ORIGIN ?? "").replace(/\/$/, "");
 const expectedOrigin = readExpectedDeliveryOrigin();
-const ciDryRun = process.env.CI_DRY_RUN === "1";
 
 /** `dir` 以下の `.js` ファイルの中身を全部集める(ビルドのチャンク名はハッシュ付きで固定できないため)。 */
 function collectJsContents(dir) {
@@ -60,16 +60,8 @@ function collectJsContents(dir) {
 const problems = [
   ...headersGuardProblems({ headersContent, deliveryOrigin }),
   ...deliveryOriginEmbeddedProblems({ deliveryOrigin, fileContents: collectJsContents(NEXT_DIR) }),
+  ...deliveryOriginGuardProblems({ actualOrigin: deliveryOrigin, expectedOrigin }),
 ];
-
-const skipConfirmationCheck = ciDryRun && expectedOrigin.trim() === UNSET_DELIVERY_ORIGIN;
-if (skipConfirmationCheck) {
-  console.log(
-    `OK  (CI_DRY_RUN=1) deploy/delivery-origin.txt が ${UNSET_DELIVERY_ORIGIN} のため、配信元の確定チェックは省略する。`,
-  );
-} else {
-  problems.push(...deliveryOriginGuardProblems({ actualOrigin: deliveryOrigin, expectedOrigin }));
-}
 
 if (problems.length > 0) {
   for (const problem of problems) {

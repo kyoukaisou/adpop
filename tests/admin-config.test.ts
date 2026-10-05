@@ -57,7 +57,8 @@ describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker
   it("現在のリポジトリの状態: 両方とも仮の値のまま一致している(本番 D1 を作る前の既知の状態)", () => {
     // ⚠ これは「合格」ではない。`wrangler d1 create adpop` の後、両ファイルを実際の id に
     //   差し替えるまでの間、意図してこの状態になっている(docs/deploy.md §2)。
-    //   deploy 前の検査(check-database-ids-match.mjs)はこの状態を CI_DRY_RUN=1 の時だけ通す。
+    //   deploy 前の検査(check-database-ids-match.mjs)は省略する経路を持たないので、
+    //   本番の `wrangler deploy` はこの状態のままでは必ず止まる。
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
     expect(delivery.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);

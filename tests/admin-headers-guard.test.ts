@@ -38,9 +38,10 @@ describe("headersGuardProblems", () => {
     expect(headersGuardProblems({ headersContent: content, deliveryOrigin: ORIGIN })).toEqual([]);
   });
 
-  it("通る例: 配信元を渡さない(空文字)ときは img-src の検査を見ない(=その項目では落とさない)", () => {
+  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(Codex r3 Blocker)", () => {
     const content = buildRealHeaders(undefined);
-    expect(headersGuardProblems({ headersContent: content, deliveryOrigin: "" })).toEqual([]);
+    const problems = headersGuardProblems({ headersContent: content, deliveryOrigin: "" });
+    expect(problems.some((p) => p.includes("渡されていない"))).toBe(true);
   });
 
   it("落ちる例: `/*` のルールが無い(next build だけで止めた out/ を想定)", () => {
@@ -135,7 +136,8 @@ describe("deliveryOriginEmbeddedProblems", () => {
     expect(problems.length).toBeGreaterThan(0);
   });
 
-  it("配信元を渡さない(空文字)ときは、ここでは何も言わない", () => {
-    expect(deliveryOriginEmbeddedProblems({ deliveryOrigin: "", fileContents: [] })).toEqual([]);
+  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(Codex r3 Blocker)", () => {
+    const problems = deliveryOriginEmbeddedProblems({ deliveryOrigin: "", fileContents: [] });
+    expect(problems.some((p) => p.includes("渡されていない"))).toBe(true);
   });
 });

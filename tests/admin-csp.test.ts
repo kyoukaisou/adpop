@@ -15,8 +15,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
 import { REPO_ROOT } from "../scripts/build-admin-headers.mjs";
+import { ADMIN_WRANGLER_PATH, createTestWorkerConfig } from "./helpers/wrangler-config";
 
-const ADMIN_WRANGLER_PATH = path.join(REPO_ROOT, "wrangler.admin.jsonc");
 const DELIVERY_ORIGIN_FOR_TEST = "https://adpop-delivery.example-test.workers.dev";
 
 let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
@@ -43,8 +43,7 @@ function directiveTokens(csp: string, name: string): string[] {
   return directive.slice(name.length + 1).split(" ");
 }
 
-const originalDeliveryOrigin = process.env.NEXT_PUBLIC_DELIVERY_ORIGIN;
-const originalCiDryRun = process.env.CI_DRY_RUN;
+let testConfig: ReturnType<typeof createTestWorkerConfig>;
 
 beforeAll(async () => {
   // 🔴 実物の `next build` を実際に走らせてから `_headers` を作る(手で書いた値・固定した
@@ -53,21 +52,18 @@ beforeAll(async () => {
   execFileSync("npx", ["next", "build"], { cwd: REPO_ROOT, env, stdio: "pipe" });
   execFileSync(process.execPath, [path.join(REPO_ROOT, "scripts/build-admin-headers.mjs")], { cwd: REPO_ROOT, env, stdio: "pipe" });
 
-  // 🔴 `wrangler.admin.jsonc` の `build.command`(本番前の総点検 P1 で追加)は `wrangler dev` /
-  //   `unstable_startWorker` でも走る(Wrangler Custom builds の仕様)。このプロセスの
-  //   `process.env` を直接書き換えないと、wrangler が内部で起動する build がここより下の
-  //   `DELIVERY_ORIGIN_FOR_TEST` を持たずに `out/_headers` を上書きし、直前に作った `_headers`
-  //   が消える(img-src から配信元が抜ける)。
-  process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = DELIVERY_ORIGIN_FOR_TEST;
-  // 🔴 `deploy/delivery-origin.txt` はこのリポジトリではまだ `UNSET`(本番の配信元を確定していない)。
-  //   `check-admin-headers.mjs`(配信元の確定チェック)・`check-database-ids-match.mjs`
-  //   (database_id の仮の値チェック)はどちらもここで非ゼロで終わる設計なので、`CI_DRY_RUN=1` を
-  //   立てて「本番 deploy の確認ではない」ことを明示する(docs/deploy.md 参照。実際の id の
-  //   不一致・本物の配信元との不一致はこれでも通らない)。
-  process.env.CI_DRY_RUN = "1";
+  // 🔴 本物の `wrangler.admin.jsonc` は一切書き換えない。`build.command`(deploy 前の検査を含む)は
+  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、このリポジトリはまだ
+  //   本番の D1・配信元を確定していない(docs/deploy.md §2・§5)ので、その検査は必ず非ゼロで終わる。
+  //   この検査自体は `tests/admin-config.test.ts`・`tests/delivery-origin-guard.test.ts` で
+  //   別途固定済みなので、ここでは `build` フィールドを外した一時ファイルを使い、
+  //   `unstable_startWorker` がカスタムビルドを一切起動しないようにする(省略する「経路」を検査
+  //   スクリプト自身には持たせず、この worker はそもそも検査を呼ばない設定で動かす)。
+  //   `out/` は直前の明示的な build 呼び出しで既に正しい内容になっている。
+  testConfig = createTestWorkerConfig(ADMIN_WRANGLER_PATH);
 
   worker = await unstable_startWorker({
-    config: ADMIN_WRANGLER_PATH,
+    config: testConfig.path,
     dev: { server: { port: 0 }, inspector: false, logLevel: "none", watch: false },
   });
   await worker.ready;
@@ -75,13 +71,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await worker?.dispose();
-  if (originalDeliveryOrigin === undefined) {
-    delete process.env.NEXT_PUBLIC_DELIVERY_ORIGIN;
-  } else {
-    process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = originalDeliveryOrigin;
-  }
-  if (originalCiDryRun === undefined) delete process.env.CI_DRY_RUN;
-  else process.env.CI_DRY_RUN = originalCiDryRun;
+  testConfig?.cleanup();
 });
 
 describe("管理画面の Worker(workerd で起動)が返す CSP", () => {

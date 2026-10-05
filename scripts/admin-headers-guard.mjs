@@ -45,8 +45,13 @@ function directives(csp) {
  * - `/*` ルール自体が無い
  * - `Content-Security-Policy` 行が無い / 空
  * - `script-src` に `'unsafe-inline'` または `'unsafe-eval'` が入っている(設計上使わない。M8)
- * - `img-src` に `deliveryOrigin`(渡された値。空文字なら見ない)がトークンとして入っていない
+ * - `deliveryOrigin` が渡されていない(空文字・未指定)
+ * - `img-src` に `deliveryOrigin` がトークンとして入っていない
  * - `X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy` が無い
+ *
+ * 🔴 **`deliveryOrigin` が空でも検査を省略しない**(Codex r3 Blocker: 前巡は空文字のときに
+ * img-src の検査を黙ってスキップしており、「CSP の形・埋め込みの検査は省略しない」という約束に
+ * 反していた)。
  */
 export function headersGuardProblems({ headersContent, deliveryOrigin }) {
   const problems = [];
@@ -67,7 +72,9 @@ export function headersGuardProblems({ headersContent, deliveryOrigin }) {
       problems.push(`script-src に 'unsafe-inline' または 'unsafe-eval' が入っている: ${scriptSrc}`);
     }
 
-    if (deliveryOrigin) {
+    if (!deliveryOrigin) {
+      problems.push("配信元(NEXT_PUBLIC_DELIVERY_ORIGIN)が渡されていない");
+    } else {
       const imgSrc = directiveList.find((d) => d.startsWith("img-src"));
       if (!imgSrc || !imgSrc.split(" ").includes(deliveryOrigin)) {
         problems.push(`img-src に配信元(${deliveryOrigin})がトークンとして入っていない: ${imgSrc ?? "(img-src 無し)"}`);
@@ -85,14 +92,17 @@ export function headersGuardProblems({ headersContent, deliveryOrigin }) {
 }
 
 /**
- * `deliveryOrigin`(渡された値。空文字なら見ない)の文字列が、ビルドの出力(`_next` の JS 全部)の
- * どこかに実際に埋め込まれているかを見る。CSP の `img-src` だけを見ても、`next build` を
- * `NEXT_PUBLIC_DELIVERY_ORIGIN` 無しで実行すれば `_headers` 側も img-src から配信元が抜けて
- * 整合してしまう(fail-closed だが「渡した値が実際にタグ・サムネイル表示に埋め込まれているか」
- * は別の主張なので、ビルド出力の字面でも確かめる)。
+ * `deliveryOrigin` の文字列が、ビルドの出力(`_next` の JS 全部)のどこかに実際に埋め込まれているかを
+ * 見る。CSP の `img-src` だけを見ても、`next build` を `NEXT_PUBLIC_DELIVERY_ORIGIN` 無しで実行すれば
+ * `_headers` 側も img-src から配信元が抜けて整合してしまう(fail-closed だが「渡した値が実際に
+ * タグ・サムネイル表示に埋め込まれているか」は別の主張なので、ビルド出力の字面でも確かめる)。
+ *
+ * 🔴 `deliveryOrigin` が空でも検査を省略しない(headersGuardProblems と同じ理由。Codex r3 Blocker)。
  */
 export function deliveryOriginEmbeddedProblems({ deliveryOrigin, fileContents }) {
-  if (!deliveryOrigin) return [];
+  if (!deliveryOrigin) {
+    return ["配信元(NEXT_PUBLIC_DELIVERY_ORIGIN)が渡されていない(ビルド出力への埋め込みを確認できない)"];
+  }
   const found = fileContents.some((content) => content.includes(deliveryOrigin));
   if (found) return [];
   return [

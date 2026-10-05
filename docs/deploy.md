@@ -186,29 +186,31 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
   開発中に重いと感じたら、README の「動かし方(開発)」どおり `npm run build` を手で1回だけ走らせてから
   `admin:dev` を使う運用でも構いません(`build.command` はその場合も毎回走り直すので、ビルドが速いなら
   気にしなくて良い程度の差です)。
-- ⚠ **CI の dry-run は `CI_DRY_RUN=1` を立てて、この②・⑤の検査(確定値との一致・仮の値の拒否)だけを
-  省略します**(`.github/workflows/ci.yml`)。CI は実際の account 名も本番の D1 もまだ持たないので、
-  「確定した値と一致しているか」自体を検査できません。①・③・④(CSP の形・ビルド出力への埋め込み・
-  必須ヘッダ)は CI でも通常どおり検査されます。**`CI_DRY_RUN` は CI のこの2ステップ以外(と、
-  `unstable_startWorker` を使う一部のテスト)では設定しません。本番の `wrangler deploy` に
-  このフラグを渡すと、本番でも②・⑤の検査が省略されてしまうので、絶対に渡さないでください。**
+- 🔴 **この5点の検査には、省略する経路が1つも無い。** 本番の `wrangler deploy` に何を渡しても
+  (フラグ・環境変数いずれも)この検査を素通りさせることはできません。
+- ⚠ **CI の dry-run は、検査そのものは省略せず、ジョブのワークスペースの中だけ**(コミットしない)
+  **で `database_id`・配信元を CI 専用の実在しない値に一時的に書き換えてから**、この5点を
+  **通常の経路のまま**満たしています(`.github/workflows/ci.yml`)。CI は実際の account 名も
+  本番の D1 もまだ持たないため、`.invalid`(RFC 2606 の予約ドメイン。Cloudflare が絶対に発行しない
+  形)の配信元と、`.workers.dev`/UUID のどちらにも見えない固定文字列の `database_id` を使います。
+  ジョブが終わればランナーごと消えるので、これらの値が本番の deploy に渡ることはありません。
 - 2026-10-05 実測:
   - `node scripts/check-admin-headers.mjs` を単独で実行し、`out/_headers` を一時的にリネームして退避させると
     `NG  …/out/_headers が無い` で非ゼロ終了し、戻すと `OK` に戻ることを確認した。
   - `deploy/delivery-origin.txt` が `UNSET` のまま `NEXT_PUBLIC_DELIVERY_ORIGIN` に何を渡しても、
-    `NG  配信元がまだ確定していない` で非ゼロ終了することを確認した(`CI_DRY_RUN` 無し)。
+    `NG  配信元がまだ確定していない` で非ゼロ終了することを確認した(フラグ無しの通常の経路)。
   - ファイルに確定値を書いた状態で、1文字違う値・別アカウント名の値を渡すと、どちらも
     `NG  NEXT_PUBLIC_DELIVERY_ORIGIN が…完全には一致しない` で非ゼロ終了することを確認した
     (単体テスト `tests/delivery-origin-guard.test.ts` で、この判定のロジック自体を一度壊して
     テストが落ちることも確認済み)。
-  - `wrangler deploy -c wrangler.admin.jsonc --dry-run` に `CI_DRY_RUN=1` とダミーの
-    `NEXT_PUBLIC_DELIVERY_ORIGIN` を渡すと、確定値チェックを省略した上で成功することを確認した。
-    `CI_DRY_RUN` を外して(ファイルが `UNSET` のまま)実行すると、`ERROR Running custom build … failed`
-    で deploy 自体が止まることを確認した。
   - `wrangler.admin.jsonc` の `database_id` だけを別の値に差し替えて `wrangler deploy -c wrangler.delivery.jsonc --dry-run`
-    を実行すると、`CI_DRY_RUN=1` でも `check-database-ids-match.mjs` が不一致を検出して deploy が
-    止まることを確認した(どちらの Worker を先に deploy しても検査が効く。**仮の値どうしの一致**は
-    `CI_DRY_RUN=1` のときだけ許すが、**実際のずれ**は `CI_DRY_RUN` の有無にかかわらず止まる)。
+    を実行すると、`check-database-ids-match.mjs` が不一致を検出して deploy が止まることを確認した
+    (どちらの Worker を先に deploy しても検査が効く)。
+  - `.github/workflows/ci.yml` と同じ手順(`sed` で `database_id` を CI 専用の値に、`deploy/delivery-origin.txt`
+    が `UNSET` なら `.invalid` の値に一時的に書き換える)を手元で再現し、両 Worker の `wrangler deploy --dry-run`
+    が通常の経路のまま成功することを確認した。その後、書き換えたファイルを元に戻し(`git diff` で
+    差分が無いことを確認)、同じ `wrangler deploy --dry-run -c wrangler.admin.jsonc` をフラグ無しで
+    再実行すると `ERROR Running custom build … failed` で止まることを確認した。
 
 ## 7. secret を投入する(運用者の端末で)
 
