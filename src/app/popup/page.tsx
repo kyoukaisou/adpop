@@ -13,10 +13,13 @@ import { Loading } from "../_components/Loading";
 import { ErrorBanner, FieldError } from "../_components/ErrorBanner";
 import { Toast } from "../_components/Toast";
 import { VariantCard } from "../_components/VariantCard";
+import { UnsavedChangesDialog } from "../_components/UnsavedChangesDialog";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44_V } from "../_lib/a11y";
 import { nextLoadErrorState } from "../_lib/pageLoad";
 import { isPopupSettingsDirty, shouldApplyPopupSettingsFromServer, type Frequency, type PopupSettingsFields } from "../_lib/popupSettingsSync";
+import { useBeforeUnloadGuard, type LeaveGuard } from "../_lib/unsavedChanges";
+import { toggleInSet } from "../_lib/toggleSet";
 
 /**
  * Codex 1巡目 Should fix: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
@@ -91,11 +94,53 @@ function PopupContent() {
   const [draftKeys, setDraftKeys] = useState<string[]>([]);
   const [variantActionError, setVariantActionError] = useState<string | null>(null);
   const archiveInFlightRef = useRef(false);
+  // 🔴 ページを離れるときの確認(パンくず・ログアウト・閉じる/再読み込み。本部発注)。
+  //   既存の判定を集めるだけ(#12 の基準・新しい判定は作らない):
+  //   ①ポップ設定(名前・頻度)の dirty(下の settingsDirty。popupSettingsSync.ts)
+  //   ②各パターンカードの dirty(VariantCard の isDirtyFrom。onDirtyChange で集計)
+  //   ③下書きのパターン枠が1つでもある(draftKeys。「+パターンを追加」を押しただけで
+  //     まだ保存していない枠。isDirtyFrom は baseline が無い下書きを dirty 扱いしない設計
+  //     なので、枠の存在そのものをここで数える——VariantCard 内部に新しい判定は作らない)
+  const [dirtyVariantIds, setDirtyVariantIds] = useState<ReadonlySet<string>>(new Set());
+  const setVariantDirty = useCallback((variantId: string, dirty: boolean) => {
+    setDirtyVariantIds((prev) => toggleInSet(prev, variantId, dirty));
+  }, []);
+
+  // 🔴 Codex r1 Should fix: 保存・アップロード・画像削除の**進行中**(busy)を、dirtyとは別の集合で持つ。
+  //   dirtyの基準は変えない(文字欄の差分のまま)。drafts も含む全カード共通のキーで管理する
+  //   (保存済みカードは variant.id、下書きは draftKeys の key をそのまま使う)。
+  const [busyCardIds, setBusyCardIds] = useState<ReadonlySet<string>>(new Set());
+  const setCardBusy = useCallback((cardId: string, busy: boolean) => {
+    setBusyCardIds((prev) => toggleInSet(prev, cardId, busy));
+  }, []);
 
   const settingsDirty = frequency !== null && isPopupSettingsDirty(settingsBaseline, { name, frequency });
   useEffect(() => {
     settingsDirtyRef.current = settingsDirty;
   });
+
+  const hasUnsavedChanges = settingsDirty || dirtyVariantIds.size > 0 || draftKeys.length > 0;
+  // 🔴 ポップ設定の保存中(settingsSaving)も「進行中」に含める(setSettingsSaving は下のsaveSettings内)。
+  const isBusy = settingsSaving || busyCardIds.size > 0;
+  const blocksLeaving = hasUnsavedChanges || isBusy;
+  const leaveReason: "busy" | "unsaved" | null = isBusy ? "busy" : hasUnsavedChanges ? "unsaved" : null;
+  const { bypassOnce, cancelBypass } = useBeforeUnloadGuard(blocksLeaving);
+
+  // 🔴 パンくず・ログアウトの確認は「既存の確認ダイアログの部品」(`UnsavedChangesDialog` = `Modal`
+  //   の再利用)で出す(window.confirm のような素のブラウザダイアログは使わない)。
+  //   `pendingLeave` に「確認がOKなら実際に行う操作」を1つだけ保持する。
+  //   `proceed` は「実際に離脱(遷移)できたか」を返す(Codex r1 Should fix: ログアウト失敗のように
+  //   離脱できなかった場合、`bypassOnce()` で武装した beforeunload の抑止を `cancelBypass()` で解除する)。
+  const [pendingLeave, setPendingLeave] = useState<{ proceed: () => Promise<boolean> | boolean; reason: "busy" | "unsaved" } | null>(
+    null,
+  );
+  const onBeforeLeave: LeaveGuard = (proceed) => {
+    if (!blocksLeaving) {
+      void proceed();
+      return;
+    }
+    setPendingLeave({ proceed, reason: leaveReason ?? "unsaved" });
+  };
 
   const load = useCallback(async () => {
     if (popupId === "") return;
@@ -211,7 +256,7 @@ function PopupContent() {
   if (popup === null || triggers === null || variants === null || frequency === null) {
     return (
       <>
-        <Header />
+        <Header onBeforeLeave={onBeforeLeave} />
         <main className="mx-auto max-w-[960px] px-6 py-10">
           <Loading label="ポップを読み込み中" />
         </main>
@@ -228,7 +273,7 @@ function PopupContent() {
 
   return (
     <>
-      <Header />
+      <Header onBeforeLeave={onBeforeLeave} />
       <main className="mx-auto max-w-[960px] px-6 py-10">
         <Breadcrumb
           items={[
@@ -236,6 +281,7 @@ function PopupContent() {
             { label: site?.name ?? "", href: site ? `/site?id=${site.id}` : undefined },
             { label: popup.name },
           ]}
+          onBeforeLeave={onBeforeLeave}
         />
 
         {reloadError && (
@@ -450,6 +496,8 @@ function PopupContent() {
                   await load();
                 }}
                 onCancelDraft={null}
+                onDirtyChange={(dirty) => setVariantDirty(variant.id, dirty)}
+                onBusyChange={(busy) => setCardBusy(variant.id, busy)}
               />
             ))}
 
@@ -467,6 +515,7 @@ function PopupContent() {
                 }}
                 onArchived={null}
                 onCancelDraft={() => setDraftKeys((keys) => keys.filter((k) => k !== key))}
+                onBusyChange={(busy) => setCardBusy(key, busy)}
               />
             ))}
 
@@ -486,6 +535,21 @@ function PopupContent() {
       </main>
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
+      {pendingLeave && (
+        <UnsavedChangesDialog
+          reason={pendingLeave.reason}
+          onCancel={() => setPendingLeave(null)}
+          onConfirm={async () => {
+            bypassOnce();
+            const { proceed } = pendingLeave;
+            setPendingLeave(null);
+            // 🔴 Codex r1 Should fix: 実際に離脱(遷移)できなかった(例: ログアウト失敗)なら、
+            //   武装した beforeunload の抑止を解除する(次の離脱でも確認が出るように戻す)。
+            const left = await proceed();
+            if (!left) cancelBypass();
+          }}
+        />
+      )}
     </>
   );
 }

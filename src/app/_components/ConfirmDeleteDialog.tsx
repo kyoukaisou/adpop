@@ -21,7 +21,14 @@ export function ConfirmDeleteDialog({
   onConfirm,
 }: {
   name: string;
-  /** 「表示◯件・クリック◯件・閉じた◯件」の文言。数字が取得できない場合は null。 */
+  /**
+   * 「表示◯件・クリック◯件・閉じた◯件」の文言。
+   * 🔴 Codex r1 Should fix: 「数字が取得できない」場合は、呼び出し側(`stats.ts` の
+   *   `deleteConfirmStatsText`)が各項目を「—」にした文字列を返す(数字が消えることを伝える、
+   *   という確認の目的自体を消さないため)。`null` は「この削除対象にそもそも数字の概念が無い」
+   *   ときだけに使う(現状の呼び出し元=ポップ削除には無い。将来、数字を持たない削除対象の
+   *   ダイアログにこの部品を使い回すときのための枠)。
+   */
   stats: string | null;
   onCancel: () => void;
   onConfirm: () => Promise<void> | void;

@@ -98,6 +98,8 @@ export function VariantCard({
   onSaved,
   onArchived,
   onCancelDraft,
+  onDirtyChange,
+  onBusyChange,
 }: {
   variant: ApiVariant | null;
   isDeliverable: boolean;
@@ -105,6 +107,20 @@ export function VariantCard({
   onSaved: (options?: VariantSavedOptions) => Promise<void> | void;
   onArchived: (() => Promise<void> | void) | null;
   onCancelDraft: (() => void) | null;
+  /**
+   * 🔴 ページを離れるときの確認(本部発注)。このカードの `dirty`(=既存の判定。新しい判定は作らない)を
+   *   そのまま親へ知らせるだけ。下書きカード(variant===null)は呼ばない——`isDirtyFrom` は
+   *   baseline が無い下書きを常に dirty=false にする設計(下のコメント参照)だが、下書きの存在
+   *   そのものは親が `draftKeys` で既に把握しているので、ここで重ねて判定を作らない。
+   */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * 🔴 Codex r1 Should fix: 保存・アップロード・画像削除が**進行中**であることを親へ知らせる。
+   *   `dirty`(=未保存の入力差分)とは別の状態——画像の差し替えのような「即時送信」の操作は
+   *   文字欄が dirty でなくても、送信中に離脱するとリクエストが中断される。下書きカードも
+   *   アップロード中はこれを呼ぶ(dirtyと違い、下書きかどうかを区別しない)。
+   */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const initialBaseline = variant ? extractSyncedFields(variant) : null;
   const [kind, setKind] = useState<ApiVariantKind>(initialBaseline?.kind ?? "text");
@@ -136,6 +152,33 @@ export function VariantCard({
   const imageMissing = kind === "image" && !hasImage;
   const busy = status !== "idle";
   const dirty = isDirtyFrom(baseline, { kind, headline, body, buttonLabel, imageAlt, destinationUrl });
+
+  // 🔴 ページを離れるときの確認(本部発注)。既存の `dirty` をそのまま親へ知らせる。
+  //   `onDirtyChange` を effect の依存に入れると、親が毎レンダーで新しい関数を渡した場合に
+  //   不要な再実行が起きるため、最新の関数は ref で読む(settingsDirtyRef と同じ理由)。
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  });
+  useEffect(() => {
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
+  // アンマウント時(アーカイブ・削除でカードが一覧から消えるとき)に dirty の記録を残さない。
+  useEffect(() => {
+    return () => onDirtyChangeRef.current?.(false);
+  }, []);
+
+  // 🔴 busy(保存・アップロード・画像削除の進行中)も同じ形で親へ伝える(dirtyとは別の状態)。
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  });
+  useEffect(() => {
+    onBusyChangeRef.current?.(busy);
+  }, [busy]);
+  useEffect(() => {
+    return () => onBusyChangeRef.current?.(false);
+  }, []);
 
   // オブジェクトURLの後始末
   useEffect(() => {
@@ -541,9 +584,20 @@ export function VariantCard({
                     <span>アップロード中…</span>
                     <span>{uploadProgress ?? 0}%</span>
                   </div>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-                    <div className="h-full rounded-full bg-ink" style={{ width: `${uploadProgress ?? 0}%` }} />
-                  </div>
+                  {/*
+                    🔴 CSP(管理画面)で style-src に unsafe-inline を許していないため、
+                    幅を `style={{ width }}` で動かす実装は使えない(React の inline style は
+                    CSP の style-src の対象。ブラウザの実装依存を避け、unsafe-inline 無しで
+                    動的な見た目を変える手段として `<progress>` の value/max 属性を使う。
+                    見た目は globals.css の `.upload-progress` で元のdiv実装に揃えている。
+                    副次的に、ネイティブの role=progressbar + aria-valuenow が付く(a11yの改善)。
+                  */}
+                  <progress
+                    className="upload-progress h-1.5 w-full"
+                    value={uploadProgress ?? 0}
+                    max={100}
+                    aria-label="アップロードの進捗"
+                  />
                 </div>
               </div>
             ) : hasImage ? (
