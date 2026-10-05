@@ -42,6 +42,17 @@
     `src/app/_lib/variantSync.ts` に dirty 判定を切り出し、**最後にサーバーと同期した値(baseline)
     と今の入力が違うカードには props 同期をかけない**。そのカード自身の保存・画像の回復処理での
     再同期が成功したときだけ baseline を更新する(`markSynced`)。
+
+  🔴 Codex 4巡目 Blocker: 3巡目のdirtyガードは**props同期のeffectにしか効いていなかった**。
+    既存パターンの文字欄を編集中(未保存)のまま「差し替え」で画像を選ぶと、アップロード成功後の
+    直接の再同期(`uploadToExisting` → 旧`syncFromServer` → `applyVariant`)が、
+    dirtyを見ずにカード全体をサーバーの古い文字の値で上書きしていた。
+    `applyVariant`/`syncFromServer`/`syncImageFromServer` の呼び出し経路を洗い出し、
+    「何を確定したか」で反映する範囲を分けた(表はPR本文):
+    - 文字欄を送った経路(保存・新規作成時のアップロード)→ `syncFromServer`(全部を反映してよい。
+      送った値と確定する値が一致する前提が成り立つ)
+    - 画像だけを確定した経路(既存パターンの差し替え・外す)→ 画像の状態(`imageKey`)だけを反映し、
+      文字欄・baselineには触れない(差し替え=`syncImageFromServer`、外す=DELETEの結果を直接反映)
 */
 import { useEffect, useRef, useState } from "react";
 import { deleteJson, getJson, postJson, putJson, uploadVariantImage } from "../_lib/api";
@@ -49,7 +60,14 @@ import { deliveryImageUrl } from "../_lib/delivery";
 import { imageErrorMessage } from "../_lib/imageErrors";
 import { ApiVariant, ApiVariantKind, variantImageKey } from "../_lib/types";
 import { recoverFailedImageUpload } from "../_lib/variantRecovery";
-import { extractSyncedFields, isDirtyFrom, shouldApplyPropsSync, type SyncedFields } from "../_lib/variantSync";
+import {
+  computeSyncPatch,
+  extractSyncedFields,
+  isDirtyFrom,
+  shouldApplyPropsSync,
+  type SyncedFields,
+  type SyncPatch,
+} from "../_lib/variantSync";
 import { FieldError } from "../_components/ErrorBanner";
 
 export type VariantSavedOptions = { silent?: boolean; errorMessage?: string };
@@ -127,25 +145,27 @@ export function VariantCard({
   }, [pendingPreviewUrl]);
 
   /**
-   * 今の入力をサーバーと同期済みとして記録する(表示値=保存値にする。P-012対応)。
-   * 🔴 Codex 3巡目 Blocker: ここで baseline も一緒に更新する——**この関数を呼ぶのは、
-   *   このカード自身の保存・画像の回復処理が成功したときだけ**(親からの新しい props では呼ばない)。
+   * 🔴 Codex 4巡目 Blocker: 「何を確定したか」で反映する範囲を分ける判定(`computeSyncPatch`)を
+   *   実際に適用する唯一の入口。`patch.fields`/`patch.baseline` が `null` のときは触れない
+   *   (画像だけの操作で、文字欄・baselineを上書きしないため)。
    */
-  function markSynced(fields: SyncedFields) {
-    setKind(fields.kind);
-    setHeadline(fields.headline);
-    setBody(fields.body);
-    setButtonLabel(fields.buttonLabel);
-    setImageAlt(fields.imageAlt);
-    setDestinationUrl(fields.destinationUrl);
-    setBaseline(fields);
+  function applyPatch(patch: SyncPatch) {
+    if (patch.fields) {
+      setKind(patch.fields.kind);
+      setHeadline(patch.fields.headline);
+      setBody(patch.fields.body);
+      setButtonLabel(patch.fields.buttonLabel);
+      setImageAlt(patch.fields.imageAlt);
+      setDestinationUrl(patch.fields.destinationUrl);
+    }
+    if (patch.baseline) setBaseline(patch.baseline);
+    setImageKey(patch.imageKey);
   }
 
-  /** サーバーから取ってきた値で画面の状態を置き換える(applyVariant = markSynced + savedId/imageKey)。 */
-  function applyVariant(v: ApiVariant) {
+  /** 「保存」経路(文字欄を送った直後)の patch を作って適用する。baseline も一緒に更新する。 */
+  function applySavedVariant(v: ApiVariant) {
     setSavedId(v.id);
-    markSynced(extractSyncedFields(v));
-    setImageKey(variantImageKey(v));
+    applyPatch(computeSyncPatch({ kind: "save", server: { ...extractSyncedFields(v), imageKey: variantImageKey(v) } }));
   }
 
   /**
@@ -157,19 +177,35 @@ export function VariantCard({
   useEffect(() => {
     if (!shouldApplyPropsSync({ hasVariant: variant !== null, busy, dirty })) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 親から来た新しいvariantへ意図的に同期する(dirtyでない場合だけ)
-    applyVariant(variant as ApiVariant);
+    applySavedVariant(variant as ApiVariant);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- variant.content は毎回新しいオブジェクトなので、その変化だけを見る
   }, [variant?.id, variant?.content, variant?.destinationUrl, variant?.archivedAt, busy, dirty]);
 
   /**
-   * 保存・アップロード・画像削除の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。
+   * 保存(文字欄を送った直後)の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。
    * 🔴 Codex 2巡目 Should fix 1: この取得自体が失敗したら呼び出し側は**成功の通知を出さない**
    *   (戻り値で知らせる。黙って諦めない)。
+   * 🔴 Codex 4巡目 Blocker: **文字欄を送っていない経路(画像だけの操作)ではこれを呼ばない**
+   *   (`syncImageFromServer` を使う)。ここは「保存」経路専用——呼ぶのは、今の入力をそのまま
+   *   サーバーに送った直後だけ(= 送った値と確定する値が一致する前提が成り立つとき)。
    */
   async function syncFromServer(id: string): Promise<boolean> {
     const result = await getJson<ApiVariant>(`/variants/${id}`);
     if (!result.ok) return false;
-    applyVariant(result.data);
+    applySavedVariant(result.data);
+    return true;
+  }
+
+  /**
+   * 🔴 Codex 4巡目 Blocker: 既存パターンの画像だけの操作(差し替え)の後に `syncFromServer`
+   *   (= 文字欄とbaselineも上書きする「保存」の patch)を呼んでいたため、文字欄を編集中(未保存)の
+   *   まま画像を差し替えると入力が消えていた。**画像だけを確定した経路では、`computeSyncPatch` に
+   *   `{ kind: "image-only" }` を渡し、imageKey だけを反映する(文字欄・baselineには触れない)。**
+   */
+  async function syncImageFromServer(id: string): Promise<boolean> {
+    const result = await getJson<ApiVariant>(`/variants/${id}`);
+    if (!result.ok) return false;
+    applyPatch(computeSyncPatch({ kind: "image-only", imageKey: variantImageKey(result.data) }));
     return true;
   }
 
@@ -207,7 +243,8 @@ export function VariantCard({
       setError(imageErrorMessage(result.reason, result.message));
       return;
     }
-    const synced = await syncFromServer(id);
+    // 🔴 Codex 4巡目 Blocker: 画像だけの操作(差し替え)。文字欄・baselineは触らない
+    const synced = await syncImageFromServer(id);
     if (!synced) {
       setError("アップロードはできましたが、最新の状態を確認できませんでした。画面を再読み込みしてください。");
       await onSaved({ silent: true });
@@ -231,7 +268,9 @@ export function VariantCard({
       }
       return;
     }
-    setImageKey(null);
+    // 🔴 画像だけの操作(外す)。DELETEの結果からimageKeyがnullになったことだけ分かっているので、
+    //   それだけを反映する(GETし直さない。文字欄・baselineには触れない。Codex 4巡目 Blocker参照)
+    applyPatch(computeSyncPatch({ kind: "image-only", imageKey: null }));
     await onSaved();
   }
 
@@ -288,7 +327,7 @@ export function VariantCard({
           if (outcome.kind === "recovered") {
             // 応答だけが失われていた。実際には成功していたので、保存済みとして同期する(成功の通知は出さない)
             clearPendingFile();
-            applyVariant(outcome.variant);
+            applySavedVariant(outcome.variant);
             await onSaved({ silent: true });
             return;
           }
@@ -298,17 +337,23 @@ export function VariantCard({
             return;
           }
           // kept-without-image / unknown: 作ったIDを手放さない。保存済み・画像なしとして再同期する
+          //   (これは「保存」経路——送った文字欄がサーバーに通ったので、文字欄・baselineごと揃えてよい)
           clearPendingFile();
           setSavedId(id);
-          // 🔴 このパターンの文字欄はサーバーに通った(失敗したのは画像だけ)。baselineもここで揃える
-          markSynced({
-            kind: payload.kind,
-            headline: payload.content.headline,
-            body: payload.content.body,
-            buttonLabel: payload.content.buttonLabel,
-            imageAlt: payload.content.imageAlt,
-            destinationUrl: payload.destinationUrl,
-          });
+          applyPatch(
+            computeSyncPatch({
+              kind: "save",
+              server: {
+                kind: payload.kind,
+                headline: payload.content.headline,
+                body: payload.content.body,
+                buttonLabel: payload.content.buttonLabel,
+                imageAlt: payload.content.imageAlt,
+                destinationUrl: payload.destinationUrl,
+                imageKey: null,
+              },
+            }),
+          );
           setError(outcome.message);
           await onSaved({ silent: true });
           return;

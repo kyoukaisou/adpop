@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { extractSyncedFields, isDirtyFrom, shouldApplyPropsSync, type SyncedFields } from "./variantSync";
+import {
+  computeSyncPatch,
+  extractSyncedFields,
+  isDirtyFrom,
+  shouldApplyPropsSync,
+  type SyncedFields,
+} from "./variantSync";
 import type { ApiVariant } from "./types";
 
 const VARIANT_A: ApiVariant = {
@@ -51,5 +57,46 @@ describe("variantSync", () => {
 
   it("variantが無い(下書き行)ときは同期しない", () => {
     expect(shouldApplyPropsSync({ hasVariant: false, busy: false, dirty: false })).toBe(false);
+  });
+
+  describe("computeSyncPatch(Codex 4巡目: 画像だけの操作は文字欄・baselineに触れない)", () => {
+    const baseline = extractSyncedFields(VARIANT_A);
+
+    it("再現: 文字欄が書きかけのまま「差し替え」(image-only)しても、文字欄・baselineは変わらない", () => {
+      const patch = computeSyncPatch({ kind: "image-only", imageKey: "images/new.png" });
+      expect(patch.fields).toBeNull();
+      expect(patch.baseline).toBeNull();
+      expect(patch.imageKey).toBe("images/new.png");
+    });
+
+    it("再現: 「外す」(image-only・imageKey=null)でも、文字欄・baselineは変わらない", () => {
+      const patch = computeSyncPatch({ kind: "image-only", imageKey: null });
+      expect(patch.fields).toBeNull();
+      expect(patch.baseline).toBeNull();
+      expect(patch.imageKey).toBeNull();
+    });
+
+    it("保存(save)は、文字欄・baseline・imageKeyの全部をサーバー値に揃える", () => {
+      const server = { ...baseline, headline: "保存された見出し", imageKey: "images/a.png" };
+      const patch = computeSyncPatch({ kind: "save", server });
+      const { imageKey, ...fields } = server;
+      expect(patch.fields).toEqual(fields);
+      expect(patch.baseline).toEqual(fields);
+      expect(patch.imageKey).toBe(imageKey);
+    });
+
+    it("壊れた実装(image-onlyでもfields/baselineを返してしまう)だと、このテストが落ちることを確認する", () => {
+      // 🔴 Codex 4巡目の裁定「壊したら落ちることを1回確かめる」に対応する検査。
+      function brokenComputeSyncPatch(event: Parameters<typeof computeSyncPatch>[0]) {
+        if (event.kind === "image-only") {
+          // 以前のバグ: 画像だけの操作なのに、保持していたbaselineをそのままfields/baselineとして返してしまう
+          return { fields: baseline, baseline, imageKey: event.imageKey };
+        }
+        return computeSyncPatch(event);
+      }
+      const broken = brokenComputeSyncPatch({ kind: "image-only", imageKey: "images/new.png" });
+      const fixed = computeSyncPatch({ kind: "image-only", imageKey: "images/new.png" });
+      expect(broken.fields).not.toEqual(fixed.fields);
+    });
   });
 });

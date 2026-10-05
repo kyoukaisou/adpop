@@ -55,3 +55,31 @@ export function isDirtyFrom(baseline: SyncedFields | null, current: SyncedFields
 export function shouldApplyPropsSync(params: { hasVariant: boolean; busy: boolean; dirty: boolean }): boolean {
   return params.hasVariant && !params.busy && !params.dirty;
 }
+
+/*
+  🔴 Codex 4巡目 Blocker: 3巡目のdirtyガードは props 同期の useEffect にしか効いておらず、
+    画像だけを確定した経路(差し替え・外す・回復)がカード全体を直接 `applyVariant` して
+    文字欄・baselineまで上書きしていた。
+
+  「何を確定したか」で反映する範囲を分ける、1つの純粋関数に集約する:
+  - `{ kind: "save" }` = 文字欄を送った経路(新規作成・保存のPUT)。送った値と確定する値が
+    一致する前提が成り立つので、文字欄・baseline・imageKey の全部を反映してよい
+  - `{ kind: "image-only" }` = 画像だけを確定した経路(差し替え・外す)。**文字欄・baselineには
+    触れず**、imageKey だけを反映する
+*/
+
+/** サーバーの確定値(画像キーを含む)。`save` 経路で使う。 */
+export type VariantServerSnapshot = SyncedFields & { imageKey: string | null };
+
+export type SyncEvent = { kind: "save"; server: VariantServerSnapshot } | { kind: "image-only"; imageKey: string | null };
+
+/** 適用すべき差分。`fields`/`baseline` が `null` = 触れない(直前の値を保つ)。`imageKey` は常に反映する。 */
+export type SyncPatch = { fields: SyncedFields | null; baseline: SyncedFields | null; imageKey: string | null };
+
+export function computeSyncPatch(event: SyncEvent): SyncPatch {
+  if (event.kind === "image-only") {
+    return { fields: null, baseline: null, imageKey: event.imageKey };
+  }
+  const { imageKey, ...fields } = event.server;
+  return { fields, baseline: fields, imageKey };
+}
