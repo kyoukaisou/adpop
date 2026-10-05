@@ -4,7 +4,7 @@
 // 🔴 **秘密はここに書かない**(ADMIN_PASSWORD_HASH / ADMIN_EMAIL / ADMIN_OWNER_ID / ADMIN_RATE_LIMIT_KEY)。
 //   `npm run admin:hash` の出力を `wrangler secret put` で置く。ローカルは `.dev.vars`(.gitignore 済み)。
 //   ⚠ この設定ファイルに鍵の名前が現れたら検査が落ちる(tests/admin-config.test.ts)。
-// ⚠ `database_id` は仮の値(Cloudflare 側にまだ作っていない)。本番は `wrangler d1 create adpop` の id に差し替える。
+// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。D-344)の id(docs/deploy.md §2)。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adpop-admin",
@@ -29,7 +29,7 @@
     {
       "binding": "DB",
       "database_name": "adpop",
-      "database_id": "00000000-0000-4000-8000-000000000000",
+      "database_id": "2d56e040-2e9a-4cb2-b431-2829cb488a96",
       "migrations_dir": "db/migrations"
     }
   ],

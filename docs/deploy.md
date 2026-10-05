@@ -34,6 +34,14 @@ npm ci
 
 ## 2. D1 を作る
 
+> 🔴 **本番の D1 は作成済みです**(`wrangler d1 create adpop`。D-344・2026-10-05)。
+> その出力の `database_id`(`2d56e040-2e9a-4cb2-b431-2829cb488a96`)は、すでに両方の
+> 設定ファイルに入っています(`wrangler.delivery.jsonc` / `wrangler.admin.jsonc` の
+> `d1_databases[0].database_id`)。本番にこれから立てる人は、この節を読み飛ばして
+> § 3 に進んでください。
+>
+> 以下は、**別の環境(自分の Cloudflare アカウントなど)に初めて立てる人**のための手順です。
+
 ```bash
 npx wrangler d1 create adpop
 ```
@@ -41,9 +49,13 @@ npx wrangler d1 create adpop
 - 出力の `database_id` を**両方**の設定ファイルに差し替える:
   - `wrangler.delivery.jsonc` の `d1_databases[0].database_id`
   - `wrangler.admin.jsonc` の `d1_databases[0].database_id`
-- 🔴 **2つの id は、`tests/admin-config.test.ts` と、両 `wrangler.*.jsonc` の `build.command`
-  (`node scripts/check-database-ids-match.mjs`)が機械で一致を見ます。** 片方だけ差し替え忘れると、
-  テストと deploy の両方がそこで落ちます(「目で見比べる」手順はもう要りません)。
+- 🔴 **2つの id は、両 `wrangler.*.jsonc` の `build.command`(`node scripts/check-database-ids-match.mjs`)が
+  機械で一致を見ます。** 片方だけ差し替え忘れると、deploy がそこで落ちます(「目で見比べる」手順はもう
+  要りません)。
+- 🔴 **`tests/admin-config.test.ts` の「現在のリポジトリの状態」テストは、本部が確認した本番(D-344)の
+  id(`2d56e040-2e9a-4cb2-b431-2829cb488a96`)と完全一致するかを固定しています。** 自分の環境に別の D1 を
+  立てる場合は、そのテストの `PRODUCTION_DATABASE_ID` の期待値も自分の id に書き換えてください
+  (書き換えないと、設定ファイルは正しくても、このテストだけ落ちます)。
 - 🔴 **仮の値(`00000000-0000-4000-8000-000000000000`)のままだと、両方が一致していても deploy は
   止まります。** `scripts/database-id-guard.mjs` の `isPlaceholderDatabaseId()` が既知の仮の値を
   明示的に拒否します(前巡の検査は「非空かつ一致」しか見ておらず、両方とも仮の値のまま揃っている
@@ -189,11 +201,13 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
 - 🔴 **この5点の検査には、省略する経路が1つも無い。** 本番の `wrangler deploy` に何を渡しても
   (フラグ・環境変数いずれも)この検査を素通りさせることはできません。
 - ⚠ **CI の dry-run は、検査そのものは省略せず、ジョブのワークスペースの中だけ**(コミットしない)
-  **で `database_id`・配信元を CI 専用の実在しない値に一時的に書き換えてから**、この5点を
-  **通常の経路のまま**満たしています(`.github/workflows/ci.yml`)。CI は実際の account 名も
-  本番の D1 もまだ持たないため、`.invalid`(RFC 2606 の予約ドメイン。Cloudflare が絶対に発行しない
-  形)の配信元と、`.workers.dev`/UUID のどちらにも見えない固定文字列の `database_id` を使います。
-  ジョブが終わればランナーごと消えるので、これらの値が本番の deploy に渡ることはありません。
+  **で配信元を CI 専用の実在しない値に一時的に書き換えてから**、この5点を**通常の経路のまま**
+  満たしています(`.github/workflows/ci.yml`)。CI は実際の Cloudflare account の認証情報を持たないため、
+  配信元には `.invalid`(RFC 2606 の予約ドメイン。Cloudflare が絶対に発行しない形)を使います。
+  🔴 **`database_id` は書き換えません。** 本番の D1 を作成済みの今は、実在の id がすでにコミットされており
+  (D-344)、database_id の検査(①`check-database-ids-match.mjs`)はコミットされたその値のまま通ります
+  (dry-run は Cloudflare に接続しないので、CI が認証情報を持たないことと矛盾しません)。CI が書き換えるのは
+  配信元だけで、ジョブが終わればランナーごと消えるので、この CI 専用の値が本番の deploy に渡ることはありません。
 - 2026-10-05 実測:
   - `node scripts/check-admin-headers.mjs` を単独で実行し、`out/_headers` を一時的にリネームして退避させると
     `NG  …/out/_headers が無い` で非ゼロ終了し、戻すと `OK` に戻ることを確認した。
@@ -206,11 +220,12 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
   - `wrangler.admin.jsonc` の `database_id` だけを別の値に差し替えて `wrangler deploy -c wrangler.delivery.jsonc --dry-run`
     を実行すると、`check-database-ids-match.mjs` が不一致を検出して deploy が止まることを確認した
     (どちらの Worker を先に deploy しても検査が効く)。
-  - `.github/workflows/ci.yml` と同じ手順(`sed` で `database_id` を CI 専用の値に、`deploy/delivery-origin.txt`
-    が `UNSET` なら `.invalid` の値に一時的に書き換える)を手元で再現し、両 Worker の `wrangler deploy --dry-run`
-    が通常の経路のまま成功することを確認した。その後、書き換えたファイルを元に戻し(`git diff` で
-    差分が無いことを確認)、同じ `wrangler deploy --dry-run -c wrangler.admin.jsonc` をフラグ無しで
-    再実行すると `ERROR Running custom build … failed` で止まることを確認した。
+  - `.github/workflows/ci.yml` と同じ手順(`deploy/delivery-origin.txt` が `UNSET` なら `.invalid` の値に
+    一時的に書き換える。database_id は本番の実在の id のままで、CI も書き換えない)を手元で再現し、
+    両 Worker の `wrangler deploy --dry-run` が通常の経路のまま成功することを確認した。その後、
+    書き換えたファイルを元に戻し(`git diff` で差分が無いことを確認)、同じ
+    `wrangler deploy --dry-run -c wrangler.admin.jsonc` をフラグ無しで再実行すると
+    `ERROR Running custom build … failed` で止まることを確認した。
 
 ## 7. secret を投入する(運用者の端末で)
 
@@ -278,9 +293,10 @@ npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ロ�
 
 ## まだ実行していないこと(Cloudflare の上の作業)
 
-この PR の作業はすべて `--dry-run` / `--local` に限っています。次の実施者が実際に Cloudflare 上で行うのは:
+この PR の作業はすべて `--dry-run` / `--local` に限っています。本番の D1 の作成と `database_id` の
+両設定ファイルへの反映(§2)は、この PR(D-344)で済んでいます。次の実施者が実際に Cloudflare 上で
+行うのは:
 
-- `wrangler d1 create adpop`(§2)・両設定ファイルへの `database_id` の反映
 - `wrangler r2 bucket create adpop-images`(§3)
 - `wrangler d1 migrations apply --remote`(§4。本番 D1 への実際の適用)
 - `wrangler d1 execute --remote --command "PRAGMA optimize;"`(§4)

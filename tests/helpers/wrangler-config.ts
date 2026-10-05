@@ -53,8 +53,8 @@ function testOnlyIdentifiers(suffix: string) {
  *
  * 変えるもの:
  * - `build`(= `build.command`)を外す。`unstable_startWorker` でも `build.command` は走る
- *   (Wrangler の仕様)ため、これが残っていると、本番の D1・配信元を確定していない間
- *   (docs/deploy.md §2・§5)、deploy 前の検査(別のテストで固定済み)に必ず引っかかる。
+ *   (Wrangler の仕様)ため、これが残っていると、配信元を確定していない間(docs/deploy.md §5)、
+ *   admin 側の deploy 前の検査(別のテストで固定済み)に必ず引っかかる。
  *   `build` フィールドが無い設定では Wrangler はカスタムビルドを一切起動しないので、
  *   省略する「経路」を検査スクリプト自身に持たせる必要が無い。
  * - `name` を `<元の名前>-test-<乱数>` にする(**本番の Worker 名とは絶対に一致しない**。

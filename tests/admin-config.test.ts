@@ -54,21 +54,24 @@ describe(".gitignore(L9)", () => {
 });
 
 describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
-  it("現在のリポジトリの状態: 両方とも仮の値のまま一致している(本番 D1 を作る前の既知の状態)", () => {
-    // ⚠ これは「合格」ではない。`wrangler d1 create adpop` の後、両ファイルを実際の id に
-    //   差し替えるまでの間、意図してこの状態になっている(docs/deploy.md §2)。
-    //   deploy 前の検査(check-database-ids-match.mjs)は省略する経路を持たないので、
-    //   本番の `wrangler deploy` はこの状態のままでは必ず止まる。
+  it("現在のリポジトリの状態: 両方とも本番 D1(D-344)の実在の id で一致していて、仮の値ではない", () => {
+    // `wrangler d1 create adpop` で作った本番の D1 の id(docs/deploy.md §2)。
+    // 🔴 ここは「仮の値ではない」「2つが一致している」だけでは、両ファイルが同じ誤った値や
+    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(Codex r1 Blocker)。
+    //   本部が確認した本番 D1 の id と**完全一致**することまで固定する。
+    const PRODUCTION_DATABASE_ID = "2d56e040-2e9a-4cb2-b431-2829cb488a96";
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
-    expect(delivery.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
-    expect(admin.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
+    expect(delivery.d1_databases?.[0]?.database_id).toBe(PRODUCTION_DATABASE_ID);
+    expect(admin.d1_databases?.[0]?.database_id).toBe(PRODUCTION_DATABASE_ID);
+    expect(delivery.d1_databases?.[0]?.database_id).not.toBe(PLACEHOLDER_DATABASE_ID);
+    expect(admin.d1_databases?.[0]?.database_id).not.toBe(PLACEHOLDER_DATABASE_ID);
 
     const problems = databaseIdMismatchProblems({
       deliveryDatabaseId: delivery.d1_databases?.[0]?.database_id,
       adminDatabaseId: admin.d1_databases?.[0]?.database_id,
     });
-    expect(problems.map((p) => p.kind).sort()).toEqual(["placeholder", "placeholder"]);
+    expect(problems).toEqual([]);
   });
 
   it("通る例: 両方とも実在の値で、かつ一致している", () => {

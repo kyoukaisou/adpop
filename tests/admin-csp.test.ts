@@ -53,8 +53,9 @@ beforeAll(async () => {
   execFileSync(process.execPath, [path.join(REPO_ROOT, "scripts/build-admin-headers.mjs")], { cwd: REPO_ROOT, env, stdio: "pipe" });
 
   // 🔴 本物の `wrangler.admin.jsonc` は一切書き換えない。`build.command`(deploy 前の検査を含む)は
-  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、このリポジトリはまだ
-  //   本番の D1・配信元を確定していない(docs/deploy.md §2・§5)ので、その検査は必ず非ゼロで終わる。
+  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、このリポジトリは配信元を
+  //   まだ確定していない(deploy/delivery-origin.txt は UNSET のまま。docs/deploy.md §5)ので、
+  //   その検査は必ず非ゼロで終わる(本番の D1 は作成済み・docs/deploy.md §2)。
   //   この検査自体は `tests/admin-config.test.ts`・`tests/delivery-origin-guard.test.ts` で
   //   別途固定済みなので、ここでは `build` フィールドを外した一時ファイルを使い、
   //   `unstable_startWorker` がカスタムビルドを一切起動しないようにする(省略する「経路」を検査
