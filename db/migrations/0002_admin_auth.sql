@@ -26,7 +26,7 @@ create table admin_login_attempts (
 
 create trigger admin_sessions_no_replace before insert on admin_sessions
 when exists (select 1 from admin_sessions where token_hash = new.token_hash)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:admin_sessions');
 end;
 
@@ -35,19 +35,19 @@ create trigger admin_sessions_immutable before update of token_hash, owner_id, p
 when new.token_hash is not old.token_hash or new.owner_id is not old.owner_id
   or new.password_fingerprint is not old.password_fingerprint
   or new.created_at is not old.created_at or new.expires_at is not old.expires_at
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:admin_sessions');
 end;
 
 create trigger admin_login_attempts_no_replace before insert on admin_login_attempts
 when exists (select 1 from admin_login_attempts where key = new.key)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:admin_login_attempts');
 end;
 
 create trigger admin_login_attempts_immutable before update of key on admin_login_attempts
 when new.key is not old.key
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:admin_login_attempts');
 end;
 
@@ -66,12 +66,12 @@ create index pending_image_deletions_owner on pending_image_deletions (owner_id)
 
 create trigger pending_image_deletions_no_replace before insert on pending_image_deletions
 when exists (select 1 from pending_image_deletions where key = new.key)
-begin
+BEGIN
   select raise(ignore);
 end;
 
 create trigger pending_image_deletions_immutable before update of key, owner_id on pending_image_deletions
 when new.key is not old.key or new.owner_id is not old.owner_id
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:pending_image_deletions');
 end;

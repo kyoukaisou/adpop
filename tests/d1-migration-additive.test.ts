@@ -144,6 +144,23 @@ describe("既存の行を書き換える文(補助・字面)", () => {
   });
 });
 
+/*
+  🔴 **`wrangler d1 migrations apply --remote` の落とし穴**(2026-10-05 実際に本番適用で踏んだ・workers-sdk #15314)。
+  `--remote` は migration ファイルを**分割せず丸ごと1本の SQL として D1 の `/query` に送る**(`buildMigrationQuery`)。
+  分割は D1 のサーバー側がやるが、**トリガ本体の開始トークン `BEGIN` を大文字のみでしか認識しない**
+  (`END` の大文字小文字は無関係。CRLF も壊れる要因だが、このリポジトリの行末は LF で確認済み)。
+  → 小文字 `begin` を使うと、ローカル(Miniflare。SQLite は大文字小文字を区別しない)では通るのに、
+    `--remote` だけ `incomplete input: SQLITE_ERROR [code: 7500]` で全体が失敗する(ローカルでは再現しない)。
+  ⚠ ローカル実行では検出できないので、ここは**字面の検査**で止める。D1 がサーバー側で直すまでは必須。
+*/
+describe("CREATE TRIGGER の BEGIN は大文字(D1 remote splitter の既知の穴・workers-sdk #15314)", () => {
+  it.each(FILES)("🔴 %s のトリガ本体が小文字/混在の begin で始まっていない", (file) => {
+    const sql = readFileSync(path.join(MIGRATIONS, file), "utf8");
+    const lowercaseBegins = [...sql.matchAll(/\bbegin\b/g)].filter((m) => m[0] !== "BEGIN");
+    expect(lowercaseBegins.map((m) => m[0])).toEqual([]);
+  });
+});
+
 describe("適用の単位(実測)", () => {
   it("✅ ローカルでは、途中で落ちたマイグレーションのファイルは丸ごと戻る(作った表も入れた行も残らない)", async () => {
     const ws = workspace();

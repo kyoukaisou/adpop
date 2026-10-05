@@ -221,7 +221,7 @@ create index events_kind_occurred_at on events (kind, occurred_at);
 
 -- 🔴 ポップを作ったら6トリガの行が必ず揃う。既定値(要件書 §4-2)はここ1か所だけが持つ。
 create trigger popups_seed_triggers after insert on popups
-begin
+BEGIN
   insert into popup_triggers (owner_id, popup_id, kind, enabled, threshold) values
     (new.owner_id, new.id, 'back',        1, null),
     (new.owner_id, new.id, 'scroll',      0, 50),
@@ -244,35 +244,35 @@ end;
 --     判定がトリガ(= 書き込みと同じ文の中)にある限り、2つの要求が同時に「まだ空きがある」を読まない
 create trigger sites_limit before insert on sites
 when (select count(*) from sites where owner_id = new.owner_id) >= 20
-begin
+BEGIN
   select raise(abort, 'adpop:limit:sites');
 end;
 
 create trigger popups_limit_insert before insert on popups
 when new.archived_at is null
   and (select count(*) from popups where site_id = new.site_id and archived_at is null) >= 50
-begin
+BEGIN
   select raise(abort, 'adpop:limit:popupsPerSite');
 end;
 
 create trigger popups_limit_restore before update of archived_at on popups
 when old.archived_at is not null and new.archived_at is null
   and (select count(*) from popups where site_id = new.site_id and archived_at is null) >= 50
-begin
+BEGIN
   select raise(abort, 'adpop:limit:popupsPerSite');
 end;
 
 create trigger variants_limit_insert before insert on variants
 when new.archived_at is null
   and (select count(*) from variants where popup_id = new.popup_id and archived_at is null) >= 5
-begin
+BEGIN
   select raise(abort, 'adpop:limit:variantsPerPopup');
 end;
 
 create trigger variants_limit_restore before update of archived_at on variants
 when old.archived_at is not null and new.archived_at is null
   and (select count(*) from variants where popup_id = new.popup_id and archived_at is null) >= 5
-begin
+BEGIN
   select raise(abort, 'adpop:limit:variantsPerPopup');
 end;
 
@@ -281,39 +281,39 @@ end;
 --   ⚠ 親の付け替えを許すと、上限(サイトあたり 50 など)を「作ってから付け替える」で超えられる。
 create trigger sites_immutable before update of id, owner_id, site_key on sites
 when new.id is not old.id or new.owner_id is not old.owner_id or new.site_key is not old.site_key
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:sites');
 end;
 
 create trigger site_allowed_origins_immutable before update on site_allowed_origins
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:site_allowed_origins');
 end;
 
 create trigger popups_immutable before update of id, owner_id, site_id, public_key on popups
 when new.id is not old.id or new.owner_id is not old.owner_id
   or new.site_id is not old.site_id or new.public_key is not old.public_key
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:popups');
 end;
 
 create trigger popup_triggers_immutable before update of owner_id, popup_id, kind on popup_triggers
 when new.owner_id is not old.owner_id or new.popup_id is not old.popup_id or new.kind is not old.kind
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:popup_triggers');
 end;
 
 create trigger variants_immutable before update of id, owner_id, popup_id, public_key on variants
 when new.id is not old.id or new.owner_id is not old.owner_id
   or new.popup_id is not old.popup_id or new.public_key is not old.public_key
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:variants');
 end;
 
 -- 🔴 計測イベントは書いたら書き換えない(集計の正)。⚠ 止めているのは UPDATE だけで、
 --   削除は止めていない(cascade と、PR5 の保持期間の削除が使う)
 create trigger events_immutable before update on events
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:events');
 end;
 
@@ -332,25 +332,25 @@ end;
 --   撃った REPLACE の一覧を突き合わせる(足し忘れると落ちる)。
 create trigger owners_no_replace before insert on owners
 when exists (select 1 from owners where id = new.id)
-begin
+BEGIN
   select raise(ignore);
 end;
 
 create trigger owners_immutable before update of id on owners
 when new.id is not old.id
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:owners');
 end;
 
 create trigger sites_no_replace before insert on sites
 when exists (select 1 from sites where id = new.id or site_key = new.site_key)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:sites');
 end;
 
 create trigger site_allowed_origins_no_replace before insert on site_allowed_origins
 when exists (select 1 from site_allowed_origins where site_id = new.site_id and origin = new.origin)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:site_allowed_origins');
 end;
 
@@ -358,7 +358,7 @@ create trigger popups_no_replace before insert on popups
 when exists (select 1 from popups where id = new.id or public_key = new.public_key)
   or (new.status = 'active'
       and exists (select 1 from popups where site_id = new.site_id and status = 'active'))
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:popups');
 end;
 
@@ -367,33 +367,33 @@ end;
 create trigger popups_one_active before update of status on popups
 when new.status = 'active'
   and exists (select 1 from popups where site_id = new.site_id and status = 'active' and id <> new.id)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:popups');
 end;
 
 create trigger popup_triggers_no_replace before insert on popup_triggers
 when exists (select 1 from popup_triggers where popup_id = new.popup_id and kind = new.kind)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:popup_triggers');
 end;
 
 create trigger variants_no_replace before insert on variants
 when exists (select 1 from variants where id = new.id or public_key = new.public_key)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:variants');
 end;
 
 -- 🕐 v1.1 の表だが、D1 には「書き込み権限を配らない」守りが無いので、いまから同じ形で塞ぐ(Codex #4 Should 1)
 create trigger chatbot_nodes_no_replace before insert on chatbot_nodes
 when exists (select 1 from chatbot_nodes where id = new.id)
-begin
+BEGIN
   select raise(abort, 'adpop:conflict:chatbot_nodes');
 end;
 
 create trigger chatbot_nodes_immutable before update of id, owner_id, variant_id, parent_node_id on chatbot_nodes
 when new.id is not old.id or new.owner_id is not old.owner_id
   or new.variant_id is not old.variant_id or new.parent_node_id is not old.parent_node_id
-begin
+BEGIN
   select raise(abort, 'adpop:immutable:chatbot_nodes');
 end;
 
@@ -402,6 +402,6 @@ when exists (select 1 from events where id = new.id)
   or (new.kind in ('impression', 'close') and exists (
         select 1 from events
         where site_id = new.site_id and impression_id = new.impression_id and kind = new.kind))
-begin
+BEGIN
   select raise(ignore);
 end;
