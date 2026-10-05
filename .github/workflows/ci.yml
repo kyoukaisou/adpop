@@ -58,19 +58,35 @@ jobs:
       - name: build
         run: npm run build
 
+      # 🔴 両 Worker の build.command は、本番の D1 を作るまで `database_id` が仮の値のままなら
+      #   deploy 前の検査(check-database-ids-match.mjs)で落ちる(このリポジトリは Cloudflare の
+      #   実リソースをまだ作っていないので、現状は常にこの状態。docs/deploy.md §2)。
+      #   `CI_DRY_RUN=1` は「本番 deploy の確認ではない」ことを明示する専用のフラグで、
+      #   仮の値どうしが一致している場合に限って通す(実際の id の不一致はこれでも通らない)。
+      #   このフラグは、ここと `tests/*.test.ts` の `unstable_startWorker` 呼び出しの前以外では設定しない
+      #   (本番の `wrangler deploy` には絶対に渡さないこと)。
+
       # 配信の Worker を、デプロイと同じ束ね方で束ねる(アップロードはしない = 認証は要らない)。
       # ⚠ 束ねられないもの(Node 専用の import など)はここで落ちる。
       - name: 配信の Worker を束ねる(dry-run)
         run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/delivery-worker" -c wrangler.delivery.jsonc
         env:
           WRANGLER_SEND_METRICS: "false"
+          CI_DRY_RUN: "1"
 
-      # 🔴 管理画面の build.command は、決定済みの形(https://adpop-delivery.<account>.workers.dev)の
-      #   NEXT_PUBLIC_DELIVERY_ORIGIN が無いと deploy 前の検査(check-admin-headers.mjs)で落ちる
-      #   (docs/deploy.md §5・§6)。CI の dry-run は実際の account 名を知らないので、形だけ合わせた
-      #   ダミー値を渡す(本番に出るわけではないので値そのものに意味は無い)。
+      # 🔴 管理画面の build.command は、`NEXT_PUBLIC_DELIVERY_ORIGIN` が
+      #   `deploy/delivery-origin.txt` の確定値と完全一致しないと deploy 前の検査
+      #   (check-admin-headers.mjs)で落ちる(docs/deploy.md §5・§6)。このファイルは
+      #   本番の配信元を確定するまで `UNSET` のままで、CI は実際の account 名を知らないので
+      #   比べられる値を持たない。`CI_DRY_RUN=1` を立てて「配信元が確定値と一致しているか」の
+      #   検査だけを省略する(CSP の形・ビルド出力への埋め込みの検査は省略しない。
+      #   ダミー値はそれらを exercise するためだけに渡す)。
+      #   `deploy/delivery-origin.txt` に実際の値が入った後は、このステップで
+      #   `NEXT_PUBLIC_DELIVERY_ORIGIN: $(cat deploy/delivery-origin.txt)` に変えて
+      #   `CI_DRY_RUN` を外すのが筋が良い(確定値そのものは公開情報なので CI に出しても問題ない)。
       - name: 管理画面の Worker を束ねる(dry-run)
         run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/admin-worker" -c wrangler.admin.jsonc
         env:
           WRANGLER_SEND_METRICS: "false"
+          CI_DRY_RUN: "1"
           NEXT_PUBLIC_DELIVERY_ORIGIN: "https://adpop-delivery.ci-dryrun.workers.dev"

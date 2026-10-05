@@ -44,6 +44,7 @@ function directiveTokens(csp: string, name: string): string[] {
 }
 
 const originalDeliveryOrigin = process.env.NEXT_PUBLIC_DELIVERY_ORIGIN;
+const originalCiDryRun = process.env.CI_DRY_RUN;
 
 beforeAll(async () => {
   // 🔴 実物の `next build` を実際に走らせてから `_headers` を作る(手で書いた値・固定した
@@ -58,6 +59,12 @@ beforeAll(async () => {
   //   `DELIVERY_ORIGIN_FOR_TEST` を持たずに `out/_headers` を上書きし、直前に作った `_headers`
   //   が消える(img-src から配信元が抜ける)。
   process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = DELIVERY_ORIGIN_FOR_TEST;
+  // 🔴 `deploy/delivery-origin.txt` はこのリポジトリではまだ `UNSET`(本番の配信元を確定していない)。
+  //   `check-admin-headers.mjs`(配信元の確定チェック)・`check-database-ids-match.mjs`
+  //   (database_id の仮の値チェック)はどちらもここで非ゼロで終わる設計なので、`CI_DRY_RUN=1` を
+  //   立てて「本番 deploy の確認ではない」ことを明示する(docs/deploy.md 参照。実際の id の
+  //   不一致・本物の配信元との不一致はこれでも通らない)。
+  process.env.CI_DRY_RUN = "1";
 
   worker = await unstable_startWorker({
     config: ADMIN_WRANGLER_PATH,
@@ -73,6 +80,8 @@ afterAll(async () => {
   } else {
     process.env.NEXT_PUBLIC_DELIVERY_ORIGIN = originalDeliveryOrigin;
   }
+  if (originalCiDryRun === undefined) delete process.env.CI_DRY_RUN;
+  else process.env.CI_DRY_RUN = originalCiDryRun;
 });
 
 describe("管理画面の Worker(workerd で起動)が返す CSP", () => {

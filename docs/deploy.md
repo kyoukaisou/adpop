@@ -6,7 +6,7 @@
 >
 > 🔴 **机上で閉じない。** この手順は、クリーンな `git worktree` から
 > `npm ci` → `npm run build` → 両 Worker の `wrangler deploy --dry-run` → `wrangler d1 migrations apply --local`
-> を実際に1回走らせてから書いています(2026-10-05)。**Cloudflare 側に実リソースを作る手順(§2・§3・§4・§6・§7)は
+> を実際に1回走らせてから書いています(2026-10-05)。**Cloudflare 側に実リソースを作る手順(§2・§3・§4・§5・§6・§7)は
 > 確かめていません**(作業範囲として、Cloudflare のリソースを作る・消す・deploy するコマンドを実行しない
 > という制約のため)。手順の各段に「確かめ方」を書いたので、**最初の実施者がそこで確認してから次へ進んでください**。
 
@@ -44,6 +44,11 @@ npx wrangler d1 create adpop
 - 🔴 **2つの id は、`tests/admin-config.test.ts` と、両 `wrangler.*.jsonc` の `build.command`
   (`node scripts/check-database-ids-match.mjs`)が機械で一致を見ます。** 片方だけ差し替え忘れると、
   テストと deploy の両方がそこで落ちます(「目で見比べる」手順はもう要りません)。
+- 🔴 **仮の値(`00000000-0000-4000-8000-000000000000`)のままだと、両方が一致していても deploy は
+  止まります。** `scripts/database-id-guard.mjs` の `isPlaceholderDatabaseId()` が既知の仮の値を
+  明示的に拒否します(前巡の検査は「非空かつ一致」しか見ておらず、両方とも仮の値のまま揃っている
+  状態を合格にしてしまっていました)。**実際に `wrangler d1 create adpop` を実行して得た id に
+  両方差し替えるまで、deploy は進みません。**
 - Time Travel は常時有効です。移行の前に時点を控えておくと、戻すときの目印になります:
   ```bash
   npx wrangler d1 time-travel info adpop -c wrangler.delivery.jsonc
@@ -99,27 +104,51 @@ npx wrangler d1 migrations apply adpop --remote -c wrangler.admin.jsonc
 - 📌 これを怠ると、索引を追加しても SQLite のクエリプランナが古い索引を選び続けることがある
   (開発中に実測済み。`ANALYZE` を1回実行した後は狙った索引が選ばれた)。
 
-## 5. 配信ドメインは決定済み(`workers.dev` 固定)
+## 5. 配信ドメインは `workers.dev` 固定・確定値は `deploy/delivery-origin.txt` に1か所だけ置く
 
 **配信ホストは `workers.dev` を使います。独自ドメインは使いません。** 埋め込みタグの `src`(配信ホスト)は、
 **配ったタグの数だけ第三者の LP に任意の JS を配れる場所**で、タグは他人の LP に貼られるとこちらから
 回収できないため、この決定は確定事項として扱ってください。
 
-- 配信ホストは `adpop-delivery.<account>.workers.dev`(`<account>` はこの Cloudflare アカウントの
-  workers.dev サブドメイン)。`NEXT_PUBLIC_DELIVERY_ORIGIN` にはこの値をそのまま渡します(§6)。
-- 🔴 **アカウントの workers.dev サブドメイン名と、配信 Worker の名前(`adpop-delivery`)は、以後変えない。**
-  変えると、既に配ったタグが全部壊れます(タグは第三者の LP に貼られていて回収できない)。さらに、
-  **旧サブドメイン名を他人が後から取れるかは Cloudflare の公式文書で確認できていません(未確認)**。
-  変えない運用でこの不確実性そのものを避けます。
-- 🔴 **deploy はこの形(`https://adpop-delivery.<account>.workers.dev`)と一致しない
-  `NEXT_PUBLIC_DELIVERY_ORIGIN` を拒否します。** `scripts/admin-headers-guard.mjs` の
-  `isDecidedDeliveryOrigin()` が、管理画面の `build.command`(§6)から deploy 前に必ず検査します。
-  独自ドメインやワイルドカードを渡すと、ビルドではなく **deploy の直前でエラーになって止まります**
-  (fail-closed)。
-- ⚠ このリポジトリを fork して自分の環境に立てる場合、独自ドメインを選ぶこと自体は可能です
-  (README「管理画面は LP と別の登録ドメインに置いてください」を満たせば構成として成立します)。
-  その場合は `routes` を足し `workers_dev` を `false` にし、`isDecidedDeliveryOrigin()` の正規表現を
-  自分のドメインに合わせて書き換えてください。**ただし、この手順書が案内する既定の構成は `workers.dev` 固定です。**
+- 配信ホストは `https://adpop-delivery.<account>.workers.dev`(`<account>` はこの Cloudflare アカウントの
+  workers.dev サブドメイン)。
+- 🔴 **今の時点では、この文書に正しい値を書いてコミットできません。** 本部が実測で確かめた理由:
+  - `wrangler whoami` の権限では、アカウントの workers.dev サブドメイン名を読めない
+  - **workers.dev サブドメインは、初めて `workers_dev: true` で deploy するまで登録されていない
+    可能性がある**(初回 deploy のときに登録を求められる)
+
+  そのため、確定値は**リポジトリの中の1か所**(`deploy/delivery-origin.txt`)だけに置き、
+  **初期値は実在しない配信元ではなく `UNSET`(未確定を表す定数)**にしてあります。
+- 🔴 **deploy 前の検査は、`NEXT_PUBLIC_DELIVERY_ORIGIN` がこのファイルの値と完全に一致しているか
+  だけを見ます。** `scripts/delivery-origin-guard.mjs` の `deliveryOriginGuardProblems()` が、
+  管理画面の `build.command`(§6)から deploy 前に必ず検査します。ファイルが `UNSET` のままなら、
+  何を渡しても **deploy の直前でエラーになって止まります**(fail-closed)。1文字でも違う値・
+  別のアカウント名を渡した場合も同様に止まります(「`adpop-delivery.<任意の文字列>.workers.dev`
+  の形であれば通す」という前巡の検査は、タイプミスや別アカウントの値を見逃していたため廃止しました)。
+
+### 確定させる手順(§6 の配信 Worker の deploy の直後・最初のタグを配る前に行う)
+
+1. §6 の「配信の Worker」を deploy する(`wrangler deploy -c wrangler.delivery.jsonc`)。これが
+   **このアカウントで初めて `workers_dev: true` の Worker を deploy する操作**なら、ここで
+   workers.dev サブドメインの登録を求められます(求められなければ既に登録済み)。
+2. deploy の出力に実際の URL(`https://adpop-delivery.<account>.workers.dev`)が表示されます。
+   この値をそのまま `deploy/delivery-origin.txt` に書き、**既存の `UNSET` を上書きして**コミットします。
+   ```bash
+   echo -n "https://adpop-delivery.<account>.workers.dev" > deploy/delivery-origin.txt
+   git add deploy/delivery-origin.txt
+   git commit -m "deploy: confirm delivery origin"
+   ```
+3. **それ以後、このファイルの値は変えない。** アカウントの workers.dev サブドメイン名と、配信 Worker の
+   名前(`adpop-delivery`)も以後変えません。変えると、既に配ったタグが全部壊れます(タグは第三者の
+   LP に貼られていて回収できない)。さらに、**旧サブドメイン名を他人が後から取れるかは Cloudflare の
+   公式文書で確認できていません(未確認)**。変えない運用でこの不確実性そのものを避けます。
+4. この3手順を終えてから、§6 の「管理画面の Worker」を deploy します(`NEXT_PUBLIC_DELIVERY_ORIGIN` には
+   `deploy/delivery-origin.txt` と同じ値を渡す)。
+
+⚠ このリポジトリを fork して自分の環境に立てる場合、独自ドメインを選ぶこと自体は可能です
+(README「管理画面は LP と別の登録ドメインに置いてください」を満たせば構成として成立します)。
+その場合は `routes` を足し `workers_dev` を `false` にし、`deploy/delivery-origin.txt` に自分の
+確定ドメインを書いてください。**ただし、この手順書が案内する既定の構成は `workers.dev` 固定です。**
 
 ## 6. デプロイする
 
@@ -137,36 +166,49 @@ npx wrangler deploy -c wrangler.delivery.jsonc
 
 ### 管理画面の Worker
 
+🔴 **この Worker を deploy する前に、§5 の「確定させる手順」(配信 Worker の deploy → origin を
+`deploy/delivery-origin.txt` に書いてコミット)を終えてください。**
+
 ```bash
-NEXT_PUBLIC_DELIVERY_ORIGIN=https://adpop-delivery.<account>.workers.dev npx wrangler deploy -c wrangler.admin.jsonc
+NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deploy -c wrangler.admin.jsonc
 ```
 
 - 🔴 `wrangler.admin.jsonc` は `build.command` に
   `npm run build && node scripts/check-admin-headers.mjs && node scripts/check-database-ids-match.mjs`
   を設定してあります。**`wrangler deploy` を実行するだけで、埋め込み束ね → `next build` → `out/_headers`
-  の CSP 組み立て → ①CSP に `unsafe-inline`/`unsafe-eval` が無い ②決定済みの配信元(§5)が CSP の
-  `img-src` とビルド出力(`out/_next` の JS)の両方に実際に埋め込まれている ③`X-Content-Type-Options`/
-  `X-Frame-Options`/`Referrer-Policy` が揃っている ④両 `wrangler.*.jsonc` の database_id が一致している、
-  の4点が deploy の前に自動で検査されます**。`NEXT_PUBLIC_DELIVERY_ORIGIN` は**このコマンドを呼ぶシェルの
+  の CSP 組み立て → ①CSP に `unsafe-inline`/`unsafe-eval` が無い ②`NEXT_PUBLIC_DELIVERY_ORIGIN` が
+  `deploy/delivery-origin.txt` の確定値と**完全一致**している ③その値が CSP の `img-src` とビルド出力
+  (`out/_next` の JS)の両方に実際に埋め込まれている ④`X-Content-Type-Options`/`X-Frame-Options`/
+  `Referrer-Policy` が揃っている ⑤両 `wrangler.*.jsonc` の database_id が一致していて、かつ仮の値ではない、
+  の5点が deploy の前に自動で検査されます**。`NEXT_PUBLIC_DELIVERY_ORIGIN` は**このコマンドを呼ぶシェルの
   環境変数として**渡してください(`build.command` は呼び出し元の環境変数を引き継ぎます)。
 - ⚠ `build.command` は `wrangler dev`(ローカル開発)でも走ります(Wrangler の仕様。deploy 専用ではありません)。
   開発中に重いと感じたら、README の「動かし方(開発)」どおり `npm run build` を手で1回だけ走らせてから
   `admin:dev` を使う運用でも構いません(`build.command` はその場合も毎回走り直すので、ビルドが速いなら
   気にしなくて良い程度の差です)。
+- ⚠ **CI の dry-run は `CI_DRY_RUN=1` を立てて、この②・⑤の検査(確定値との一致・仮の値の拒否)だけを
+  省略します**(`.github/workflows/ci.yml`)。CI は実際の account 名も本番の D1 もまだ持たないので、
+  「確定した値と一致しているか」自体を検査できません。①・③・④(CSP の形・ビルド出力への埋め込み・
+  必須ヘッダ)は CI でも通常どおり検査されます。**`CI_DRY_RUN` は CI のこの2ステップ以外(と、
+  `unstable_startWorker` を使う一部のテスト)では設定しません。本番の `wrangler deploy` に
+  このフラグを渡すと、本番でも②・⑤の検査が省略されてしまうので、絶対に渡さないでください。**
 - 2026-10-05 実測:
   - `node scripts/check-admin-headers.mjs` を単独で実行し、`out/_headers` を一時的にリネームして退避させると
     `NG  …/out/_headers が無い` で非ゼロ終了し、戻すと `OK` に戻ることを確認した。
-  - 決定済みの形と違う `NEXT_PUBLIC_DELIVERY_ORIGIN`(独自ドメイン・未設定)を渡して build すると、
-    `NG  NEXT_PUBLIC_DELIVERY_ORIGIN が…決定済みの形と一致しない` で非ゼロ終了することを確認した。
-  - 決定済みの値を正しく渡して `next build` したのに、`check-admin-headers.mjs` だけを**別の正しい値**で
-    実行すると(=ビルド後に値を変えて検査を呼んだ想定)、`img-src` 側とビルド出力側の両方で不一致を検出して
-    非ゼロ終了することを確認した。
-  - `wrangler deploy -c wrangler.admin.jsonc --dry-run`(決定済みの値を渡す)は4つの `OK` 行を出して成功、
-    値を渡さずに実行すると `[custom build]` のログの中で `check-admin-headers.mjs` が失敗し、
-    `ERROR Running custom build … failed` で deploy 自体が止まることを確認した。
+  - `deploy/delivery-origin.txt` が `UNSET` のまま `NEXT_PUBLIC_DELIVERY_ORIGIN` に何を渡しても、
+    `NG  配信元がまだ確定していない` で非ゼロ終了することを確認した(`CI_DRY_RUN` 無し)。
+  - ファイルに確定値を書いた状態で、1文字違う値・別アカウント名の値を渡すと、どちらも
+    `NG  NEXT_PUBLIC_DELIVERY_ORIGIN が…完全には一致しない` で非ゼロ終了することを確認した
+    (単体テスト `tests/delivery-origin-guard.test.ts` で、この判定のロジック自体を一度壊して
+    テストが落ちることも確認済み)。
+  - `wrangler deploy -c wrangler.admin.jsonc --dry-run` に `CI_DRY_RUN=1` とダミーの
+    `NEXT_PUBLIC_DELIVERY_ORIGIN` を渡すと、確定値チェックを省略した上で成功することを確認した。
+    `CI_DRY_RUN` を外して(ファイルが `UNSET` のまま)実行すると、`ERROR Running custom build … failed`
+    で deploy 自体が止まることを確認した。
   - `wrangler.admin.jsonc` の `database_id` だけを別の値に差し替えて `wrangler deploy -c wrangler.delivery.jsonc --dry-run`
-    を実行すると、`check-database-ids-match.mjs` が不一致を検出して deploy が止まることを確認した
-    (どちらの Worker を先に deploy しても検査が効く)。
+    を実行すると、`CI_DRY_RUN=1` でも `check-database-ids-match.mjs` が不一致を検出して deploy が
+    止まることを確認した(どちらの Worker を先に deploy しても検査が効く。**仮の値どうしの一致**は
+    `CI_DRY_RUN=1` のときだけ許すが、**実際のずれ**は `CI_DRY_RUN` の有無にかかわらず止まる)。
 
 ## 7. secret を投入する(運用者の端末で)
 
@@ -240,6 +282,7 @@ npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ロ�
 - `wrangler r2 bucket create adpop-images`(§3)
 - `wrangler d1 migrations apply --remote`(§4。本番 D1 への実際の適用)
 - `wrangler d1 execute --remote --command "PRAGMA optimize;"`(§4)
-- `wrangler deploy`(§6。両 Worker)
+- 配信の Worker の deploy・`deploy/delivery-origin.txt` への確定値の記入とコミット(§5・§6)
+- `wrangler deploy`(§6。管理画面の Worker)
 - `npm run admin:hash` と4つの `wrangler secret put`(§7。運用者の端末で)
 - §8 の外形確認

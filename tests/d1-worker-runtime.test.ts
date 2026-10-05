@@ -19,7 +19,16 @@ let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
 let siteKey = "";
 let popupKey = "";
 
+const originalCiDryRun = process.env.CI_DRY_RUN;
+
 beforeAll(async () => {
+  // 🔴 `wrangler.delivery.jsonc` の `build.command`(deploy 前に database_id の仮の値を断る検査を含む)
+  //   は `unstable_startWorker` でも走る。このリポジトリは本番の D1 をまだ作っていないので
+  //   `database_id` は仮の値のまま(docs/deploy.md §2)。ここはテスト用のローカル D1 への接続を見る
+  //   目的で、本番 deploy の確認ではないので `CI_DRY_RUN=1` を立てて通す
+  //   (`scripts/check-database-ids-match.mjs` 参照。実際の id の不一致はこれでも通らない)。
+  process.env.CI_DRY_RUN = "1";
+
   // 同じ永続化ディレクトリにデータを置いてから、Worker をそこへ向けて起動する
   t = await openTestD1();
   const db = t.db;
@@ -54,6 +63,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await worker?.dispose();
   await t?.dispose();
+  if (originalCiDryRun === undefined) delete process.env.CI_DRY_RUN;
+  else process.env.CI_DRY_RUN = originalCiDryRun;
 });
 
 describe("配信の Worker(workerd で起動)", () => {

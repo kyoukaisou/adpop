@@ -9,17 +9,13 @@
   🔴 Cloudflare の `_headers` はパスのパターンごとにルールが分かれる(`/*` の1行 → インデントされた
   ヘッダの並び → 次の非インデント行で次のルール)。**管理画面は `/*` の1ルールに全ヘッダをまとめる設計**
   (`scripts/build-admin-headers.mjs`)なので、この検査も `/*` のルールだけを見る(ファイル全体の
-  どこかにヘッダがあれば合格、ではなく、実際に全画面へ適用されるルールを見る。Codex r1 Should-fix)。
+  どこかにヘッダがあれば合格、ではなく、実際に全画面へ適用されるルールを見る)。
 
-  🔴 配信ドメインは決定済み(`workers.dev` 固定・Worker 名 `adpop-delivery`。README「自前ホスト」/
-  `docs/deploy.md` §5)。`NEXT_PUBLIC_DELIVERY_ORIGIN` がこの形と一致しないまま deploy できないよう、
-  CSP の `img-src` に決定済みの origin がトークンとして入っているかも見る(Codex r1 Blocker 2)。
+  ⚠ **配信元(`NEXT_PUBLIC_DELIVERY_ORIGIN`)が「確定した値」と一致しているかどうかは、この
+  ファイルの責務ではない**(`scripts/delivery-origin-guard.mjs` の役割)。ここで見るのは、
+  渡された `deliveryOrigin` が CSP の `img-src` に実際に反映されているか(=生成が壊れていないか)
+  だけ。
 */
-
-/** 決定済みの形(`https://adpop-delivery.<account>.workers.dev`)と一致するかを見る。 */
-export function isDecidedDeliveryOrigin(value) {
-  return typeof value === "string" && /^https:\/\/adpop-delivery\.[a-z0-9-]+\.workers\.dev$/.test(value);
-}
 
 /** `_headers` を「パスパターン → ヘッダ名 → 値」のルールの配列に分ける(非インデント行がルールの境目)。 */
 export function parseHeaderBlocks(headersContent) {
@@ -49,7 +45,7 @@ function directives(csp) {
  * - `/*` ルール自体が無い
  * - `Content-Security-Policy` 行が無い / 空
  * - `script-src` に `'unsafe-inline'` または `'unsafe-eval'` が入っている(設計上使わない。M8)
- * - `img-src` に、決定済みの配信元(`NEXT_PUBLIC_DELIVERY_ORIGIN`)がトークンとして入っていない
+ * - `img-src` に `deliveryOrigin`(渡された値。空文字なら見ない)がトークンとして入っていない
  * - `X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy` が無い
  */
 export function headersGuardProblems({ headersContent, deliveryOrigin }) {
@@ -71,12 +67,7 @@ export function headersGuardProblems({ headersContent, deliveryOrigin }) {
       problems.push(`script-src に 'unsafe-inline' または 'unsafe-eval' が入っている: ${scriptSrc}`);
     }
 
-    if (!isDecidedDeliveryOrigin(deliveryOrigin)) {
-      problems.push(
-        `NEXT_PUBLIC_DELIVERY_ORIGIN が未指定か、決定済みの形(https://adpop-delivery.<account>.workers.dev)` +
-          `と一致しない: ${JSON.stringify(deliveryOrigin ?? null)}`,
-      );
-    } else {
+    if (deliveryOrigin) {
       const imgSrc = directiveList.find((d) => d.startsWith("img-src"));
       if (!imgSrc || !imgSrc.split(" ").includes(deliveryOrigin)) {
         problems.push(`img-src に配信元(${deliveryOrigin})がトークンとして入っていない: ${imgSrc ?? "(img-src 無し)"}`);
@@ -94,14 +85,14 @@ export function headersGuardProblems({ headersContent, deliveryOrigin }) {
 }
 
 /**
- * 決定済みの配信元(`NEXT_PUBLIC_DELIVERY_ORIGIN`)の文字列が、ビルドの出力(`_next` の JS 全部)の
+ * `deliveryOrigin`(渡された値。空文字なら見ない)の文字列が、ビルドの出力(`_next` の JS 全部)の
  * どこかに実際に埋め込まれているかを見る。CSP の `img-src` だけを見ても、`next build` を
  * `NEXT_PUBLIC_DELIVERY_ORIGIN` 無しで実行すれば `_headers` 側も img-src から配信元が抜けて
- * 整合してしまう(fail-closed だが「決定済みの値が実際にタグ・サムネイル表示に埋め込まれているか」
- * は別の主張なので、ビルド出力の字面でも確かめる。Codex r1 Blocker 2)。
+ * 整合してしまう(fail-closed だが「渡した値が実際にタグ・サムネイル表示に埋め込まれているか」
+ * は別の主張なので、ビルド出力の字面でも確かめる)。
  */
 export function deliveryOriginEmbeddedProblems({ deliveryOrigin, fileContents }) {
-  if (!isDecidedDeliveryOrigin(deliveryOrigin)) return [];
+  if (!deliveryOrigin) return [];
   const found = fileContents.some((content) => content.includes(deliveryOrigin));
   if (found) return [];
   return [

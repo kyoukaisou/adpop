@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SECRET_NAMES } from "../src/admin/config";
-import { databaseIdMismatchProblems } from "../scripts/database-id-guard.mjs";
+import { databaseIdMismatchProblems, isPlaceholderDatabaseId, PLACEHOLDER_DATABASE_ID } from "../scripts/database-id-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./helpers/wrangler-config";
 
 type Config = {
@@ -53,15 +53,30 @@ describe(".gitignore(L9)", () => {
   });
 });
 
-describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4)", () => {
-  it("🔴 配信と管理画面が同じ database_id を指している(「目で見比べる」をやめ、この1本で固定する)", () => {
+describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
+  it("現在のリポジトリの状態: 両方とも仮の値のまま一致している(本番 D1 を作る前の既知の状態)", () => {
+    // ⚠ これは「合格」ではない。`wrangler d1 create adpop` の後、両ファイルを実際の id に
+    //   差し替えるまでの間、意図してこの状態になっている(docs/deploy.md §2)。
+    //   deploy 前の検査(check-database-ids-match.mjs)はこの状態を CI_DRY_RUN=1 の時だけ通す。
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    expect(delivery.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
+    expect(admin.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
+
     const problems = databaseIdMismatchProblems({
       deliveryDatabaseId: delivery.d1_databases?.[0]?.database_id,
       adminDatabaseId: admin.d1_databases?.[0]?.database_id,
     });
-    expect(problems).toEqual([]);
+    expect(problems.map((p) => p.kind).sort()).toEqual(["placeholder", "placeholder"]);
+  });
+
+  it("通る例: 両方とも実在の値で、かつ一致している", () => {
+    expect(
+      databaseIdMismatchProblems({
+        deliveryDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+        adminDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+      }),
+    ).toEqual([]);
   });
 
   it("🔴 落ちる例: id が割れていれば databaseIdMismatchProblems が検出する(判定そのものの検査)", () => {
@@ -69,7 +84,30 @@ describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4)", () => {
     expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: undefined }).length).toBeGreaterThan(
       0,
     );
-    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: "a" })).toEqual([]);
+  });
+
+  it("🔴 落ちる例: 仮の値どうしが一致していても断る(前巡は「非空かつ一致」しか見ておらず、ここを見逃した)", () => {
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: PLACEHOLDER_DATABASE_ID,
+      adminDatabaseId: PLACEHOLDER_DATABASE_ID,
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.every((p) => p.kind === "placeholder")).toBe(true);
+  });
+
+  it("🔴 落ちる例: 片方だけ仮の値(もう片方は実在の値)", () => {
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: PLACEHOLDER_DATABASE_ID,
+      adminDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+    });
+    expect(problems.some((p) => p.kind === "placeholder")).toBe(true);
+    expect(problems.some((p) => p.kind === "mismatch")).toBe(true);
+  });
+
+  it("isPlaceholderDatabaseId は定数と完全一致したときだけ true", () => {
+    expect(isPlaceholderDatabaseId(PLACEHOLDER_DATABASE_ID)).toBe(true);
+    expect(isPlaceholderDatabaseId("00000000-0000-4000-8000-000000000001")).toBe(false);
+    expect(isPlaceholderDatabaseId(undefined)).toBe(false);
   });
 });
 
