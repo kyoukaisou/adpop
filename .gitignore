@@ -21,7 +21,3 @@ dist/delivery-assets/
 .tmp-*/
 .wrangler/
 .dev.vars*
-
-# テストが unstable_startWorker 用に一時的に作る build.command 無しの設定(tests/helpers/wrangler-config.ts
-# の createTestWorkerConfig。afterAll で消すが、異常終了時の取り残しに備えて追跡しない)
-wrangler.*.test-worker.*.jsonc

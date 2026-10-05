@@ -25,15 +25,17 @@ beforeAll(async () => {
   // 🔴 実物の `wrangler.delivery.jsonc` は一切書き換えない。`build.command`(deploy 前に
   //   database_id の仮の値を断る検査を含む)は `unstable_startWorker` でも走るが、このリポジトリは
   //   本番の D1 をまだ作っていないので `database_id` は仮の値のまま(docs/deploy.md §2)。
-  //   その検査自体は `tests/admin-config.test.ts` で別途固定済みなので、ここでは `build` を外した
-  //   一時ファイルを使い、`unstable_startWorker` がカスタムビルドを一切起動しないようにする。
-  //   `build.command` が本来担っていた `build:embed`(/embed/t.js を配るための束ね)は、ここで明示的に
-  //   実行してから worker を起動する。
+  //   その検査自体は `tests/admin-config.test.ts` で別途固定済みなので、ここでは本番には
+  //   deploy できない形の一時設定(`createTestWorkerConfig`。Worker 名・D1/R2 とも本番とは
+  //   絶対に一致しない)を使う。`build.command` が本来担っていた `build:embed`
+  //   (/embed/t.js を配るための束ね)は、ここで明示的に実行してから worker を起動する。
   execFileSync(process.execPath, ["scripts/build-embed.mjs"], { cwd: REPO_ROOT, stdio: "pipe" });
   testConfig = createTestWorkerConfig(DELIVERY_WRANGLER_PATH);
 
-  // 同じ永続化ディレクトリにデータを置いてから、Worker をそこへ向けて起動する
-  t = await openTestD1();
+  // 🔴 D1/R2 のシード(openTestD1)と、Worker を起動する設定(unstable_startWorker)は
+  //   **同じ一時設定ファイル**を見る必要がある(database_id・bucket_name を揃えるため)。
+  //   同じ永続化ディレクトリにデータを置いてから、Worker をそこへ向けて起動する
+  t = await openTestD1(testConfig.path);
   const db = t.db;
   await admin.ensureOwner(db, OWNER_A);
   const site = await admin.createSite(db, OWNER_A, { name: "A", allowedOrigins: [ORIGIN] });
