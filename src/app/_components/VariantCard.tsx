@@ -34,21 +34,22 @@
     (`onSaved({ silent: true, errorMessage })` で親にエラーを伝える)。また、親から新しい
     `variant` props が来たとき(他のカードの保存・一覧の再読み込み等)にもこのカードの表示を
     合わせる(`useEffect` で同期。保存・アップロード中は上書きしない)。
+
+  🔴 Codex 3巡目 Blocker: 上のprops同期が、**保存していない入力まで上書きしていた**。
+    パターンAを編集中(保存前)に、別の操作(トリガー切替・ポップ設定の保存・別パターンBの
+    保存/アーカイブ)が一覧全体を再読み込みさせると、Aの入力が警告なく保存済みの値に戻っていた
+    ——「操作中でないこと(busy)」と「未編集であること」は同義ではない。
+    `src/app/_lib/variantSync.ts` に dirty 判定を切り出し、**最後にサーバーと同期した値(baseline)
+    と今の入力が違うカードには props 同期をかけない**。そのカード自身の保存・画像の回復処理での
+    再同期が成功したときだけ baseline を更新する(`markSynced`)。
 */
 import { useEffect, useRef, useState } from "react";
 import { deleteJson, getJson, postJson, putJson, uploadVariantImage } from "../_lib/api";
 import { deliveryImageUrl } from "../_lib/delivery";
 import { imageErrorMessage } from "../_lib/imageErrors";
-import {
-  ApiVariant,
-  ApiVariantKind,
-  variantBody,
-  variantButtonLabel,
-  variantHeadline,
-  variantImageAlt,
-  variantImageKey,
-} from "../_lib/types";
+import { ApiVariant, ApiVariantKind, variantImageKey } from "../_lib/types";
 import { recoverFailedImageUpload } from "../_lib/variantRecovery";
+import { extractSyncedFields, isDirtyFrom, shouldApplyPropsSync, type SyncedFields } from "../_lib/variantSync";
 import { FieldError } from "../_components/ErrorBanner";
 
 export type VariantSavedOptions = { silent?: boolean; errorMessage?: string };
@@ -87,15 +88,19 @@ export function VariantCard({
   onArchived: (() => Promise<void> | void) | null;
   onCancelDraft: (() => void) | null;
 }) {
-  const [kind, setKind] = useState<ApiVariantKind>(variant?.kind === "image" ? "image" : "text");
-  const [headline, setHeadline] = useState(variant ? variantHeadline(variant) : "");
-  const [body, setBody] = useState(variant ? variantBody(variant) : "");
-  const [buttonLabel, setButtonLabel] = useState(variant ? variantButtonLabel(variant) : "");
-  const [destinationUrl, setDestinationUrl] = useState(variant?.destinationUrl ?? "");
-  const [imageAlt, setImageAlt] = useState(variant ? variantImageAlt(variant) : "");
+  const initialBaseline = variant ? extractSyncedFields(variant) : null;
+  const [kind, setKind] = useState<ApiVariantKind>(initialBaseline?.kind ?? "text");
+  const [headline, setHeadline] = useState(initialBaseline?.headline ?? "");
+  const [body, setBody] = useState(initialBaseline?.body ?? "");
+  const [buttonLabel, setButtonLabel] = useState(initialBaseline?.buttonLabel ?? "");
+  const [destinationUrl, setDestinationUrl] = useState(initialBaseline?.destinationUrl ?? "");
+  const [imageAlt, setImageAlt] = useState(initialBaseline?.imageAlt ?? "");
   const [showErrors, setShowErrors] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(variant?.id ?? null);
   const [imageKey, setImageKey] = useState<string | null>(variant ? variantImageKey(variant) : null);
+  // 🔴 Codex 3巡目 Blocker: 「最後にサーバーと同期した値」。これと今の入力が違うカードには
+  //   親からの新しい variant props を適用しない(未保存の入力を勝手に上書きしない)。
+  const [baseline, setBaseline] = useState<SyncedFields | null>(initialBaseline);
   // 🔴 下書き(savedId===null)が選んだがまだアップロードしていないファイル(Blocker 2 対応)
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
@@ -112,6 +117,7 @@ export function VariantCard({
   const hasImage = imageKey !== null || pendingFile !== null;
   const imageMissing = kind === "image" && !hasImage;
   const busy = status !== "idle";
+  const dirty = isDirtyFrom(baseline, { kind, headline, body, buttonLabel, imageAlt, destinationUrl });
 
   // オブジェクトURLの後始末
   useEffect(() => {
@@ -120,29 +126,40 @@ export function VariantCard({
     };
   }, [pendingPreviewUrl]);
 
-  /** サーバーから取ってきた値で画面の状態を置き換える(表示値=保存値にする。P-012対応)。 */
+  /**
+   * 今の入力をサーバーと同期済みとして記録する(表示値=保存値にする。P-012対応)。
+   * 🔴 Codex 3巡目 Blocker: ここで baseline も一緒に更新する——**この関数を呼ぶのは、
+   *   このカード自身の保存・画像の回復処理が成功したときだけ**(親からの新しい props では呼ばない)。
+   */
+  function markSynced(fields: SyncedFields) {
+    setKind(fields.kind);
+    setHeadline(fields.headline);
+    setBody(fields.body);
+    setButtonLabel(fields.buttonLabel);
+    setImageAlt(fields.imageAlt);
+    setDestinationUrl(fields.destinationUrl);
+    setBaseline(fields);
+  }
+
+  /** サーバーから取ってきた値で画面の状態を置き換える(applyVariant = markSynced + savedId/imageKey)。 */
   function applyVariant(v: ApiVariant) {
     setSavedId(v.id);
-    setKind(v.kind === "image" ? "image" : "text");
-    setHeadline(variantHeadline(v));
-    setBody(variantBody(v));
-    setButtonLabel(variantButtonLabel(v));
-    setImageAlt(variantImageAlt(v));
-    setDestinationUrl(v.destinationUrl);
+    markSynced(extractSyncedFields(v));
     setImageKey(variantImageKey(v));
   }
 
   /**
-   * 🔴 Codex 2巡目 Should fix 1: 親から新しい `variant` props が来たら(他のカードの保存・
-   *   一覧の再読み込み等)、このカードの表示をそれに合わせる。保存・アップロード中(`busy`)は
-   *   自分の操作の結果を上書きしてしまうため同期しない。下書き(variant===null)も対象外。
+   * 🔴 Codex 2巡目 Should fix 1 → 3巡目 Blocker で条件を追加: 親から新しい `variant` props が
+   *   来たら(他のカードの保存・一覧の再読み込み等)、このカードの表示をそれに合わせる。
+   *   ただし **保存・アップロード中(busy)**、または **未保存の変更がある(dirty)** ときは
+   *   自分の入力・操作結果を上書きしてしまうため同期しない。下書き(variant===null)も対象外。
    */
   useEffect(() => {
-    if (variant === null || busy) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 親から来た新しいvariantへ意図的に同期する(Codex 2巡目 Should fix 1)
-    applyVariant(variant);
+    if (!shouldApplyPropsSync({ hasVariant: variant !== null, busy, dirty })) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 親から来た新しいvariantへ意図的に同期する(dirtyでない場合だけ)
+    applyVariant(variant as ApiVariant);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- variant.content は毎回新しいオブジェクトなので、その変化だけを見る
-  }, [variant?.id, variant?.content, variant?.destinationUrl, variant?.archivedAt]);
+  }, [variant?.id, variant?.content, variant?.destinationUrl, variant?.archivedAt, busy, dirty]);
 
   /**
    * 保存・アップロード・画像削除の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。
@@ -283,6 +300,15 @@ export function VariantCard({
           // kept-without-image / unknown: 作ったIDを手放さない。保存済み・画像なしとして再同期する
           clearPendingFile();
           setSavedId(id);
+          // 🔴 このパターンの文字欄はサーバーに通った(失敗したのは画像だけ)。baselineもここで揃える
+          markSynced({
+            kind: payload.kind,
+            headline: payload.content.headline,
+            body: payload.content.body,
+            buttonLabel: payload.content.buttonLabel,
+            imageAlt: payload.content.imageAlt,
+            destinationUrl: payload.destinationUrl,
+          });
           setError(outcome.message);
           await onSaved({ silent: true });
           return;
