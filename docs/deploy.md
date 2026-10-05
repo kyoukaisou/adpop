@@ -1,13 +1,13 @@
 # Cloudflare に立てる(本番の手順)
 
-> 対象: `repos/adpop` を初めて Cloudflare(Workers + D1 + R2)に立てるとき。
-> 背景: 本番前の総点検(2026-10-05)で、立てる手順が無いことと、立てる前に決めるべきことが指摘された。
+> 対象: このリポジトリを初めて Cloudflare(Workers + D1 + R2)に立てるとき。
+> 背景: 本番前の点検(2026-10-05)で、立てる手順が無いことと、立てる前に決めるべきことが指摘された。
 > この文書が参照する README の節は [README.md](../README.md) を見てください。
 >
-> 🔴 **机上で閉じない。** この手順は、作業ツリー `repos/adpop-deploy`(クリーンな `git worktree`)から
+> 🔴 **机上で閉じない。** この手順は、クリーンな `git worktree` から
 > `npm ci` → `npm run build` → 両 Worker の `wrangler deploy --dry-run` → `wrangler d1 migrations apply --local`
-> を実際に1回走らせてから書いています(2026-10-05)。**Cloudflare 側に実リソースを作る手順(①②④⑦⑧)は
-> 確かめていません**(この PR の作業範囲では Cloudflare のリソースを作る・消す・deploy するコマンドを実行しない
+> を実際に1回走らせてから書いています(2026-10-05)。**Cloudflare 側に実リソースを作る手順(§2・§3・§4・§6・§7)は
+> 確かめていません**(作業範囲として、Cloudflare のリソースを作る・消す・deploy するコマンドを実行しない
 > という制約のため)。手順の各段に「確かめ方」を書いたので、**最初の実施者がそこで確認してから次へ進んでください**。
 
 ## 0. 前提
@@ -15,8 +15,9 @@
 - Node.js 24
 - Cloudflare アカウント1つ(二要素認証を有効にしておく。README「Cloudflare のアカウントを守ってください」)
 - デプロイに使う API トークンは **D1・R2・Workers に絞る**(`wrangler login` の全権トークンを使わない)
-- 🔴 **この手順のうち、パスワード・secret の生成と投入(§6)は、運用者の端末で人が行ってください。**
-  AI 社員が `npm run admin:hash` を実行すると、平文のパスワードが会話ログに残ります(本監査 P2)。
+- 🔴 **この手順のうち、パスワード・secret の生成と投入(§7)は、運用者の端末で人が行ってください。**
+  `npm run admin:hash` を人の手を介さない場所(AI エージェントの実行環境など)で実行すると、
+  平文のパスワードがその場所の記録(会話ログ等)に残ります。
 
 ## 1. クリーンな checkout
 
@@ -28,8 +29,8 @@ npm ci
 ```
 
 - **確かめ方**: `npm ci`(`npm install` ではない)で `package-lock.json` どおりに入ったことを確認する。
-  2026-10-05 実測ではこの手順で `node 24.10.0` / `619 packages` が通った(High 6件は devDependencies の
-  lint 用パッケージのみ。§5 の npm audit を見る)。
+  2026-10-05 実測ではこの手順で `node 24.10.0` / `619 packages` が通った。`npm audit` の結果は
+  本番前の点検で別途確認済み(本番(`--omit=dev`)の依存は Critical・High ともに0件)。
 
 ## 2. D1 を作る
 
@@ -40,8 +41,9 @@ npx wrangler d1 create adpop
 - 出力の `database_id` を**両方**の設定ファイルに差し替える:
   - `wrangler.delivery.jsonc` の `d1_databases[0].database_id`
   - `wrangler.admin.jsonc` の `d1_databases[0].database_id`
-- 🔴 **2つの id を必ず同じ値にする。** `tests/admin-config.test.ts` は database の**名前**(`adpop`)の一致しか
-  見ていません(本監査 L9)。id が割れていても検査は落ちないので、貼り替えたら目で見比べてください。
+- 🔴 **2つの id は、`tests/admin-config.test.ts` と、両 `wrangler.*.jsonc` の `build.command`
+  (`node scripts/check-database-ids-match.mjs`)が機械で一致を見ます。** 片方だけ差し替え忘れると、
+  テストと deploy の両方がそこで落ちます(「目で見比べる」手順はもう要りません)。
 - Time Travel は常時有効です。移行の前に時点を控えておくと、戻すときの目印になります:
   ```bash
   npx wrangler d1 time-travel info adpop -c wrangler.delivery.jsonc
@@ -97,22 +99,79 @@ npx wrangler d1 migrations apply adpop --remote -c wrangler.admin.jsonc
 - 📌 これを怠ると、索引を追加しても SQLite のクエリプランナが古い索引を選び続けることがある
   (開発中に実測済み。`ANALYZE` を1回実行した後は狙った索引が選ばれた)。
 
-## 5. デプロイより前に、配信ドメインを決める(戻しにくい・P3)
+## 5. 配信ドメインは決定済み(`workers.dev` 固定)
 
-- 埋め込みタグの `src`(配信ホスト)は、**配ったタグの数だけ第三者の LP に任意の JS を配れる場所**です。
-  タグは他人の LP に貼られるとこちらから回収できないので、**最初のタグを1本でも配る前に確定してください**。
-- 推奨順:
-  1. **独自ドメインを先に決めて、配信だけそこに置く**(自動更新・レジストラのロック・2要素認証)
-  2. 当面 `workers.dev` で配るなら、**`workers.dev` のサブドメイン名を以後変えない**と決める(旧名が
-     他人に取られうるかは Cloudflare の公式文書で確認できていません=未確認。変えない運用で避ける)
-- 決めた値を `NEXT_PUBLIC_DELIVERY_ORIGIN` として控える(例: `https://adpop-delivery.<account>.workers.dev`)。
-  **この値は、以後のビルドすべてで同じものを渡してください**(§7)。変えると、既に配ったタグとサムネイル
-  表示(管理画面の CSP の `img-src`)の両方が食い違います。
+**配信ホストは `workers.dev` を使います。独自ドメインは使いません。** 埋め込みタグの `src`(配信ホスト)は、
+**配ったタグの数だけ第三者の LP に任意の JS を配れる場所**で、タグは他人の LP に貼られるとこちらから
+回収できないため、この決定は確定事項として扱ってください。
 
-## 6. secret を投入する(運用者の端末で・P2)
+- 配信ホストは `adpop-delivery.<account>.workers.dev`(`<account>` はこの Cloudflare アカウントの
+  workers.dev サブドメイン)。`NEXT_PUBLIC_DELIVERY_ORIGIN` にはこの値をそのまま渡します(§6)。
+- 🔴 **アカウントの workers.dev サブドメイン名と、配信 Worker の名前(`adpop-delivery`)は、以後変えない。**
+  変えると、既に配ったタグが全部壊れます(タグは第三者の LP に貼られていて回収できない)。さらに、
+  **旧サブドメイン名を他人が後から取れるかは Cloudflare の公式文書で確認できていません(未確認)**。
+  変えない運用でこの不確実性そのものを避けます。
+- 🔴 **deploy はこの形(`https://adpop-delivery.<account>.workers.dev`)と一致しない
+  `NEXT_PUBLIC_DELIVERY_ORIGIN` を拒否します。** `scripts/admin-headers-guard.mjs` の
+  `isDecidedDeliveryOrigin()` が、管理画面の `build.command`(§6)から deploy 前に必ず検査します。
+  独自ドメインやワイルドカードを渡すと、ビルドではなく **deploy の直前でエラーになって止まります**
+  (fail-closed)。
+- ⚠ このリポジトリを fork して自分の環境に立てる場合、独自ドメインを選ぶこと自体は可能です
+  (README「管理画面は LP と別の登録ドメインに置いてください」を満たせば構成として成立します)。
+  その場合は `routes` を足し `workers_dev` を `false` にし、`isDecidedDeliveryOrigin()` の正規表現を
+  自分のドメインに合わせて書き換えてください。**ただし、この手順書が案内する既定の構成は `workers.dev` 固定です。**
 
-🔴 **この節だけは、AI 社員が代行しないでください。** `npm run admin:hash` は平文のパスワードを1回だけ
-標準出力に表示する設計です。ターミナルで直接実行し、Bash ツール越し(会話ログに残る経路)では実行しないこと。
+## 6. デプロイする
+
+### 配信の Worker
+
+```bash
+npx wrangler deploy -c wrangler.delivery.jsonc
+```
+
+- 🔴 `wrangler.delivery.jsonc` は `build.command` に
+  `npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs`
+  を設定してあります。**`wrangler deploy` を実行するだけで、埋め込みの束ね直し・サイズ上限・ライセンス境界・
+  database_id の一致がすべて deploy の前に走ります。** 埋め込みソースを直した後に `wrangler deploy` だけ
+  実行しても、古い `dist/delivery-assets` が上がることはありません(毎回束ね直すため)。
+
+### 管理画面の Worker
+
+```bash
+NEXT_PUBLIC_DELIVERY_ORIGIN=https://adpop-delivery.<account>.workers.dev npx wrangler deploy -c wrangler.admin.jsonc
+```
+
+- 🔴 `wrangler.admin.jsonc` は `build.command` に
+  `npm run build && node scripts/check-admin-headers.mjs && node scripts/check-database-ids-match.mjs`
+  を設定してあります。**`wrangler deploy` を実行するだけで、埋め込み束ね → `next build` → `out/_headers`
+  の CSP 組み立て → ①CSP に `unsafe-inline`/`unsafe-eval` が無い ②決定済みの配信元(§5)が CSP の
+  `img-src` とビルド出力(`out/_next` の JS)の両方に実際に埋め込まれている ③`X-Content-Type-Options`/
+  `X-Frame-Options`/`Referrer-Policy` が揃っている ④両 `wrangler.*.jsonc` の database_id が一致している、
+  の4点が deploy の前に自動で検査されます**。`NEXT_PUBLIC_DELIVERY_ORIGIN` は**このコマンドを呼ぶシェルの
+  環境変数として**渡してください(`build.command` は呼び出し元の環境変数を引き継ぎます)。
+- ⚠ `build.command` は `wrangler dev`(ローカル開発)でも走ります(Wrangler の仕様。deploy 専用ではありません)。
+  開発中に重いと感じたら、README の「動かし方(開発)」どおり `npm run build` を手で1回だけ走らせてから
+  `admin:dev` を使う運用でも構いません(`build.command` はその場合も毎回走り直すので、ビルドが速いなら
+  気にしなくて良い程度の差です)。
+- 2026-10-05 実測:
+  - `node scripts/check-admin-headers.mjs` を単独で実行し、`out/_headers` を一時的にリネームして退避させると
+    `NG  …/out/_headers が無い` で非ゼロ終了し、戻すと `OK` に戻ることを確認した。
+  - 決定済みの形と違う `NEXT_PUBLIC_DELIVERY_ORIGIN`(独自ドメイン・未設定)を渡して build すると、
+    `NG  NEXT_PUBLIC_DELIVERY_ORIGIN が…決定済みの形と一致しない` で非ゼロ終了することを確認した。
+  - 決定済みの値を正しく渡して `next build` したのに、`check-admin-headers.mjs` だけを**別の正しい値**で
+    実行すると(=ビルド後に値を変えて検査を呼んだ想定)、`img-src` 側とビルド出力側の両方で不一致を検出して
+    非ゼロ終了することを確認した。
+  - `wrangler deploy -c wrangler.admin.jsonc --dry-run`(決定済みの値を渡す)は4つの `OK` 行を出して成功、
+    値を渡さずに実行すると `[custom build]` のログの中で `check-admin-headers.mjs` が失敗し、
+    `ERROR Running custom build … failed` で deploy 自体が止まることを確認した。
+  - `wrangler.admin.jsonc` の `database_id` だけを別の値に差し替えて `wrangler deploy -c wrangler.delivery.jsonc --dry-run`
+    を実行すると、`check-database-ids-match.mjs` が不一致を検出して deploy が止まることを確認した
+    (どちらの Worker を先に deploy しても検査が効く)。
+
+## 7. secret を投入する(運用者の端末で)
+
+🔴 **この節は、運用者が自分の端末のターミナルで直接実行してください(AI エージェントに代行させない)。**
+`npm run admin:hash` は平文のパスワードを1回だけ標準出力に表示する設計です。
 
 ```bash
 npm run admin:hash
@@ -123,44 +182,17 @@ npx wrangler secret put ADMIN_OWNER_ID -c wrangler.admin.jsonc        # ← 表�
 npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ログインに使うメールアドレス
 ```
 
-- secret 投入前は管理 API は 503 を返します(fail-closed。順序はこれで問題ありません)。
+- 🔴 **この手順は §6 で管理画面の Worker を deploy した後に行います。** `wrangler secret put` は
+  対象の Worker 名(`-c` の設定が指す `name`)がまだ Cloudflare 上に存在しないと、確認プロンプトの後に
+  **空の draft Worker をその名前で新規作成してから** secret を書き込む、という報告が複数の
+  サードパーティ(Cloudflare 利用者の issue 報告)にあります。**Cloudflare 公式文書にはこの挙動の
+  明記が見つからず、この PR の作業では Cloudflare 上で実際に試していません(未確認)。** §6 を先に行えば、
+  このコマンドを打つ時点で Worker は既に存在しているので、この中間状態(空の draft Worker)を踏む
+  心配そのものを避けられます。
+- §6 で deploy した直後(secret 投入前)の管理 API は、secret が無いため 503 を返します
+  (`src/admin/app.ts` が secret 欠けを検出して返す値。fail-closed)。認証が開いたまま secret 無しで
+  動く順序にはなっていません。
 - ローカル開発用の `.dev.vars` は本番の secret と**別に**生成してください(同じ値を使い回さない)。
-
-## 7. デプロイする
-
-### 配信の Worker
-
-```bash
-npm run build:embed
-npx wrangler deploy -c wrangler.delivery.jsonc
-```
-
-- `wrangler.delivery.jsonc` には `build.command` が設定されていません。**`npm run build:embed` を先に
-  自分で実行してください**(忘れると `dist/delivery-assets` が無く、deploy はアセットディレクトリが
-  存在しないエラーで失敗します=fail-closed。2026-10-05 実測)。
-
-### 管理画面の Worker
-
-```bash
-NEXT_PUBLIC_DELIVERY_ORIGIN=<§5で決めた値> npx wrangler deploy -c wrangler.admin.jsonc
-```
-
-- 🔴 `wrangler.admin.jsonc` は `build.command` に
-  `npm run build && node scripts/check-admin-headers.mjs` を設定してあります。**`wrangler deploy` を
-  実行するだけで、埋め込み束ね → `next build` → `out/_headers` の CSP 組み立て → CSP の有無を見る検査が
-  自動で走ります**(この PR で追加。本監査 P1 「`next build` だけで止めた `out/` が CSP 無しで出る」への対処)。
-  `npm run build` を個別に走らせてから `wrangler deploy` を呼ぶ手順は不要になりましたが、`NEXT_PUBLIC_DELIVERY_ORIGIN`
-  は**このコマンドを呼ぶシェルの環境変数として**渡してください(`build.command` は呼び出し元の環境変数を
-  引き継ぎます)。
-- ⚠ `build.command` は `wrangler dev`(ローカル開発)でも走ります(Wrangler の仕様。deploy 専用ではありません)。
-  開発中に重いと感じたら、README の「動かし方(開発)」どおり `npm run build` を手で1回だけ走らせてから
-  `admin:dev` を使う運用でも構いません(`build.command` はその場合も毎回走り直すので、ビルドが速いなら
-  気にしなくて良い程度の差です)。
-- 2026-10-05 実測: `node scripts/check-admin-headers.mjs` だけを単独で実行し、
-  `out/_headers` を一時的にリネームして退避させると `NG  …/out/_headers が無い` で非ゼロ終了し、
-  戻すと `OK` に戻ることを確認しました。`wrangler deploy -c wrangler.admin.jsonc --dry-run` でも
-  `[custom build]` のログの中で `next build` → `build:admin-headers` → この検査の `OK` 行が
-  実際に流れることを確認しています。
 
 ## 8. 動作確認(外形)
 
@@ -171,22 +203,20 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=<§5で決めた値> npx wrangler deploy -c wrangler
 - `npx wrangler secret list -c wrangler.admin.jsonc` に4つの名前(`ADMIN_PASSWORD_HASH` /
   `ADMIN_RATE_LIMIT_KEY` / `ADMIN_OWNER_ID` / `ADMIN_EMAIL`)が出ること
 - `preview_urls: false` / `workers_dev: true` / `routes` 未設定であること(両 `wrangler.*.jsonc` の既定どおり。
-  Version URL を無効化し、`*.workers.dev` だけで出す。独自ドメインに `routes` を追加するのは、§5 で独自ドメインを
-  選んだ場合のみ)
+  Version URL を無効化し、`*.workers.dev` だけで出す)
 
 ## preview_urls・workers.dev・routes の扱い
 
 - **両 Worker とも `preview_urls: false` を明示しています。** 修正前の版(Version URL)を本番の secret・D1 の
-  まま動かし続けさせないため(本監査 M7)。この手順でも変更しません。
-- **`workers_dev: true` で、`routes` は設定していません。** つまり本番は `adpop-delivery.<account>.workers.dev` /
-  `adpop-admin.<account>.workers.dev` だけで出ます。管理画面を独自ドメインに移す場合は `routes` を足し、
-  `workers_dev` を `false` にしてください(README「管理画面は LP と別の登録ドメインに置いてください」)。
-  `*.workers.dev` はそれぞれ PSL(Public Suffix List)掲載で別サイト扱いなので、workers.dev のままでも
-  この要件は満たされています。
+  まま動かし続けさせないため。この手順でも変更しません。
+- **`workers_dev: true` で、`routes` は設定していません。** §5 の決定どおり、本番は
+  `adpop-delivery.<account>.workers.dev` / `adpop-admin.<account>.workers.dev` だけで出ます。
+  `*.workers.dev` はそれぞれ PSL(Public Suffix List)掲載で別サイト扱いなので、管理画面を LP と
+  別ドメインに置く要件(README)はこの構成で満たされています。
 - 🔴 **このアカウントに他の Worker を増やさないこと。** 配信と管理画面が同じ `<account>.workers.dev` ゾーンに
-  いるため、別の Worker を足すとそのゾーンの一部になり `SameSite=Strict` が効かなくなります(本監査 L5)。
+  いるため、別の Worker を足すとそのゾーンの一部になり `SameSite=Strict` が効かなくなります。
 
-## D1 の1日の書き込み上限について(受け入れて出す・P4)
+## D1 の1日の書き込み上限について(受け入れて出す)
 
 - **Workers Free の D1 は、1日 100,000 行の書き込み / 500 万行の読み取りが上限です**(一次:
   [D1 Pricing](https://developers.cloudflare.com/d1/platform/pricing/)。「When your account hits the daily
@@ -202,7 +232,7 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=<§5で決めた値> npx wrangler deploy -c wrangler
   を増やさずに済むため。⚠ 正規の流量だけでも、表示1回 ≈ 15 行(fire + impression + close/click)の見込みで
   **1日 約 6,000 表示**(推定)で枠に届くので、使う人数が増えたら Workers Paid への切り替えを再検討してください。
 
-## 次の本番適用で、まだ実行していないこと(Cloudflare の上の作業)
+## まだ実行していないこと(Cloudflare の上の作業)
 
 この PR の作業はすべて `--dry-run` / `--local` に限っています。次の実施者が実際に Cloudflare 上で行うのは:
 
@@ -210,6 +240,6 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=<§5で決めた値> npx wrangler deploy -c wrangler
 - `wrangler r2 bucket create adpop-images`(§3)
 - `wrangler d1 migrations apply --remote`(§4。本番 D1 への実際の適用)
 - `wrangler d1 execute --remote --command "PRAGMA optimize;"`(§4)
-- `npm run admin:hash` と4つの `wrangler secret put`(§6。運用者の端末で)
-- `wrangler deploy`(§7。両 Worker)
+- `wrangler deploy`(§6。両 Worker)
+- `npm run admin:hash` と4つの `wrangler secret put`(§7。運用者の端末で)
 - §8 の外形確認

@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SECRET_NAMES } from "../src/admin/config";
+import { databaseIdMismatchProblems } from "../scripts/database-id-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./helpers/wrangler-config";
 
 type Config = {
@@ -13,7 +14,8 @@ type Config = {
   vars?: Record<string, string>;
   observability?: { logs?: { invocation_logs?: boolean } };
   r2_buckets?: Array<{ binding: string; bucket_name: string }>;
-  d1_databases?: Array<{ binding: string; database_name: string }>;
+  d1_databases?: Array<{ binding: string; database_name: string; database_id?: string }>;
+  build?: { command?: string };
 };
 
 describe.each([
@@ -48,5 +50,48 @@ describe(".gitignore(L9)", () => {
   it("🔴 .dev.vars で始まるファイルを全部追跡しない(.dev.vars.production など)", () => {
     const lines = readFileSync(".gitignore", "utf8").split("\n").map((l) => l.trim());
     expect(lines).toContain(".dev.vars*");
+  });
+});
+
+describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4)", () => {
+  it("🔴 配信と管理画面が同じ database_id を指している(「目で見比べる」をやめ、この1本で固定する)", () => {
+    const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
+    const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: delivery.d1_databases?.[0]?.database_id,
+      adminDatabaseId: admin.d1_databases?.[0]?.database_id,
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it("🔴 落ちる例: id が割れていれば databaseIdMismatchProblems が検出する(判定そのものの検査)", () => {
+    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: "b" }).length).toBeGreaterThan(0);
+    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: undefined }).length).toBeGreaterThan(
+      0,
+    );
+    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: "a" })).toEqual([]);
+  });
+});
+
+describe("build.command の配線(Codex r1 Should-fix 1)", () => {
+  // 🔴 `build.command` からどれかの検査を外しても CI は気づかない(dry-run の前に別ステップで
+  //   `npm run build` 等を一度は走らせているため)。この検査は**設定ファイルの文字列**を見て、
+  //   deploy 前に必ず走るはずのコマンドが実際にそこへ書かれているかを固定する。
+
+  it("🔴 管理画面: build.command が npm run build と check-admin-headers.mjs を含む", () => {
+    const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    const command = admin.build?.command ?? "";
+    expect(command).toContain("npm run build");
+    expect(command).toContain("scripts/check-admin-headers.mjs");
+    expect(command).toContain("scripts/check-database-ids-match.mjs");
+  });
+
+  it("🔴 配信: build.command が build:embed・サイズ上限・ライセンス境界・database_id の一致を含む", () => {
+    const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
+    const command = delivery.build?.command ?? "";
+    expect(command).toContain("npm run build:embed");
+    expect(command).toContain("npm run check:bundle-size");
+    expect(command).toContain("npm run check:embed-independence");
+    expect(command).toContain("scripts/check-database-ids-match.mjs");
   });
 });
