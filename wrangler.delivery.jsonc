@@ -9,6 +9,14 @@
   "name": "adpop-delivery",
   "main": "src/delivery/worker.ts",
   "compatibility_date": "2026-09-30",
+  // 🔴 `wrangler deploy` は `dist/delivery-assets` をそのまま配る。`build.command` を設定しないと、
+  //   埋め込みソースを直した後に `build:embed` を忘れたまま deploy すると**古い成果物が上がる**
+  //   (本番前の点検 P1 / Codex r1 Blocker 3)。deploy のたびに埋め込みを束ね直し、サイズ上限・
+  //   ライセンス境界の検査も通してから deploy する。`database_id` の一致も同じコマンドで見る
+  //   (どちらの Worker を先に deploy しても検査が走る)。
+  "build": {
+    "command": "npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs"
+  },
   // 🔴 既定値に頼らず明示する(security 監査 M7)。Version URL は修正前の版を本番のデータのまま動かすので切る。
   "workers_dev": true,
   "preview_urls": false,

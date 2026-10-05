@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SECRET_NAMES } from "../src/admin/config";
+import { databaseIdMismatchProblems, isPlaceholderDatabaseId, PLACEHOLDER_DATABASE_ID } from "../scripts/database-id-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./helpers/wrangler-config";
 
 type Config = {
@@ -13,7 +14,8 @@ type Config = {
   vars?: Record<string, string>;
   observability?: { logs?: { invocation_logs?: boolean } };
   r2_buckets?: Array<{ binding: string; bucket_name: string }>;
-  d1_databases?: Array<{ binding: string; database_name: string }>;
+  d1_databases?: Array<{ binding: string; database_name: string; database_id?: string }>;
+  build?: { command?: string };
 };
 
 describe.each([
@@ -48,5 +50,87 @@ describe(".gitignore(L9)", () => {
   it("🔴 .dev.vars で始まるファイルを全部追跡しない(.dev.vars.production など)", () => {
     const lines = readFileSync(".gitignore", "utf8").split("\n").map((l) => l.trim());
     expect(lines).toContain(".dev.vars*");
+  });
+});
+
+describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
+  it("現在のリポジトリの状態: 両方とも仮の値のまま一致している(本番 D1 を作る前の既知の状態)", () => {
+    // ⚠ これは「合格」ではない。`wrangler d1 create adpop` の後、両ファイルを実際の id に
+    //   差し替えるまでの間、意図してこの状態になっている(docs/deploy.md §2)。
+    //   deploy 前の検査(check-database-ids-match.mjs)は省略する経路を持たないので、
+    //   本番の `wrangler deploy` はこの状態のままでは必ず止まる。
+    const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
+    const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    expect(delivery.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
+    expect(admin.d1_databases?.[0]?.database_id).toBe(PLACEHOLDER_DATABASE_ID);
+
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: delivery.d1_databases?.[0]?.database_id,
+      adminDatabaseId: admin.d1_databases?.[0]?.database_id,
+    });
+    expect(problems.map((p) => p.kind).sort()).toEqual(["placeholder", "placeholder"]);
+  });
+
+  it("通る例: 両方とも実在の値で、かつ一致している", () => {
+    expect(
+      databaseIdMismatchProblems({
+        deliveryDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+        adminDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+      }),
+    ).toEqual([]);
+  });
+
+  it("🔴 落ちる例: id が割れていれば databaseIdMismatchProblems が検出する(判定そのものの検査)", () => {
+    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: "b" }).length).toBeGreaterThan(0);
+    expect(databaseIdMismatchProblems({ deliveryDatabaseId: "a", adminDatabaseId: undefined }).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("🔴 落ちる例: 仮の値どうしが一致していても断る(前巡は「非空かつ一致」しか見ておらず、ここを見逃した)", () => {
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: PLACEHOLDER_DATABASE_ID,
+      adminDatabaseId: PLACEHOLDER_DATABASE_ID,
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.every((p) => p.kind === "placeholder")).toBe(true);
+  });
+
+  it("🔴 落ちる例: 片方だけ仮の値(もう片方は実在の値)", () => {
+    const problems = databaseIdMismatchProblems({
+      deliveryDatabaseId: PLACEHOLDER_DATABASE_ID,
+      adminDatabaseId: "11111111-aaaa-4bbb-8ccc-222222222222",
+    });
+    expect(problems.some((p) => p.kind === "placeholder")).toBe(true);
+    expect(problems.some((p) => p.kind === "mismatch")).toBe(true);
+  });
+
+  it("isPlaceholderDatabaseId は定数と完全一致したときだけ true", () => {
+    expect(isPlaceholderDatabaseId(PLACEHOLDER_DATABASE_ID)).toBe(true);
+    expect(isPlaceholderDatabaseId("00000000-0000-4000-8000-000000000001")).toBe(false);
+    expect(isPlaceholderDatabaseId(undefined)).toBe(false);
+  });
+});
+
+describe("build.command の配線(Codex r1 Should-fix 1)", () => {
+  // 🔴 `build.command` からどれかの検査を外しても CI は気づかない(dry-run の前に別ステップで
+  //   `npm run build` 等を一度は走らせているため)。この検査は**設定ファイルの文字列**を見て、
+  //   deploy 前に必ず走るはずのコマンドが実際にそこへ書かれているかを固定する。
+
+  it("🔴 管理画面: build.command が npm run build と check-admin-headers.mjs を含む", () => {
+    const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    const command = admin.build?.command ?? "";
+    expect(command).toContain("npm run build");
+    expect(command).toContain("scripts/check-admin-headers.mjs");
+    expect(command).toContain("scripts/check-database-ids-match.mjs");
+  });
+
+  it("🔴 配信: build.command が build:embed・サイズ上限・ライセンス境界・database_id の一致を含む", () => {
+    const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
+    const command = delivery.build?.command ?? "";
+    expect(command).toContain("npm run build:embed");
+    expect(command).toContain("npm run check:bundle-size");
+    expect(command).toContain("npm run check:embed-independence");
+    expect(command).toContain("scripts/check-database-ids-match.mjs");
   });
 });

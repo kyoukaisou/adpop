@@ -15,8 +15,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
 import { REPO_ROOT } from "../scripts/build-admin-headers.mjs";
+import { ADMIN_WRANGLER_PATH, createTestWorkerConfig } from "./helpers/wrangler-config";
 
-const ADMIN_WRANGLER_PATH = path.join(REPO_ROOT, "wrangler.admin.jsonc");
 const DELIVERY_ORIGIN_FOR_TEST = "https://adpop-delivery.example-test.workers.dev";
 
 let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
@@ -43,6 +43,8 @@ function directiveTokens(csp: string, name: string): string[] {
   return directive.slice(name.length + 1).split(" ");
 }
 
+let testConfig: ReturnType<typeof createTestWorkerConfig>;
+
 beforeAll(async () => {
   // 🔴 実物の `next build` を実際に走らせてから `_headers` を作る(手で書いた値・固定した
   //   サンプルHTMLではなく、ビルドが実際に出す HTML を検査する)。
@@ -50,8 +52,18 @@ beforeAll(async () => {
   execFileSync("npx", ["next", "build"], { cwd: REPO_ROOT, env, stdio: "pipe" });
   execFileSync(process.execPath, [path.join(REPO_ROOT, "scripts/build-admin-headers.mjs")], { cwd: REPO_ROOT, env, stdio: "pipe" });
 
+  // 🔴 本物の `wrangler.admin.jsonc` は一切書き換えない。`build.command`(deploy 前の検査を含む)は
+  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、このリポジトリはまだ
+  //   本番の D1・配信元を確定していない(docs/deploy.md §2・§5)ので、その検査は必ず非ゼロで終わる。
+  //   この検査自体は `tests/admin-config.test.ts`・`tests/delivery-origin-guard.test.ts` で
+  //   別途固定済みなので、ここでは `build` フィールドを外した一時ファイルを使い、
+  //   `unstable_startWorker` がカスタムビルドを一切起動しないようにする(省略する「経路」を検査
+  //   スクリプト自身には持たせず、この worker はそもそも検査を呼ばない設定で動かす)。
+  //   `out/` は直前の明示的な build 呼び出しで既に正しい内容になっている。
+  testConfig = createTestWorkerConfig(ADMIN_WRANGLER_PATH);
+
   worker = await unstable_startWorker({
-    config: ADMIN_WRANGLER_PATH,
+    config: testConfig.path,
     dev: { server: { port: 0 }, inspector: false, logLevel: "none", watch: false },
   });
   await worker.ready;
@@ -59,6 +71,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await worker?.dispose();
+  testConfig?.cleanup();
 });
 
 describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
