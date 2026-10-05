@@ -23,6 +23,7 @@ import { ConfirmDeleteDialog } from "../_components/ConfirmDeleteDialog";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44 } from "../_lib/a11y";
 import { DELIVERY_ORIGIN } from "../_lib/delivery";
+import { nextLoadErrorState } from "../_lib/pageLoad";
 
 /**
  * 🔴 Codex 2巡目 Should fix: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
@@ -42,6 +43,10 @@ function SiteContent() {
   const [site, setSite] = useState<ApiSite | null>(null);
   const [popups, setPopups] = useState<ApiPopup[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  // 🔴 Codex 5巡目: 最初の読み込みと、一度表示した後の再取得(各種操作後のload())を区別する。
+  //   このページは元々再取得失敗でも一覧を消していなかったが、文言と扱いをポップ編集画面と揃える。
+  const [reloadError, setReloadError] = useState(false);
+  const loadedOnceRef = useRef(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApiPopup | null>(null);
@@ -59,16 +64,19 @@ function SiteContent() {
       getJson<ApiPopup[]>(`/sites/${siteId}/popups`),
     ]);
     if (!siteResult.ok || !popupsResult.ok) {
-      setLoadError(true);
+      const next = nextLoadErrorState(false, loadedOnceRef.current);
+      setLoadError(next.loadError);
+      setReloadError(next.reloadError);
       return;
     }
     setLoadError(false);
+    setReloadError(false);
+    loadedOnceRef.current = true;
     setSite(siteResult.data);
     setPopups(popupsResult.data);
   }, [siteId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- マウント時に1回だけ取得する意図的な呼び出し(setStateはawaitの後)
     if (sessionState === "ready") void load();
   }, [sessionState, load]);
 
@@ -143,6 +151,11 @@ function SiteContent() {
 
         {loadError && (
           <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
+        )}
+        {reloadError && (
+          <div className="mb-6">
+            <ErrorBanner message="最新の状態を読み込めませんでした" onRetry={load} retryLabel="再読み込み" />
+          </div>
         )}
         {site === null && popups === null && !loadError && <Loading label="サイトを読み込み中" />}
 

@@ -3,7 +3,7 @@
 /*
   サイト一覧(画面設計 §3-2)。
 */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "../_lib/api";
 import { ApiPopup, ApiSite, SITE_LIMIT } from "../_lib/types";
 import { Header } from "../_components/Header";
@@ -12,6 +12,7 @@ import { ErrorBanner } from "../_components/ErrorBanner";
 import { EmptyState, SiteIcon } from "../_components/EmptyState";
 import { AddSiteModal } from "../_components/AddSiteModal";
 import { useRequireSession } from "../_lib/useRequireSession";
+import { nextLoadErrorState } from "../_lib/pageLoad";
 
 // 🔴 Codex 1巡目 Should fix: サイトごとのポップ取得が失敗したことを「稼働ポップなし」に混ぜない。
 //   取得できたか(`popupsOk`)を別に持ち、失敗はその行にだけ明示する(一覧全体は失敗にしない=他のサイトは見える)。
@@ -26,15 +27,22 @@ export default function SitesPage() {
   const sessionState = useRequireSession();
   const [rows, setRows] = useState<SiteRow[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  // 🔴 Codex 5巡目: 最初の読み込みと、一度表示した後の再取得を区別する(文言・扱いをポップ編集画面と揃える)。
+  const [reloadError, setReloadError] = useState(false);
+  const loadedOnceRef = useRef(false);
   const [showAdd, setShowAdd] = useState(false);
 
   const load = useCallback(async () => {
     const sitesResult = await getJson<ApiSite[]>("/sites");
     if (!sitesResult.ok) {
-      setLoadError(true);
+      const next = nextLoadErrorState(false, loadedOnceRef.current);
+      setLoadError(next.loadError);
+      setReloadError(next.reloadError);
       return;
     }
     setLoadError(false);
+    setReloadError(false);
+    loadedOnceRef.current = true;
     const sites = sitesResult.data;
     // ⚠ 「稼働中: 名前」の表示には、サイトごとのポップ一覧が要る(listSites は持たない)。
     //   サイト数は最大20件という構造的な天井があるため、ここでは1件ずつ取りに行く。
@@ -50,7 +58,6 @@ export default function SitesPage() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- マウント時に1回だけ取得する意図的な呼び出し(setStateはawaitの後)
     if (sessionState === "ready") void load();
   }, [sessionState, load]);
 
@@ -91,6 +98,11 @@ export default function SitesPage() {
 
         {loadError && (
           <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
+        )}
+        {reloadError && (
+          <div className="mb-6">
+            <ErrorBanner message="最新の状態を読み込めませんでした" onRetry={load} retryLabel="再読み込み" />
+          </div>
         )}
         {rows === null && !loadError && <Loading label="サイトを読み込み中" />}
 

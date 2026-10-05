@@ -15,6 +15,7 @@ import { Toast } from "../_components/Toast";
 import { VariantCard } from "../_components/VariantCard";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44_V } from "../_lib/a11y";
+import { nextLoadErrorState } from "../_lib/pageLoad";
 
 /**
  * Codex 1巡目 Should fix: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
@@ -70,6 +71,11 @@ function PopupContent() {
   const [triggers, setTriggers] = useState<ApiTrigger[] | null>(null);
   const [variants, setVariants] = useState<ApiVariant[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  // 🔴 Codex 5巡目 Blocker: 一度表示した後の再取得(保存・アーカイブ・トリガー切替後のload()等)が
+  //   失敗しても、編集画面全体をエラー画面に置き換えない(全VariantCardがアンマウントされ、
+  //   未保存の入力が消えるため)。今の画面を残したまま上部に帯を出す(nextLoadErrorState参照)。
+  const [reloadError, setReloadError] = useState(false);
+  const loadedOnceRef = useRef(false);
 
   const [name, setName] = useState("");
   const [frequency, setFrequency] = useState<Frequency | null>(null);
@@ -85,10 +91,15 @@ function PopupContent() {
     if (popupId === "") return;
     const popupResult = await getJson<{ popup: ApiPopup; triggers: ApiTrigger[]; variants: ApiVariant[] }>(`/popups/${popupId}`);
     if (!popupResult.ok) {
-      setLoadError(true);
+      // 🔴 Codex 5巡目 Blocker: 一度表示した後の失敗(hasLoadedOnce)では画面を置き換えない
+      const next = nextLoadErrorState(false, loadedOnceRef.current);
+      setLoadError(next.loadError);
+      setReloadError(next.reloadError);
       return;
     }
     setLoadError(false);
+    setReloadError(false);
+    loadedOnceRef.current = true;
     const { popup: p, triggers: t, variants: v } = popupResult.data;
     const siteResult = await getJson<ApiSite>(`/sites/${p.siteId}`);
     setPopup(p);
@@ -100,7 +111,6 @@ function PopupContent() {
   }, [popupId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- マウント時に1回だけ取得する意図的な呼び出し(setStateはawaitの後)
     if (sessionState === "ready") void load();
   }, [sessionState, load]);
 
@@ -199,6 +209,12 @@ function PopupContent() {
             { label: popup.name },
           ]}
         />
+
+        {reloadError && (
+          <div className="mb-6">
+            <ErrorBanner message="最新の状態を読み込めませんでした" onRetry={load} retryLabel="再読み込み" />
+          </div>
+        )}
 
         <form
           onSubmit={(event) => {
