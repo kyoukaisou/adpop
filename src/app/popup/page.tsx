@@ -16,6 +16,7 @@ import { VariantCard } from "../_components/VariantCard";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44_V } from "../_lib/a11y";
 import { nextLoadErrorState } from "../_lib/pageLoad";
+import { isPopupSettingsDirty, shouldApplyPopupSettingsFromServer, type Frequency, type PopupSettingsFields } from "../_lib/popupSettingsSync";
 
 /**
  * Codex 1巡目 Should fix: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
@@ -50,8 +51,6 @@ function triggerSubtitle(trigger: ApiTrigger): string | null {
   return null;
 }
 
-type Frequency = { suppressDays: string; sessionImpressions: string; postConversionDays: string; minDisplayDelaySeconds: string };
-
 function toFrequency(popup: ApiPopup): Frequency {
   return {
     suppressDays: String(popup.suppressDays),
@@ -79,6 +78,12 @@ function PopupContent() {
 
   const [name, setName] = useState("");
   const [frequency, setFrequency] = useState<Frequency | null>(null);
+  // 🔴 Codex 6巡目 Blocker: 「最後にサーバーと同期したポップ設定(名前・頻度)」。
+  //   これと今の入力が違う間は、再取得の値でポップ設定を上書きしない(VariantCardと同じ考え方)。
+  const [settingsBaseline, setSettingsBaseline] = useState<PopupSettingsFields | null>(null);
+  // load() は useCallback([popupId]) で固定されるクロージャなので、settingsDirty を直接参照すると
+  // 古い値を見てしまう。常に最新の値を読めるよう ref に保つ(loadedOnceRef と同じ理由)。
+  const settingsDirtyRef = useRef(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [triggerError, setTriggerError] = useState<string | null>(null);
@@ -86,6 +91,11 @@ function PopupContent() {
   const [draftKeys, setDraftKeys] = useState<string[]>([]);
   const [variantActionError, setVariantActionError] = useState<string | null>(null);
   const archiveInFlightRef = useRef(false);
+
+  const settingsDirty = frequency !== null && isPopupSettingsDirty(settingsBaseline, { name, frequency });
+  useEffect(() => {
+    settingsDirtyRef.current = settingsDirty;
+  });
 
   const load = useCallback(async () => {
     if (popupId === "") return;
@@ -105,8 +115,13 @@ function PopupContent() {
     setPopup(p);
     setTriggers(t);
     setVariants(v);
-    setName(p.name);
-    setFrequency(toFrequency(p));
+    // 🔴 Codex 6巡目 Blocker: ポップ名・頻度を未保存で編集中(dirty)の間は、再取得の値で
+    //   上書きしない(VariantCardのprops同期と同じ考え方)。dirtyでなければbaselineも揃える。
+    if (shouldApplyPopupSettingsFromServer(settingsDirtyRef.current)) {
+      setName(p.name);
+      setFrequency(toFrequency(p));
+      setSettingsBaseline({ name: p.name, frequency: toFrequency(p) });
+    }
     if (siteResult.ok) setSite(siteResult.data);
   }, [popupId]);
 
@@ -152,6 +167,19 @@ function PopupContent() {
       setSettingsError("保存できませんでした。もう一度お試しください。");
       return;
     }
+    // 🔴 Codex 6巡目 Blocker: 保存が成功したので、今の入力をそのままbaselineにする
+    //   (表示値=保存値。P-012と同じ考え方)。loadを呼ぶ前にdirtyを解消しておく(ref直書きで確定させる)。
+    const savedFrequency: Frequency = {
+      suppressDays: String(numbers.suppressDays),
+      sessionImpressions: String(numbers.sessionImpressions),
+      postConversionDays: String(numbers.postConversionDays),
+      minDisplayDelaySeconds: String(numbers.minDisplayDelaySeconds),
+    };
+    const savedName = name.trim();
+    setName(savedName);
+    setFrequency(savedFrequency);
+    setSettingsBaseline({ name: savedName, frequency: savedFrequency });
+    settingsDirtyRef.current = false;
     setToast("変更を保存しました");
     await load();
   }
