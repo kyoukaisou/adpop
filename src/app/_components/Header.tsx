@@ -8,6 +8,9 @@
     実際にログアウトを送る前に確認する。確認のモーダル自体はページ側が持つ(`LeaveGuard` 参照)ので、
     ここは「渡されたら確認を経由する・渡されなければ今まで通り」だけを知っていればよい。
     他の画面は渡さないので動きは変わらない。
+  🔴 Codex r1 Should fix: `doLogout` は「実際にログアウトして遷移できたか」を `boolean` で返す。
+    呼び出し側(ページ)が、失敗(= 遷移しなかった)ときに `beforeunload` の抑止を解除できるように
+    するため(`LeaveGuard`/`bypassOnce`/`cancelBypass` 参照)。
 */
 import { useRef, useState } from "react";
 import { postJson } from "../_lib/api";
@@ -17,21 +20,22 @@ export function Header({ onBeforeLeave }: { onBeforeLeave?: LeaveGuard }) {
   const [error, setError] = useState<string | null>(null);
   const submittingRef = useRef(false);
 
-  async function doLogout() {
+  async function doLogout(): Promise<boolean> {
     submittingRef.current = true;
     setError(null);
     const result = await postJson("/logout", {});
     if (result.ok || result.status === 401) {
       window.location.href = "/login";
-      return;
+      return true;
     }
     submittingRef.current = false;
     setError("ログアウトできませんでした。もう一度お試しください。");
+    return false;
   }
 
   function handleLogoutClick() {
     if (submittingRef.current) return;
-    if (onBeforeLeave) onBeforeLeave(() => void doLogout());
+    if (onBeforeLeave) onBeforeLeave(doLogout);
     else void doLogout();
   }
 

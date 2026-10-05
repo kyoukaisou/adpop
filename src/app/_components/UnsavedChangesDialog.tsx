@@ -8,21 +8,39 @@
   ⚠ ブラウザを閉じる・再読み込み(`beforeunload`)は、この仕組みでは止められない
     (カスタムダイアログの応答を待たずOSレベルで閉じられるため)。そちらはブラウザ自身の確認
     (`unsavedChanges.ts` の `useBeforeUnloadGuard`)を使う——文言を出せないのはブラウザの仕様。
+
+  🔴 Codex r1 Should fix: 「未保存の入力がある」のと「保存・アップロード・削除が進行中」は別の
+    理由なので、文言も分ける。進行中に離脱すると送信中のリクエストが中断されるため、
+    「保存していない」より強く注意を促す短い文言にする。
 */
 import { useId } from "react";
 import { Modal } from "./Modal";
 
-export function UnsavedChangesDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+const COPY: Record<"unsaved" | "busy", { title: string; body: string }> = {
+  unsaved: { title: "保存していない変更があります", body: "移動しますか。入力した内容は失われます。" },
+  busy: { title: "保存中です", body: "移動すると中断されます。" },
+};
+
+export function UnsavedChangesDialog({
+  reason,
+  onCancel,
+  onConfirm,
+}: {
+  reason: "unsaved" | "busy";
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   const titleId = useId();
   const descId = useId();
+  const { title, body } = COPY[reason];
 
   return (
     <Modal titleId={titleId} descriptionId={descId} onClose={onCancel}>
       <h2 id={titleId} className="mb-3 text-base font-semibold text-ink">
-        保存していない変更があります
+        {title}
       </h2>
       <p id={descId} className="mb-6 text-sm leading-relaxed text-ink/70">
-        移動しますか。入力した内容は失われます。
+        {body}
       </p>
       <div className="flex justify-end gap-2">
         <button

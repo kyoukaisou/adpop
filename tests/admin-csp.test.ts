@@ -31,6 +31,18 @@ function independentScriptHashes(html: string): Set<string> {
   return hashes;
 }
 
+/**
+ * CSP の1ディレクティブの値を、空白区切りのトークンに分ける(`scripts/csp.mjs` を再利用せず、
+ * この検査ファイルの中で独立に実装する。同じパーサを2回使うと生成ロジックが壊れても気づけない)。
+ * CSP Level 3 のスキームソース(`blob:` 等)は完全一致で判定されるので、部分文字列ではなく
+ * トークンの完全一致で見る(`https://blob:evil.example` のような文字列に誤って一致しない)。
+ */
+function directiveTokens(csp: string, name: string): string[] {
+  const directive = csp.split("; ").find((d) => d.startsWith(`${name} `));
+  if (directive === undefined) return [];
+  return directive.slice(name.length + 1).split(" ");
+}
+
 beforeAll(async () => {
   // 🔴 実物の `next build` を実際に走らせてから `_headers` を作る(手で書いた値・固定した
   //   サンプルHTMLではなく、ビルドが実際に出す HTML を検査する)。
@@ -74,7 +86,16 @@ describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
   it("🔴 配信元(NEXT_PUBLIC_DELIVERY_ORIGIN)が img-src に入っている(サムネイルを読める)", async () => {
     const response = await worker.fetch("http://adpop.test/sites");
     const csp = response.headers.get("content-security-policy") ?? "";
-    expect(csp).toContain(`img-src 'self' ${DELIVERY_ORIGIN_FOR_TEST}`);
+    expect(csp).toContain(`img-src 'self' blob: ${DELIVERY_ORIGIN_FOR_TEST}`);
+  });
+
+  it("🔴 Codex r1 Blocker: img-src に blob: がトークンとして完全一致で入っている(新規画像パターンの URL.createObjectURL() プレビューが CSP で断られないため)。blob: を外したら落ちる", async () => {
+    const response = await worker.fetch("http://adpop.test/popup");
+    const csp = response.headers.get("content-security-policy") ?? "";
+    expect(directiveTokens(csp, "img-src")).toContain("blob:");
+    // 用途を画像だけに限定する(script-src・connect-src には blob: を足さない)
+    expect(directiveTokens(csp, "script-src")).not.toContain("blob:");
+    expect(directiveTokens(csp, "connect-src")).not.toContain("blob:");
   });
 
   it("font-src 'self' が入っている(public/fonts/ の自前ホストフォントが読める。default-src 'none' だけでは断られる)", async () => {

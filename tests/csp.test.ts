@@ -64,14 +64,29 @@ describe("buildCsp", () => {
     expect(csp).not.toMatch(/\*/);
   });
 
-  it("配信元が無い(null)ときは img-src が 'self' だけ", () => {
+  it("配信元が無い(null)ときは img-src が 'self' blob: だけ", () => {
     const csp = buildCsp({ scriptHashes: [], deliveryOrigin: null });
-    expect(csp).toContain("img-src 'self'; connect-src");
+    expect(csp).toContain("img-src 'self' blob:; connect-src");
   });
 
-  it("配信元があれば img-src に足す", () => {
+  it("配信元があれば img-src に足す(blob: の後)", () => {
     const csp = buildCsp({ scriptHashes: [], deliveryOrigin: "https://delivery.example.com" });
-    expect(csp).toContain("img-src 'self' https://delivery.example.com");
+    expect(csp).toContain("img-src 'self' blob: https://delivery.example.com");
+  });
+
+  it("🔴 Codex r1 Blocker: img-src に blob: が無いと、新規画像パターンの URL.createObjectURL() プレビューが断られる", () => {
+    const csp = buildCsp({ scriptHashes: [], deliveryOrigin: null });
+    expect(csp).toMatch(/img-src [^;]*\bblob:/);
+  });
+
+  it("🔴 blob: は img-src だけに限定する(script-src・connect-src・style-src・font-src には足さない)", () => {
+    const csp = buildCsp({ scriptHashes: [scriptHashToken("x")], deliveryOrigin: "https://delivery.example.com" });
+    const directives = Object.fromEntries(csp.split("; ").map((d) => [d.split(" ")[0], d]));
+    expect(directives["script-src"]).not.toContain("blob:");
+    expect(directives["connect-src"]).not.toContain("blob:");
+    expect(directives["style-src"]).not.toContain("blob:");
+    expect(directives["font-src"]).not.toContain("blob:");
+    expect(directives["img-src"]).toContain("blob:");
   });
 
   it("渡した script ハッシュがすべて script-src に入る", () => {
@@ -122,7 +137,7 @@ describe("buildAdminHeadersFile(_headers の中身)", () => {
   it("🔴 ワイルドカードを含む配信元は無視する(fail-closed。CSPが緩むより配信元が出ない方を選ぶ)", () => {
     const content = buildAdminHeadersFile({ htmlContents: [`<script>a</script>`], deliveryOrigin: "https://*.example.com" });
     expect(content).not.toContain("*.example.com");
-    expect(content).toContain("img-src 'self';");
+    expect(content).toContain("img-src 'self' blob:;");
   });
 
   it("http(非TLS)の配信元は無視する", () => {
@@ -130,9 +145,9 @@ describe("buildAdminHeadersFile(_headers の中身)", () => {
     expect(content).not.toContain("insecure.example.com");
   });
 
-  it("正しい https 配信元は img-src に入る", () => {
+  it("正しい https 配信元は img-src に入る(blob: も残る)", () => {
     const content = buildAdminHeadersFile({ htmlContents: [], deliveryOrigin: "https://cdn.example.com" });
-    expect(content).toContain("img-src 'self' https://cdn.example.com");
+    expect(content).toContain("img-src 'self' blob: https://cdn.example.com");
   });
 
   it("全ルート(/*)の1ルールに、X-Content-Type-Options・Referrer-Policy・X-Frame-Options を含む", () => {

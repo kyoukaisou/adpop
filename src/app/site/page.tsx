@@ -13,7 +13,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { deleteJson, getJson, postJson, putJson } from "../_lib/api";
 import { ApiPopup, ApiSite, POPUP_LIMIT } from "../_lib/types";
-import { ApiPopupStatsMap, deleteConfirmStatsText, formatStatCount } from "../_lib/stats";
+import { ApiPopupStatsMap, deleteConfirmStatsText, formatStatCount, nextStatsState } from "../_lib/stats";
 import { Header } from "../_components/Header";
 import { Breadcrumb } from "../_components/Breadcrumb";
 import { Loading } from "../_components/Loading";
@@ -76,6 +76,11 @@ function SiteContent() {
       const next = nextLoadErrorState(false, loadedOnceRef.current);
       setLoadError(next.loadError);
       setReloadError(next.reloadError);
+      // 🔴 Codex r1 Should fix: この早期returnでstatsに触れないと、前回表示していた数字が
+      //   古いまま残り続ける(site/popupsの取得が失敗したのに、数字だけ最新のふりをする)。
+      //   次の stats state は `nextStatsState` に1本化する(site/popups が失敗した = この回の
+      //   読み込みは丸ごと信用できないので、ここでは常に null になる)。
+      setStats(nextStatsState(siteResult.ok, popupsResult.ok, statsResult));
       return;
     }
     setLoadError(false);
@@ -83,9 +88,7 @@ function SiteContent() {
     loadedOnceRef.current = true;
     setSite(siteResult.data);
     setPopups(popupsResult.data);
-    // 🔴 集計の失敗は一覧自体のエラーにしない。失敗したら null(= 「—」表示)に戻す
-    //   (前回の値を残すと、取得できていないのに古い数字が出続ける)。
-    setStats(statsResult.ok ? statsResult.data : null);
+    setStats(nextStatsState(siteResult.ok, popupsResult.ok, statsResult));
   }, [siteId]);
 
   useEffect(() => {

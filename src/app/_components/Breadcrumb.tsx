@@ -30,6 +30,7 @@ export function Breadcrumb({
                       const href = item.href as string;
                       onBeforeLeave(() => {
                         window.location.href = href;
+                        return true; // 常に実際の遷移を起こす(失敗しうるのはログアウトのAPI呼び出しだけ)
                       });
                     }
                   : undefined

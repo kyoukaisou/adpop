@@ -99,6 +99,7 @@ export function VariantCard({
   onArchived,
   onCancelDraft,
   onDirtyChange,
+  onBusyChange,
 }: {
   variant: ApiVariant | null;
   isDeliverable: boolean;
@@ -113,6 +114,13 @@ export function VariantCard({
    *   そのものは親が `draftKeys` で既に把握しているので、ここで重ねて判定を作らない。
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * 🔴 Codex r1 Should fix: 保存・アップロード・画像削除が**進行中**であることを親へ知らせる。
+   *   `dirty`(=未保存の入力差分)とは別の状態——画像の差し替えのような「即時送信」の操作は
+   *   文字欄が dirty でなくても、送信中に離脱するとリクエストが中断される。下書きカードも
+   *   アップロード中はこれを呼ぶ(dirtyと違い、下書きかどうかを区別しない)。
+   */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const initialBaseline = variant ? extractSyncedFields(variant) : null;
   const [kind, setKind] = useState<ApiVariantKind>(initialBaseline?.kind ?? "text");
@@ -158,6 +166,18 @@ export function VariantCard({
   // アンマウント時(アーカイブ・削除でカードが一覧から消えるとき)に dirty の記録を残さない。
   useEffect(() => {
     return () => onDirtyChangeRef.current?.(false);
+  }, []);
+
+  // 🔴 busy(保存・アップロード・画像削除の進行中)も同じ形で親へ伝える(dirtyとは別の状態)。
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  });
+  useEffect(() => {
+    onBusyChangeRef.current?.(busy);
+  }, [busy]);
+  useEffect(() => {
+    return () => onBusyChangeRef.current?.(false);
   }, []);
 
   // オブジェクトURLの後始末

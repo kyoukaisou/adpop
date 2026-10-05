@@ -49,12 +49,15 @@ export function collectScriptHashes(htmlContents) {
  * - `style-src`/`font-src` は `'self'`(管理画面は外部スタイルシート・自前ホストのフォントのみ。
  *   インラインの `style` 属性は使わない設計——`VariantCard` の進捗バーは `<progress>` の value 属性に
  *   変えてある。globals.css 参照)。
- * - `img-src` は `'self'` に加えて、設定済みなら配信の Worker のオリジン(サムネイル。delivery.ts 参照)。
+ * - `img-src` は `'self'` + `blob:`(`VariantCard` が新規の画像パターンのプレビューに
+ *   `URL.createObjectURL()` を使う。`blob:` は画像の表示にしか使っていないので `img-src` だけに限定し、
+ *   `script-src`/`connect-src` 等には足さない)に加えて、設定済みなら配信の Worker のオリジン
+ *   (保存済みパターンのサムネイル。delivery.ts 参照)。
  * - `connect-src 'self'`(管理 API は同じオリジン)。
  */
 export function buildCsp({ scriptHashes, deliveryOrigin }) {
   const scriptSrc = ["'self'", ...scriptHashes].join(" ");
-  const imgSrc = ["'self'", ...(deliveryOrigin ? [deliveryOrigin] : [])].join(" ");
+  const imgSrc = ["'self'", "blob:", ...(deliveryOrigin ? [deliveryOrigin] : [])].join(" ");
   return [
     `default-src 'none'`,
     `script-src ${scriptSrc}`,

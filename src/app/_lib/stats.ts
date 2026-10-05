@@ -29,13 +29,36 @@ export function formatStatCount(stats: ApiPopupStatsMap | null, popupId: string,
 }
 
 /**
- * 完全削除の確認ダイアログの文言(画面設計 §3-3・ADPOP-画面設計.md 117行)。
- * 「表示◯件・クリック◯件・閉じた◯件」。数字が取得できていなければ `null`
- * (`ConfirmDeleteDialog` 側が「この操作は元に戻せません。」にフォールバックする)。
+ * `site/page.tsx` の `load()` が、取得結果から次の `stats` state を決める部分だけを切り出した
+ * 純粋関数(DOM・React 無しでテストできる。`pageLoad.ts` の `nextLoadErrorState` と同じ考え方)。
+ * 🔴 Codex r1 Should fix: 以前は `site`/`popups` の取得が失敗した早期returnの経路で `stats` に
+ *   一切触れておらず、**前回表示していた古い数字が残ったまま**だった(取得失敗なのに、数字だけ
+ *   最新のふりをする)。`site`/`popups` のどちらかが失敗した = この回の読み込みは丸ごと
+ *   信用できないので、数字も必ず `null`(=「—」表示)に戻す。
  */
-export function deleteConfirmStatsText(stats: ApiPopupStatsMap | null, popupId: string): string | null {
+export function nextStatsState(
+  siteOk: boolean,
+  popupsOk: boolean,
+  statsResult: { ok: true; data: ApiPopupStatsMap } | { ok: false },
+): ApiPopupStatsMap | null {
+  if (!siteOk || !popupsOk) return null;
+  return statsResult.ok ? statsResult.data : null;
+}
+
+/**
+ * 完全削除の確認ダイアログの文言(画面設計 §3-3・ADPOP-画面設計.md 117行)。
+ * 「表示◯件・クリック◯件・閉じた◯件」。
+ * 🔴 Codex r1 Should fix: 数字が取得できていないとき、以前は `null` を返して
+ *   `ConfirmDeleteDialog` 側が「この操作は元に戻せません。」という**数字に一切触れない文**に
+ *   フォールバックしていた。しかしこの確認の目的は「数字も一緒に消えることを伝える」ことなので、
+ *   数字が取れていないからといって**その事実自体を画面から消してしまうと、消える数字が
+ *   あることをユーザーが知らないまま削除できてしまう**。取れていないときは各項目を「—」にして
+ *   明示する(0件と誤読させない P-011 と同じ理由で、取得失敗を「何も無い」と誤読させない)。
+ *   常に文字列を返す(`null` は返さない)。
+ */
+export function deleteConfirmStatsText(stats: ApiPopupStatsMap | null, popupId: string): string {
   const entry = stats?.[popupId];
-  if (entry === undefined) return null;
+  if (entry === undefined) return "表示 —・クリック —・閉じた —";
   const { impression, click, close } = entry.lifetime;
   return `表示 ${impression.toLocaleString("ja-JP")}・クリック ${click.toLocaleString("ja-JP")}・閉じた ${close.toLocaleString("ja-JP")}`;
 }
