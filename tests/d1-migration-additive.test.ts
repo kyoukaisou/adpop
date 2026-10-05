@@ -144,6 +144,106 @@ describe("既存の行を書き換える文(補助・字面)", () => {
   });
 });
 
+/*
+  🔴 **`wrangler d1 migrations apply --remote` の落とし穴**(2026-10-05 実際に本番適用で踏んだ・workers-sdk #15314)。
+  `--remote` は migration ファイルを**分割せず丸ごと1本の SQL として D1 の `/query` に送る**(`buildMigrationQuery`)。
+  分割は D1 のサーバー側がやるが、**トリガ本体の開始トークン `BEGIN` を大文字のみでしか認識しない**
+  (`END` の大文字小文字は無関係。CRLF も壊れる要因だが、このリポジトリの行末は LF で確認済み)。
+  → 小文字 `begin` を使うと、ローカル(Miniflare。SQLite は大文字小文字を区別しない)では通るのに、
+    `--remote` だけ `incomplete input: SQLITE_ERROR [code: 7500]` で全体が失敗する(ローカルでは再現しない)。
+  ⚠ ローカル実行では検出できないので、ここは**字面の検査**で止める。D1 がサーバー側で直すまでは必須。
+*/
+/**
+ * 行コメント(`--`)・ブロックコメント(`/* *\/`)・文字列リテラル(`'…'`・`''`エスケープ)・
+ * 引用識別子(`"…"`・`""`エスケープ)の**中身**を空白に置き換える(構文上の文字だけ元のまま残す)。
+ * ⚠ **除外するのは上の4種類だけ**。SQLite は識別子の引用に `[…]` や `` `…` `` も使え、
+ *   `$` を含む識別子も書ける(未引用のまま)。これらの中の `begin` は除外されず、
+ *   **誤って検出される**(Codex r2指摘・本部裁定)。これは**安全側**(検出しすぎて止まる)で、
+ *   リモートで壊れる書き方を見逃す側ではないため、このままでよいとした。
+ *   ⚠ 今のマイグレーションにこの形の識別子は無い(確認済み)。将来そうした名前が要るなら、ここを直す。
+ */
+function stripSqlCommentsAndStrings(sql: string): string {
+  let out = "";
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const c = sql[i];
+    const c2 = sql[i + 1];
+    if (c === "-" && c2 === "-") {
+      while (i < n && sql[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && c2 === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        out += sql[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      if (i < n) {
+        out += "  ";
+        i += 2;
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      out += " ";
+      i++;
+      while (i < n) {
+        if (sql[i] === quote) {
+          if (sql[i + 1] === quote) {
+            out += "  ";
+            i += 2;
+            continue;
+          }
+          out += " ";
+          i++;
+          break;
+        }
+        out += sql[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** 構文上の `begin`(大文字小文字を問わず)のうち、厳密に `BEGIN` でないものを拾う。 */
+function nonUppercaseBegins(sql: string): string[] {
+  const stripped = stripSqlCommentsAndStrings(sql);
+  return [...stripped.matchAll(/\bbegin\b/gi)].map((m) => m[0]).filter((word) => word !== "BEGIN");
+}
+
+describe("stripSqlCommentsAndStrings / nonUppercaseBegins(字面検査の中身)", () => {
+  it.each(["begin", "Begin", "bEgIn"])("🔴 構文上の %s は検出する", (word) => {
+    expect(nonUppercaseBegins(`create trigger t before insert on t\n${word}\n  select raise(abort, 'x');\nend;`)).toEqual([word]);
+  });
+
+  it.each([
+    ["大文字の BEGIN だけなら検出しない", "create trigger t before insert on t\nBEGIN\n  select raise(abort, 'x');\nend;"],
+    ["行コメントの中の begin は検出しない", "-- begin\ncreate trigger t before insert on t\nBEGIN\n  select 1;\nend;"],
+    ["単一引用文字列の中の begin は検出しない", "create table t (a text default 'begin');"],
+    ["二重引用識別子の中の begin は検出しない", 'create table "begin" (a text);'],
+    ["ブロックコメントの中の begin は検出しない", "/* begin */\ncreate trigger t before insert on t\nBEGIN\n  select 1;\nend;"],
+  ] as const)("✅ %s", (_label, sql) => {
+    expect(nonUppercaseBegins(sql)).toEqual([]);
+  });
+});
+
+describe("CREATE TRIGGER の BEGIN は大文字(D1 remote splitter の既知の穴・workers-sdk #15314)", () => {
+  it.each(FILES)("🔴 %s のトリガ本体が小文字/混在の begin で始まっていない", (file) => {
+    const sql = readFileSync(path.join(MIGRATIONS, file), "utf8");
+    expect(nonUppercaseBegins(sql)).toEqual([]);
+  });
+});
+
 describe("適用の単位(実測)", () => {
   it("✅ ローカルでは、途中で落ちたマイグレーションのファイルは丸ごと戻る(作った表も入れた行も残らない)", async () => {
     const ws = workspace();
