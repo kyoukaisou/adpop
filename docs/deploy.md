@@ -34,6 +34,14 @@ npm ci
 
 ## 2. D1 を作る
 
+> 🔴 **本番の D1 は作成済みです**(`wrangler d1 create adpop`。D-344・2026-10-05)。
+> その出力の `database_id`(`2d56e040-2e9a-4cb2-b431-2829cb488a96`)は、すでに両方の
+> 設定ファイルに入っています(`wrangler.delivery.jsonc` / `wrangler.admin.jsonc` の
+> `d1_databases[0].database_id`)。本番にこれから立てる人は、この節を読み飛ばして
+> § 3 に進んでください。
+>
+> 以下は、**別の環境(自分の Cloudflare アカウントなど)に初めて立てる人**のための手順です。
+
 ```bash
 npx wrangler d1 create adpop
 ```
@@ -189,11 +197,15 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
 - 🔴 **この5点の検査には、省略する経路が1つも無い。** 本番の `wrangler deploy` に何を渡しても
   (フラグ・環境変数いずれも)この検査を素通りさせることはできません。
 - ⚠ **CI の dry-run は、検査そのものは省略せず、ジョブのワークスペースの中だけ**(コミットしない)
-  **で `database_id`・配信元を CI 専用の実在しない値に一時的に書き換えてから**、この5点を
-  **通常の経路のまま**満たしています(`.github/workflows/ci.yml`)。CI は実際の account 名も
-  本番の D1 もまだ持たないため、`.invalid`(RFC 2606 の予約ドメイン。Cloudflare が絶対に発行しない
-  形)の配信元と、`.workers.dev`/UUID のどちらにも見えない固定文字列の `database_id` を使います。
-  ジョブが終わればランナーごと消えるので、これらの値が本番の deploy に渡ることはありません。
+  **で配信元を CI 専用の実在しない値に一時的に書き換えてから**、この5点を**通常の経路のまま**
+  満たしています(`.github/workflows/ci.yml`)。CI は実際の Cloudflare account の認証情報を持たないため、
+  配信元には `.invalid`(RFC 2606 の予約ドメイン。Cloudflare が絶対に発行しない形)を使います。
+  🔴 **`database_id` の書き換えは、本番の D1 を作る前の仮の値を置き換えるためだけの仕組みでした。**
+  本番の D1 を作成済みの今は、実在の id がすでにコミットされているため、CI の `sed` はそこで何も
+  一致せず素通りします(`.github/workflows/ci.yml` のコメント参照)。database_id はコミットされた
+  実在の値のまま dry-run されます(dry-run は Cloudflare に接続しないので、CI が認証情報を
+  持たないことと矛盾しません)。ジョブが終わればランナーごと消えるので、配信元の CI 専用の値が
+  本番の deploy に渡ることはありません。
 - 2026-10-05 実測:
   - `node scripts/check-admin-headers.mjs` を単独で実行し、`out/_headers` を一時的にリネームして退避させると
     `NG  …/out/_headers が無い` で非ゼロ終了し、戻すと `OK` に戻ることを確認した。

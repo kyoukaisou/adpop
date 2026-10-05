@@ -56,11 +56,16 @@ describe(".gitignore(L9)", () => {
 describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
   it("現在のリポジトリの状態: 両方とも本番 D1(D-344)の実在の id で一致していて、仮の値ではない", () => {
     // `wrangler d1 create adpop` で作った本番の D1 の id(docs/deploy.md §2)。
+    // 🔴 ここは「仮の値ではない」「2つが一致している」だけでは、両ファイルが同じ誤った値や
+    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(Codex r1 Blocker)。
+    //   本部が確認した本番 D1 の id と**完全一致**することまで固定する。
+    const PRODUCTION_DATABASE_ID = "2d56e040-2e9a-4cb2-b431-2829cb488a96";
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    expect(delivery.d1_databases?.[0]?.database_id).toBe(PRODUCTION_DATABASE_ID);
+    expect(admin.d1_databases?.[0]?.database_id).toBe(PRODUCTION_DATABASE_ID);
     expect(delivery.d1_databases?.[0]?.database_id).not.toBe(PLACEHOLDER_DATABASE_ID);
     expect(admin.d1_databases?.[0]?.database_id).not.toBe(PLACEHOLDER_DATABASE_ID);
-    expect(delivery.d1_databases?.[0]?.database_id).toBe(admin.d1_databases?.[0]?.database_id);
 
     const problems = databaseIdMismatchProblems({
       deliveryDatabaseId: delivery.d1_databases?.[0]?.database_id,

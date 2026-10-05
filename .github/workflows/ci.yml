@@ -62,9 +62,9 @@ jobs:
       #   配信元が deploy/delivery-origin.txt の確定値と完全一致するかを見る)を**省略する経路が
       #   無い**(前巡の `CI_DRY_RUN` フラグは、そのフラグを立てたまま `wrangler deploy` を直接
       #   実行すれば本番でも検査を回避できる欠陥だったため削除した。Codex r3 Blocker)。
-      #   このリポジトリはまだ本番の D1 を作っておらず(database_id は仮の値のまま)、配信元も
+      #   本番の D1 は作成済みで(database_id は実在の値。D-344)、配信元はまだ
       #   確定していない(deploy/delivery-origin.txt は UNSET のまま。docs/deploy.md §2・§5)ので、
-      #   CI がこのまま dry-run しても検査は必ず落ちる。
+      #   CI がこのまま dry-run しても配信元の検査で必ず落ちる。
       #   このステップは、**コミットしない一時的な書き換え**を CI ジョブのワークスペースの中だけに行い、
       #   検査を通常の経路のまま(省略せず)満たす。使う値は本番の値になりえない形にする:
       #   - `database_id` には `.workers.dev`/UUID のどちらにも見えない固定の文字列を使う
