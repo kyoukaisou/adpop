@@ -30,7 +30,7 @@ for (const bundle of BUNDLES) {
   🔴 **短めのキャッシュ(5分)**(旧 next.config.ts の headers() から移した)。
     ・長くすると、**壊れた版を配ったときに戻すのが遅くなる**(他人の LP に載っている)
     ・短すぎると、全訪問者が毎回取りに行く
-  ⚠ 実測ではなく実測に基づかない設計値。
+  ⚠ 実測に基づかない設計値。
 */
 const ASSET_HEADERS = `/embed/*
   Cache-Control: public, max-age=300, s-maxage=300

@@ -7,12 +7,11 @@
   (テストで「落ちる例」と「通る例」の両方を固定してある)。
 
   🔴 **省略する経路は無い。** `wrangler.admin.jsonc` の `build.command` から呼ぶ(deploy の直前に
-  必ず走る)。`deploy/delivery-origin.txt` が `UNSET`(未確定)のままなら必ず非ゼロで終わる
-  (レビュー指摘: 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま `wrangler deploy` を
-  直接実行すれば本番でも検査を回避できてしまう欠陥だったため削除した)。
-  CI は、このファイルを書き換える代わりに、実行するジョブのワークスペースの中だけで
-  `deploy/delivery-origin.txt` と `NEXT_PUBLIC_DELIVERY_ORIGIN` に CI 専用の値(コミットしない)を
-  一時的に入れてから、この検査を**通常の経路のまま**通す(`.github/workflows/ci.yml` 参照)。
+  必ず走る)。`deploy/delivery-origin.txt` が `UNSET`(未確定)のままなら必ず非ゼロで終わる。
+  本番の配信元はすでに独自ドメインへ確定済みで(docs/deploy.md §5)、`deploy/delivery-origin.txt` には
+  実在の値がコミットされている。CI はこの値を書き換えず、そのままの値でこの検査を通常の経路のまま
+  通す(`.github/workflows/ci.yml` 参照。旧構成では配信元が `UNSET` のままで、CI 専用の値へ一時的に
+  書き換える仕組みが要ったが、配信元を確定させた時点でその仕組み自体が要らなくなった)。
 
   手元で確かめるときは:
   NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npm run build \

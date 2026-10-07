@@ -85,6 +85,11 @@ npx wrangler r2 bucket create adpop-images
 
 ## 4. マイグレーションを当てる(deploy の前)
 
+> ⚠ **`db/migrations/*.sql` のコメントは書き換えていません。** 適用済みの移行ファイルには、作業当時の
+> 内部の注記(社内の呼び名・決定番号・内部文書へのパス)が残っています。本番にはすでにこの内容のまま
+> 当たっているため、ファイルを書き換えると**当てた履歴と、新しい環境を作るときに読む内容が食い違う**
+> ことになります。この文書・README・他のソースから内部語を外す作業の対象には、意図的に含めていません。
+
 ```bash
 npx wrangler d1 migrations apply adpop --remote -c wrangler.delivery.jsonc
 npx wrangler d1 migrations apply adpop --remote -c wrangler.admin.jsonc
@@ -137,10 +142,12 @@ npx wrangler d1 migrations apply adpop --remote -c wrangler.admin.jsonc
   Worker の `routes` を足さないこと(自分の環境に立てる場合も同じ)。
 - 🔴 **`workers_dev` も両方 `false`。** ダッシュボードで切るだけでは次の deploy で復活する
   (Cloudflare 公式文書「workers.dev」)ため、設定ファイルに書いて持つ。
-- 🔴 **deploy 前の検査(§6)に、この3点(workers_dev・zone の route が無いこと・custom domain の
-  ホストが確定値と一致すること)を見逃す経路は無い。** `scripts/check-custom-domain.mjs` が両
-  `build.command` から必ず走る。配信元が `deploy/delivery-origin.txt` の確定値と完全一致しているかの
-  検査(`scripts/delivery-origin-guard.mjs`)も、旧構成のときから変わらず走る。
+- 🔴 **正規の `npm run deploy:*` の経路では、deploy 前の検査(§6)に、この3点(workers_dev・zone の
+  route が無いこと・custom domain のホストが確定値と一致すること)を見逃す経路は無い。**
+  `scripts/check-custom-domain.mjs` が両 `build.command` から必ず走る。配信元が
+  `deploy/delivery-origin.txt` の確定値と完全一致しているかの検査(`scripts/delivery-origin-guard.mjs`)
+  も、旧構成のときから変わらず走る。⚠ **`wrangler deploy` を CLI 引数つきで直接呼んだ場合はこの限りではない**
+  (§6「正規の deploy 経路」の囲みを参照)。
 
 ### Cloudflare 上で初めて立てる手順
 

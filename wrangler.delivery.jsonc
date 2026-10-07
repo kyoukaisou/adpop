@@ -1,7 +1,7 @@
 // 配信の Worker(`/api/v1/config`・`/api/v1/events`・`/embed/*`)。
 // 管理画面は別の Worker(PR3b)。**配信の不具合と管理画面の不具合を切り離す**ため。
 //
-// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。)の id(docs/deploy.md §2)。
+// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop` で作ったもの)の id(docs/deploy.md §2)。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adpop-delivery",
