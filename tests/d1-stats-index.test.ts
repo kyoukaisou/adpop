@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // 🔴 索引 `events_site_kind_occurred_at`(db/migrations/0003_event_stats_index.sql・PR5a)の検査
-//   (Codex 1巡目 Should fix 3)。
+//   (レビュー指摘)。
 //
 // tests/d1-migration-additive.test.ts は「既存のスキーマが変わらないこと」だけを見るので、
 // **この索引自体を消しても**(= 0003 の CREATE INDEX を丸ごと消しても)何も落ちない。
@@ -15,7 +15,7 @@
 //   → **本番の Cloudflare D1 が `ANALYZE` を自動で走らせるか・走らせる頻度は未確認**。
 //   この検査は `ANALYZE` を明示的に呼んでから実行計画を読む(=「統計が十分にある」状態の振る舞いを固定する)。
 //   **本番で `ANALYZE` が走っていなければ、この索引は意図どおりに使われない可能性がある**
-//   ——本部へ別途申し送る(PR本文に明記)。
+// ——別途申し送る(PR本文に明記)。
 import type { D1Database } from "@cloudflare/workers-types";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as admin from "../src/lib/data/admin";

@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// ライセンスの分割(要件書 §5-6・本部裁定 2026-09-08)が、**ファイルとして在る**ことを固定する。
+// ライセンスの分割(要件書 §5-6・設計の決定 2026-09-08)が、**ファイルとして在る**ことを固定する。
 // 🔴 分割は最初のコミットから機械的に効かせる —— 混ぜて書くと後から分離できない。
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -60,7 +60,7 @@ describe("ライセンスの置き場", () => {
     const pkg = JSON.parse(read("packages/embed/package.json"));
     expect(pkg.name).toBe("adpop-js");
     expect(pkg.license).toBe("MIT");
-    // ⚠ publish は公開ゲート(社長承認)の後。それまで private を外さない。
+    // ⚠ publish は公開ゲートの後。それまで private を外さない。
     expect(pkg.private).toBe(true);
   });
 

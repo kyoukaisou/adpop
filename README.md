@@ -54,7 +54,6 @@
   が `/api/*` 以外の URL で静的配信する。`run_worker_first: ["/api/*"]`)
   - ログイン・サイト一覧(追加モーダル)・サイト内(埋め込みタグ・許可ドメイン・ポップ一覧・アーカイブ・完全削除の確認)・
     ポップ編集(名前・出すきっかけ・頻度・パターン最大5)
-  - 見本: `notes/プロダクト事業部/screenshots/2026-10-01-adpop-admin/` と `2026-10-04-adpop-image/`
   - 表示/クリック/閉じたの数値(`GET /sites/:siteId/popups/stats`。PR5a)を一覧(直近7日)・アーカイブ済み
     /完全削除の確認(累計)に表示する。取得できなかった(通信失敗・500・503)ときは **"—"** のまま
     (0件と誤読させない。P-011)
@@ -191,7 +190,7 @@ npm run admin:dev                 # http://localhost:8787 — /api/* 以外は o
 
 | 守り | 中身 |
 |---|---|
-| パスワード | **人が選ばない**。`npm run admin:hash` が 128 ビットの乱数で作る。保存はハッシュだけ(PBKDF2-SHA256・100,000 回・secret) |
+| パスワード | **人が選ばない**。`npm run admin:hash` が 128 ビットの乱数で作る。保存はハッシュだけ(PBKDF2-SHA256・100,000 回・secret)。パスワード管理ツールへ保存するときの一致方式は [docs/deploy.md](./docs/deploy.md) §7 を見てください(ホスト完全一致に絞る・絞れないツールは目で確認する) |
 | 試行回数 | 同じ接続元は 15 分に 5 回まで(**パスワードを確かめる前に数える**)。接続元は `CF-Connecting-IP` だけ・IPv6 は /64 に丸める。**IP は保存しない**(日付つきの HMAC)。⚠ **運用の前提**: 管理画面の Worker の前に、**同じゾーンの別の Worker を置かないこと**。同じゾーンの Worker から来たサブリクエストでは、接続元のヘッダを前段が書き換えられる(security の監査 M2 が Cloudflare の HTTP ヘッダの文書の `x-real-ip` の記述で確認)= 接続元ごとの数が前段の値になる |
 | セッション | Cookie は `__Host-adpop_session`・HttpOnly・Secure・SameSite=Strict。最長 7 日・操作が無ければ 24 時間。**パスワードを置き直すと全部ログアウト**。DB に保存するのは Cookie の値の SHA-256 |
 | CSRF | GET/HEAD 以外は Origin の完全一致・`Sec-Fetch-Site`(在れば same-origin)・Content-Type(JSON / 画像は `application/octet-stream`)。CORS のヘッダは返さない |
@@ -207,12 +206,14 @@ npm run admin:dev                 # http://localhost:8787 — /api/* 以外は o
    だけにする。zone の route は Custom Domain の Worker より前に走る(Cloudflare 公式文書「Custom Domains」)ため、
    広い pattern の Worker が1つ増えるだけでログインの通信を横取りできる経路になる。
 2. **管理画面の Cookie に `Domain` 属性を付けない。** `__Host-` 接頭辞(このリポジトリの既定)を使う。
-3. できれば管理画面の前に Cloudflare Access を置く(無料枠がある。設定していない場合はパスワード・
-   セッションの守りがそのまま効いている状態)。
+3. 🔴 **管理画面の前に Cloudflare Access を必ず置く**(手順は [docs/deploy.md](./docs/deploy.md) §6)。
+   同じ登録ドメインの別サブドメインに置く構成では、ログインの口がどこにあるかを名前で隠せない
+   (証明書は Certificate Transparency ログで公開される)ため、Access を省略可能な任意の強化とは
+   扱わない。⚠ Cloudflare の料金ページ([Zero Trust plans](https://www.cloudflare.com/plans/zero-trust-services/))は
+   無料プランを案内しているが、具体的な無料の人数とカード登録の要否は確認できていない(未確認)。
 
 🔴 **Cloudflare のアカウントを守ってください**: 二要素認証を必ず有効にし、デプロイに使う API トークンは
 D1・R2・Workers に絞ってください。**アカウントが乗っ取られたら、管理画面も全部取られます**(secret を書き換えられる)。
-さらに強くしたい場合は、管理画面の前に Cloudflare Access を置く方法があります(⚠ 料金・無料の範囲は未確認)。
 
 ⚠ **本番の Workers は PBKDF2 の反復を 100,000 回までに制限しています**(workerd のソースの既定の上限)。
 手元の wrangler にはこの上限が無いので、**手元の検査では上限に当たっても気づけません**。
@@ -281,5 +282,5 @@ D1・R2・Workers に絞ってください。**アカウントが乗っ取られ
   古い画像キーのまま読み込みに失敗し、**そのページを再読み込みするまでポップが出ません**
   (新しい `/img/<key>` を取りに行く仕組みはこの PR には無い=「出ないだけ」の fail-closed で、
   訪問者には壊れた画像リンクを見せません)。
-- 🔴 **画像の読み込みの待ち時間(8秒)に外部根拠はありません**(本部が置いた設計値)。
+- 🔴 **画像の読み込みの待ち時間(8秒)に外部根拠はありません**(実測に基づかない設計値)。
   画像の上限(2MB・GIF 3MB)を踏まえ、低速回線でも常識的な時間で決着する長さを狙ったものです。

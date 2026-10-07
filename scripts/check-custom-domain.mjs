@@ -6,8 +6,13 @@
   `wrangler.admin.jsonc` の `build.command` から両方で呼ぶ(どちらの Worker を先に deploy しても
   この検査が走る)。
 
-  🔴 **省略する経路は無い。** 本番の `wrangler deploy` に何を渡しても、この検査を素通りさせる
-  フラグ・環境変数は無い。
+  🔴 **この検査自体を素通りさせるフラグ・環境変数は無い。** `build.command` から必ず呼ばれ、常に
+  `wrangler.*.jsonc` の現在の値を読んで判定する。
+  ⚠ **ただし、この検査が見ているのは設定ファイルの値だけ。** `wrangler deploy --route`/`--domain` 等の
+  CLI 引数は、設定ファイルの `routes` とは別に、実際に deploy される routes を変えてしまう
+  (`scripts/deploy-args-guard.mjs` を見てください)。正規の deploy 経路(`npm run deploy:delivery` /
+  `npm run deploy:admin`)を使わず `wrangler deploy` を直接呼べば、この検査が合格した後に、検査が
+  見ていない routes で実際には deploy できる。
 */
 import { ADMIN_CUSTOM_DOMAIN_HOST, customDomainRouteProblems, workersDevDisabledProblems } from "./custom-domain-guard.mjs";
 import { readExpectedDeliveryOrigin } from "./delivery-origin-guard.mjs";

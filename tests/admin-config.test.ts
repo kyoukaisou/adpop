@@ -56,12 +56,12 @@ describe(".gitignore(L9)", () => {
   });
 });
 
-describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
-  it("現在のリポジトリの状態: 両方とも本番 D1(D-344)の実在の id で一致していて、仮の値ではない", () => {
+describe("2つの wrangler 設定の database_id(レビュー指摘)", () => {
+  it("現在のリポジトリの状態: 両方とも本番 D1の実在の id で一致していて、仮の値ではない", () => {
     // `wrangler d1 create adpop` で作った本番の D1 の id(docs/deploy.md §2)。
     // 🔴 ここは「仮の値ではない」「2つが一致している」だけでは、両ファイルが同じ誤った値や
-    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(Codex r1 Blocker)。
-    //   本部が確認した本番 D1 の id と**完全一致**することまで固定する。
+    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(レビュー指摘)。
+    // 確認済みの本番 D1 の id と**完全一致**することまで固定する。
     const PRODUCTION_DATABASE_ID = "2d56e040-2e9a-4cb2-b431-2829cb488a96";
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
@@ -192,29 +192,79 @@ describe("Custom Domain の routes(workers.dev・zone の routes に頼らない
     });
     expect(problems.length).toBeGreaterThan(0);
   });
+
+  // 🔴 レビュー指摘への対応: `custom_domain: true` と期待したホストが一致していても、
+  //   route オブジェクトに他の鍵が混ざっていたら合格にしない。`pattern`・`custom_domain` 以外の
+  //   鍵が1つでもあれば、それぞれ個別に落ちることを固定する(壊したら落ちることを1回ずつ確かめた)。
+  it.each([
+    ["zone_name(zone の route の鍵)", { zone_name: "kyoukaisou.dev" }],
+    ["zone_id(zone の route の鍵)", { zone_id: "abc123" }],
+    ["enabled: false(「正しいホストで配信中」という保証を壊す)", { enabled: false }],
+    ["previews_enabled: true", { previews_enabled: true }],
+  ])("🔴 落ちる例: route に %s が混ざっている", (_label, extra) => {
+    const problems = customDomainRouteProblems({
+      label: "配信",
+      routes: [{ pattern: "adpop.kyoukaisou.dev", custom_domain: true, ...extra }],
+      expectedHost: "adpop.kyoukaisou.dev",
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.some((p: string) => p.includes("以外の鍵がある"))).toBe(true);
+  });
 });
 
-describe("build.command の配線(Codex r1 Should-fix 1)", () => {
+describe("build.command の配線(レビュー指摘: toContain から厳密化)", () => {
   // 🔴 `build.command` からどれかの検査を外しても CI は気づかない(dry-run の前に別ステップで
   //   `npm run build` 等を一度は走らせているため)。この検査は**設定ファイルの文字列**を見て、
   //   deploy 前に必ず走るはずのコマンドが実際にそこへ書かれているかを固定する。
+  //
+  // 🔴 レビュー指摘への対応: 以前は `toContain` だけだったため、`node scripts/check-custom-domain.mjs || true`
+  //   のように無効化しても、文字列としては「含んでいる」ので通ってしまっていた(`;` で別のコマンドを
+  //   こっそり足す場合も同様)。` && ` で分割し、**各要素が期待した文字列と完全一致**しているか・
+  //   コマンド全体に `;`/`||` が無いかまで見る。
 
-  it("🔴 管理画面: build.command が npm run build と check-admin-headers.mjs・check-custom-domain.mjs を含む", () => {
+  /** `build.command` を ` && ` で分割する(他の区切り方は許さない)。 */
+  function splitBuildCommand(command: string): string[] {
+    return command.split(" && ").map((segment) => segment.trim());
+  }
+
+  it("🔴 管理画面: build.command が期待した4コマンドの ` && ` 連結と完全一致(`;`/`||` が無い)", () => {
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
     const command = admin.build?.command ?? "";
-    expect(command).toContain("npm run build");
-    expect(command).toContain("scripts/check-admin-headers.mjs");
-    expect(command).toContain("scripts/check-database-ids-match.mjs");
-    expect(command).toContain("scripts/check-custom-domain.mjs");
+    expect(command).not.toContain(";");
+    expect(command).not.toContain("||");
+    expect(splitBuildCommand(command)).toEqual([
+      "npm run build",
+      "node scripts/check-admin-headers.mjs",
+      "node scripts/check-database-ids-match.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
   });
 
-  it("🔴 配信: build.command が build:embed・サイズ上限・ライセンス境界・database_id の一致・custom domain の検査を含む", () => {
+  it("🔴 配信: build.command が期待した5コマンドの ` && ` 連結と完全一致(`;`/`||` が無い)", () => {
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const command = delivery.build?.command ?? "";
-    expect(command).toContain("npm run build:embed");
-    expect(command).toContain("npm run check:bundle-size");
-    expect(command).toContain("npm run check:embed-independence");
-    expect(command).toContain("scripts/check-database-ids-match.mjs");
-    expect(command).toContain("scripts/check-custom-domain.mjs");
+    expect(command).not.toContain(";");
+    expect(command).not.toContain("||");
+    expect(splitBuildCommand(command)).toEqual([
+      "npm run build:embed",
+      "npm run check:bundle-size",
+      "npm run check:embed-independence",
+      "node scripts/check-database-ids-match.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
+  });
+
+  // 🔴 落ちる例: 判定(splitBuildCommand + toEqual)自体が、`|| true` を見逃さないことを固定する。
+  it("🔴 落ちる例: 最後のコマンドに `|| true` を付けて無効化すると、分割後の要素が一致しない", () => {
+    const disabled = "node scripts/check-admin-headers.mjs && node scripts/check-custom-domain.mjs || true";
+    expect(splitBuildCommand(disabled)).not.toEqual([
+      "node scripts/check-admin-headers.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
+  });
+
+  it("🔴 落ちる例: `;` で別のコマンドを継ぎ足しても、`;` の不在チェックで検出できる", () => {
+    const smuggled = "node scripts/check-admin-headers.mjs && node scripts/check-custom-domain.mjs; echo ok";
+    expect(smuggled.includes(";")).toBe(true);
   });
 });

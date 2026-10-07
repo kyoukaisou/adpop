@@ -49,7 +49,7 @@ function directives(csp) {
  * - `img-src` に `deliveryOrigin` がトークンとして入っていない
  * - `X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy` が無い
  *
- * 🔴 **`deliveryOrigin` が空でも検査を省略しない**(Codex r3 Blocker: 前巡は空文字のときに
+ * 🔴 **`deliveryOrigin` が空でも検査を省略しない**(レビュー指摘: 前巡は空文字のときに
  * img-src の検査を黙ってスキップしており、「CSP の形・埋め込みの検査は省略しない」という約束に
  * 反していた)。
  */
@@ -97,7 +97,7 @@ export function headersGuardProblems({ headersContent, deliveryOrigin }) {
  * `_headers` 側も img-src から配信元が抜けて整合してしまう(fail-closed だが「渡した値が実際に
  * タグ・サムネイル表示に埋め込まれているか」は別の主張なので、ビルド出力の字面でも確かめる)。
  *
- * 🔴 `deliveryOrigin` が空でも検査を省略しない(headersGuardProblems と同じ理由。Codex r3 Blocker)。
+ * 🔴 `deliveryOrigin` が空でも検査を省略しない(headersGuardProblems と同じ理由。レビュー指摘)。
  */
 export function deliveryOriginEmbeddedProblems({ deliveryOrigin, fileContents }) {
   if (!deliveryOrigin) {

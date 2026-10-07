@@ -11,7 +11,7 @@ export const EMBED_DIR = "packages/embed";
 
 /**
  * TS / JS 系の拡張子。
- * 🔴 **`.jsx` / `.mts` / `.cts` / `.cjs` を落としていたのが穴だった**(Codex 1巡目)。
+ * 🔴 **`.jsx` / `.mts` / `.cts` / `.cjs` を落としていたのが穴だった**(レビュー指摘)。
  *   `loader.ts → ./bridge.jsx → ../../../src/…` が、集める対象の外なので緑のまま通った。
  */
 export const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];

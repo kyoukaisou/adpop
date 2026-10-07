@@ -8,7 +8,7 @@
 
   🔴 **省略する経路は無い。** `wrangler.admin.jsonc` の `build.command` から呼ぶ(deploy の直前に
   必ず走る)。`deploy/delivery-origin.txt` が `UNSET`(未確定)のままなら必ず非ゼロで終わる
-  (Codex r3 Blocker: 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま `wrangler deploy` を
+  (レビュー指摘: 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま `wrangler deploy` を
   直接実行すれば本番でも検査を回避できてしまう欠陥だったため削除した)。
   CI は、このファイルを書き換える代わりに、実行するジョブのワークスペースの中だけで
   `deploy/delivery-origin.txt` と `NEXT_PUBLIC_DELIVERY_ORIGIN` に CI 専用の値(コミットしない)を

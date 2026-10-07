@@ -47,7 +47,7 @@ function testOnlyIdentifiers(suffix: string) {
 
 /**
  * `sourcePath`(実物の `wrangler.*.jsonc`)の設定から、**実際に deploy しても本番に当たらない形**の
- * 一時設定を作る(Codex r4 Blocker への対応。以前の版は `build` だけを外していたため、
+ * 一時設定を作る(レビュー指摘への対応。以前の版は `build` だけを外していたため、
  * 残った Worker 名・本番の D1/R2・`assets` がそのままで、このファイルに対して
  * `wrangler deploy -c <このファイル>` を実行すれば本番 Worker を検査無しで上書きできた)。
  *

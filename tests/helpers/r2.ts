@@ -1,5 +1,5 @@
 /*
-  R2 の中身のスナップショット(キーだけでなく、**本文のバイト列と Content-Type** も = Codex #7 Should)。
+  R2 の中身のスナップショット(キーだけでなく、**本文のバイト列と Content-Type** も = レビュー指摘)。
   同じキーの本文やメタデータを上書きする退行も、比べれば見つかる。
 */
 import type { R2Bucket } from "@cloudflare/workers-types";

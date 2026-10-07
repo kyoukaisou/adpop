@@ -62,7 +62,7 @@ jobs:
       #   deploy/delivery-origin.txt の確定値と完全一致するかを見る・Custom Domain のホストが
       #   確定値と一致し workers_dev が false か見る)を**省略する経路が無い**(前巡の `CI_DRY_RUN`
       #   フラグは、そのフラグを立てたまま `wrangler deploy` を直接実行すれば本番でも検査を回避
-      #   できる欠陥だったため削除した。Codex r3 Blocker)。
+      # できる欠陥だったため削除した。レビュー指摘)。
       #   配信元(deploy/delivery-origin.txt)・database_id ともに、すでに確定した実在の値が
       #   コミットされている。CI はこの値を書き換えず、通常の経路のまま
       #   dry-run する(コミットされた確定値そのものは秘密ではなく、Cloudflare に接続しない

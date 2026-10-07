@@ -1,7 +1,7 @@
 /*
   `wrangler.*.jsonc` を読む共通ユーティリティ(JSON コメント以外は書き換えない)。
   `tests/helpers/wrangler-config.ts` と、deploy 前の検査(`scripts/check-*.mjs`)の両方が
-  この1本だけを使う(読み方を2つ持たない。Codex r1 Blocker 4 への対応)。
+  この1本だけを使う(読み方を2つ持たない。レビュー指摘への対応)。
   ⚠ ブロックコメント(/* *\/)は使っていないので扱わない(使ったら JSON.parse が落ちて気づける)。
 */
 import { readFileSync } from "node:fs";

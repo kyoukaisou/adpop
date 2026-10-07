@@ -9,7 +9,7 @@ export function ErrorBanner({
 }: {
   message: string;
   onRetry?: () => void;
-  /** Codex 1巡目 Nit: 用途ごとに渡せるようにする(保存なら「もう一度保存」、読み込みなら「再読み込み」)。 */
+  /** レビュー指摘: 用途ごとに渡せるようにする(保存なら「もう一度保存」、読み込みなら「再読み込み」)。 */
   retryLabel?: string;
 }) {
   return (

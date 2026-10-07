@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // `tests/helpers/wrangler-config.ts` の `createTestWorkerConfig()` が、**実際に deploy しても
-// 本番に当たらない形**の一時設定を作っているかを固定する(Codex r4 Blocker)。
+// 本番に当たらない形**の一時設定を作っているかを固定する(レビュー指摘)。
 // 前巡の版は `build` だけを外していたため、Worker 名・本番の D1/R2・`assets` がそのまま残り、
 // `wrangler deploy -c <生成したファイル>` で本番の Worker を検査無しで上書きできた。
 import { readFileSync } from "node:fs";

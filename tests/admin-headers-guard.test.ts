@@ -38,7 +38,7 @@ describe("headersGuardProblems", () => {
     expect(headersGuardProblems({ headersContent: content, deliveryOrigin: ORIGIN })).toEqual([]);
   });
 
-  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(Codex r3 Blocker)", () => {
+  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(レビュー指摘)", () => {
     const content = buildRealHeaders(undefined);
     const problems = headersGuardProblems({ headersContent: content, deliveryOrigin: "" });
     expect(problems.some((p) => p.includes("渡されていない"))).toBe(true);
@@ -136,7 +136,7 @@ describe("deliveryOriginEmbeddedProblems", () => {
     expect(problems.length).toBeGreaterThan(0);
   });
 
-  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(Codex r3 Blocker)", () => {
+  it("🔴 落ちる例: 配信元を渡さない(空文字)ときも検査を省略しない(レビュー指摘)", () => {
     const problems = deliveryOriginEmbeddedProblems({ deliveryOrigin: "", fileContents: [] });
     expect(problems.some((p) => p.includes("渡されていない"))).toBe(true);
   });

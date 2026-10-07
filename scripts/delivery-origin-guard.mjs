@@ -1,12 +1,12 @@
 /*
   配信元(NEXT_PUBLIC_DELIVERY_ORIGIN)の「確定した値」を、リポジトリの中の1か所
-  (`deploy/delivery-origin.txt`)だけが持つ。Codex r2 Blocker 2 への対応:
+  (`deploy/delivery-origin.txt`)だけが持つ。レビュー指摘への対応:
   前巡の検査(`adpop-delivery\.[a-z0-9-]+\.workers\.dev` の形であれば通す)は、
   **別のアカウント名でもタイプミスでも通ってしまう**(CI のダミー値が本番値と同じ扱いで
   通っていたのがその実例)。この検査は「形」ではなく「このファイルに書かれた値と完全一致するか」
   だけを見る。
 
-  🔴 本部が実測で確かめた事実: `wrangler whoami` の権限では、アカウントの workers.dev サブドメイン名を
+  🔴 実測で確かめた事実: `wrangler whoami` の権限では、アカウントの workers.dev サブドメイン名を
   読めない。さらに、**初めて workers.dev へ deploy するまでサブドメインが登録されていない可能性がある**
   (登録を求められる)。そのため、このファイルの初期値は実在しない配信元ではなく、
   「未確定」を表す定数 `UNSET` にしてある。実在する値を**先に決めてコミットしてから deploy する**

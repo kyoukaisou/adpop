@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// 🔴🔴 **REPLACE 系の構文で、変更禁止・上限・所有者の守りを迂回できないこと**(Codex #4 Blocker 1)。
+// 🔴🔴 **REPLACE 系の構文で、変更禁止・上限・所有者の守りを迂回できないこと**(レビュー指摘)。
 //   SQLite の `INSERT OR REPLACE` / `REPLACE INTO` / `UPDATE OR REPLACE` は、衝突した既存の行を**消してから**入れる。
 //   消す側は BEFORE UPDATE のトリガを通らず、配下は cascade で消える。UPSERT(`ON CONFLICT DO UPDATE`)も撃つ。
 //   ⚠ ここは**データ層を通さずに**直接 SQL を当てる(DB を直接触られたときに何が残るか)。

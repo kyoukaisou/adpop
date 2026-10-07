@@ -39,7 +39,7 @@ npm ci
 
 ## 2. D1 を作る
 
-> 🔴 **本番の D1 は作成済みです**(`wrangler d1 create adpop`。D-344・2026-10-05)。
+> 🔴 **本番の D1 は作成済みです**(`wrangler d1 create adpop`。2026-10-05)。
 > その出力の `database_id`(`2d56e040-2e9a-4cb2-b431-2829cb488a96`)は、すでに両方の
 > 設定ファイルに入っています(`wrangler.delivery.jsonc` / `wrangler.admin.jsonc` の
 > `d1_databases[0].database_id`)。本番にこれから立てる人は、この節を読み飛ばして
@@ -57,7 +57,7 @@ npx wrangler d1 create adpop
 - 🔴 **2つの id は、両 `wrangler.*.jsonc` の `build.command`(`node scripts/check-database-ids-match.mjs`)が
   機械で一致を見ます。** 片方だけ差し替え忘れると、deploy がそこで落ちます(「目で見比べる」手順はもう
   要りません)。
-- 🔴 **`tests/admin-config.test.ts` の「現在のリポジトリの状態」テストは、本部が確認した本番(D-344)の
+- 🔴 **`tests/admin-config.test.ts` の「現在のリポジトリの状態」テストは、確認済みの本番の
   id(`2d56e040-2e9a-4cb2-b431-2829cb488a96`)と完全一致するかを固定しています。** 自分の環境に別の D1 を
   立てる場合は、そのテストの `PRODUCTION_DATABASE_ID` の期待値も自分の id に書き換えてください
   (書き換えないと、設定ファイルは正しくても、このテストだけ落ちます)。
@@ -167,27 +167,40 @@ npx wrangler d1 migrations apply adpop --remote -c wrangler.admin.jsonc
 
 ## 6. デプロイする
 
+🔴 **正規の deploy 経路は、この2つの npm script だけです。** `wrangler deploy` を直接呼ばないでください。
+
+- 🔴 **理由(レビュー指摘への対応)**: deploy 前の検査(`scripts/check-custom-domain.mjs`。§5)は
+  `wrangler.*.jsonc` だけを読みます。Wrangler の CLI には `--route`/`--routes`(設定の `routes` を
+  **CLI から丸ごと置き換える**)・`--domain`/`--domains`(Custom Domain を**追加**する)があり、
+  `wrangler deploy --route '*.kyoukaisou.dev/*' -c wrangler.delivery.jsonc` のように直接呼べば、
+  検査を通過したあとに zone route を deploy できてしまいます。**この迂回経路そのものは、`wrangler`
+  自体のコマンドである以上、技術的には塞げません。** 代わりに、正規の deploy はこの2つの npm script
+  だけに絞り、このラッパー(`scripts/guarded-deploy.mjs`)が**追加の CLI 引数を一切受け付けない**ことで、
+  この経路からは `--route`/`--domain` 等を渡せないようにしています(`scripts/deploy-args-guard.mjs`)。
+  ⚠ **これは運用の約束です。** `wrangler` を直接呼ぶこと自体を禁止する仕組みではありません。
+
 ### 配信の Worker
 
 ```bash
-npx wrangler deploy -c wrangler.delivery.jsonc
+npm run deploy:delivery
 ```
 
 - 🔴 `wrangler.delivery.jsonc` は `build.command` に
   `npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs && node scripts/check-custom-domain.mjs`
-  を設定してあります。**`wrangler deploy` を実行するだけで、埋め込みの束ね直し・サイズ上限・ライセンス境界・
-  database_id の一致・Custom Domain の構成(§5)がすべて deploy の前に走ります。** 埋め込みソースを直した後に
-  `wrangler deploy` だけ実行しても、古い `dist/delivery-assets` が上がることはありません(毎回束ね直すため)。
+  を設定してあります。**`npm run deploy:delivery` を実行するだけで、埋め込みの束ね直し・サイズ上限・
+  ライセンス境界・database_id の一致・Custom Domain の構成(§5)がすべて deploy の前に走ります。**
+  埋め込みソースを直した後に `npm run deploy:delivery` だけ実行しても、古い `dist/delivery-assets` が
+  上がることはありません(毎回束ね直すため)。
 
 ### 管理画面の Worker
 
 ```bash
-NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deploy -c wrangler.admin.jsonc
+NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npm run deploy:admin
 ```
 
 - 🔴 `wrangler.admin.jsonc` は `build.command` に
   `npm run build && node scripts/check-admin-headers.mjs && node scripts/check-database-ids-match.mjs && node scripts/check-custom-domain.mjs`
-  を設定してあります。**`wrangler deploy` を実行するだけで、埋め込み束ね → `next build` → `out/_headers`
+  を設定してあります。**`npm run deploy:admin` を実行するだけで、埋め込み束ね → `next build` → `out/_headers`
   の CSP 組み立て → ①CSP に `unsafe-inline`/`unsafe-eval` が無い ②`NEXT_PUBLIC_DELIVERY_ORIGIN` が
   `deploy/delivery-origin.txt` の確定値と**完全一致**している ③その値が CSP の `img-src` とビルド出力
   (`out/_next` の JS)の両方に実際に埋め込まれている ④`X-Content-Type-Options`/`X-Frame-Options`/
@@ -199,8 +212,9 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
   開発中に重いと感じたら、README の「動かし方(開発)」どおり `npm run build` を手で1回だけ走らせてから
   `admin:dev` を使う運用でも構いません(`build.command` はその場合も毎回走り直すので、ビルドが速いなら
   気にしなくて良い程度の差です)。
-- 🔴 **この6点の検査には、省略する経路が1つも無い。** 本番の `wrangler deploy` に何を渡しても
-  (フラグ・環境変数いずれも)この検査を素通りさせることはできません。
+- ⚠ **この6点の検査には、`build.command` の中では省略する経路が無い。** ただし、正規の2コマンド
+  (`npm run deploy:delivery` / `npm run deploy:admin`)を使わず `wrangler deploy` を CLI 引数つきで
+  直接呼べば、この検査自体を迂回できます(上の囲みを参照)。
 - ⚠ **CI の dry-run は値を書き換えない。** 配信元(`deploy/delivery-origin.txt`)・database_id ともに
   実在の確定値がすでにコミットされているため、CI はそのままの値で dry-run する(`.github/workflows/ci.yml`)。
   dry-run は Cloudflare に接続しないので、CI が Cloudflare の認証情報を持たないことと矛盾しない。
@@ -224,6 +238,41 @@ NEXT_PUBLIC_DELIVERY_ORIGIN=$(cat deploy/delivery-origin.txt) npx wrangler deplo
   - `scripts/custom-domain-guard.mjs` の `customDomainRouteProblems()` 単体に、zone の route(`custom_domain`
     無し)・確定値と違うホスト名・確定ホストに加えて別の route が増えている場合をそれぞれ渡し、
     いずれも問題として検出されることを確認した(`tests/admin-config.test.ts` にも固定済み)。
+
+⚠ `.github/workflows/ci.yml` の dry-run ステップは、`npm run deploy:*` ではなく `npx wrangler deploy --dry-run`
+を直接呼びます。CI は `--dry-run` を渡す必要があり(実際に Cloudflare へ触らないため)、`guarded-deploy.mjs`
+は追加の引数を一切受け付けない設計(上の囲み)なので使えません。**この直接呼び出しは安全です**
+(`--dry-run` は Cloudflare に接続せず、CI のワークスペースには本物の認証情報が無いため、迂回しても
+実リソースに届きません)。本物の認証情報を持つのは運用者の端末だけなので、迂回の実害がある場面は
+運用者が `npm run deploy:*` を使わず `wrangler deploy` を直接呼んだときに限られます(docs の指示に従う前提)。
+
+### Cloudflare Access(管理画面の前に必須)
+
+🔴 **管理画面の deploy の直後に、Cloudflare Access を設定してください。** 管理画面(`adpop-admin.<ドメイン>`)は
+配信ホストと同じ登録ドメインのサブドメインに置く構成(§5)なので、Access はこの構成の条件の1つです
+(README「管理画面のログインと守り」)。
+
+1. Cloudflare ダッシュボード → **Workers & Pages** → `adpop-admin`(この Worker)を選ぶ →
+   **Access** タブ → **Protect this Worker behind Access** → **All traffic** を選ぶ(一次:
+   [Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/))。
+   この方式は Worker に紐づく Custom Domain(`adpop-admin.kyoukaisou.dev`)を含めて自動的に保護します
+   (公式文書: "every domain associated with the Worker, including its routes, Custom Domains,
+   `workers.dev` hostname, and previews")。**Tunnel は不要**(公式文書に Tunnel の要求の記述は無い)。
+   ⚠ この方式は WebSocket を使う Worker では使えません(公式文書の制約)が、管理画面の API は
+   WebSocket を使っていないので該当しません。
+2. **Authentication policy** で、運用者本人のメールアドレス(ワンタイムコード)か、運用者の Google
+   アカウントだけを許可するポリシーを選ぶ(既存のポリシーが無ければここで作る)→ **Apply Access**。
+3. **確かめ方(外形)**: ブラウザのプライベートウィンドウ(未ログイン状態)で
+   `https://adpop-admin.<ドメイン>/` を開き、ADPOP 自身のログイン画面ではなく **Cloudflare Access の
+   認証画面**が先に出ることを確認する。Access を通らずに ADPOP のログイン画面(パスワード入力欄)が
+   直接見えたら、設定が効いていない。
+4. **料金**: Cloudflare の公式の料金ページ([Zero Trust plans](https://www.cloudflare.com/plans/zero-trust-services/))は
+   無料プランの案内はしていますが、この文書を書いた時点でこのページから**具体的な無料の人数と、
+   支払い方法(カード)の登録が必須かどうかは確認できていません(未確認)**。サインアップの画面で
+   実際に確認してください。
+
+⚠ Access を設定しても、**ADPOP 自身のパスワード・Origin 検査は外さないでください**(README)。
+Access の設定ミスで素通りになったときの2枚目の守りです。
 
 ## 7. secret を投入する(運用者の端末で)
 
@@ -251,6 +300,20 @@ npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ロ�
   動く順序にはなっていません。
 - ローカル開発用の `.dev.vars` は本番の secret と**別に**生成してください(同じ値を使い回さない)。
 
+### パスワード管理ツールの設定(レビュー指摘への対応)
+
+🔴 `npm run admin:hash` が表示したパスワードをパスワード管理ツールへ保存するとき、**ホストの一致方式を
+確認してください。** 管理画面(`adpop-admin.<ドメイン>`)は配信ホストと同じ登録ドメインのサブドメインに
+置く構成(§5)なので、一致方式が「登録ドメイン単位」のツールでは、同じドメインの別のサブドメイン
+(試作・他の Worker)にもこの項目が自動入力の候補として出てしまいます(セキュリティ監査 §2-2 A2)。
+
+- **一致方式を「ホスト完全一致」に絞れるツール**(多くのパスワードマネージャーの詳細設定): ADPOP の
+  管理画面の項目だけ、一致方式を「ホスト完全一致」(`adpop-admin.<ドメイン>` に完全一致したときだけ
+  候補を出す)に設定してください。
+- **絞れないツール(ブラウザ内蔵の保存機能など)**: 自動入力の候補が出ても、**アドレスバーのホストが
+  `adpop-admin.<ドメイン>` に完全に一致していることを目で確認してから**選んでください。登録ドメインが
+  同じだけの別のサブドメインで自動入力の候補に出ても、そこで選ばない。
+
 ## 8. 動作確認(外形)
 
 - 本番で1回ログインする(README の既存の注意: 本番の PBKDF2 反復上限はローカルの wrangler では再現できません)
@@ -259,6 +322,27 @@ npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ロ�
 - R2 の公開(Public Development URL・カスタムドメイン)が有効になっていないこと(ダッシュボードで確認)
 - `npx wrangler secret list -c wrangler.admin.jsonc` に4つの名前(`ADMIN_PASSWORD_HASH` /
   `ADMIN_RATE_LIMIT_KEY` / `ADMIN_OWNER_ID` / `ADMIN_EMAIL`)が出ること
+- 🔴 **Cloudflare Access が効いていること**(上の節の「確かめ方」どおり、未ログインのプライベート
+  ウィンドウで Access の認証画面が先に出ること)
+- 🔴 **旧 URL(workers.dev)が応答しなくなっていること**: 配信の Worker を以前 `workers.dev` で
+  deploy したことがあるアカウントでは、その `adpop-delivery.<account>.workers.dev` へ `curl` して
+  応答が無い(DNS が解決しない、または 404/接続不可)ことを確認する。`workers_dev: false` で deploy
+  した後は、この旧 URL が応答を続けていないことまで確かめてください(§6 の設定だけでは、既にアカウント
+  側に残っている古い Version が残っていないかまでは検査が見ていない)。管理画面を `workers.dev` で
+  deploy したことが一度も無いアカウントでは、この確認は不要です。
+- 🔴 **新しいホストの証明書が発行され、HTTPS で 200 が返ること**: `curl -I https://adpop.kyoukaisou.dev/embed/t.js`
+  と `curl -I https://adpop-admin.kyoukaisou.dev/`(Access の認証画面を含め、TLS ハンドシェイクが
+  成功していること)の両方を確認する。証明書の発行には時間がかかることがある(§5)。
+- 🔴 **このゾーンの routes が0件・Custom Domain が確定した2件だけであること**(レビュー指摘への対応):
+  Cloudflare ダッシュボードの **Workers & Pages** → 対象の Worker → **Settings** → **Domains & Routes**
+  で、各 Worker の Custom Domain が確定したホスト名1件だけであることを見る。zone 全体の routes
+  (パターンで受ける方式)の一覧は API `GET /zones/{zone_id}/workers/routes` で確認できる
+  (一次: [List Routes](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/))。
+  Custom Domain の一覧は API `GET /accounts/{account_id}/workers/domains` でも確認できる
+  (一次: [List Worker Domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/))。
+  この確認は、`npm run deploy:*` 以外の経路(`wrangler deploy` への直接の CLI 引数)で意図しない
+  route が追加されていないかを、deploy 後に Cloudflare 側の実際の状態から見る最後の確認になる
+  (§6 の「正規の deploy 経路」の囲みを参照)。
 - `preview_urls: false` / `workers_dev: false` / `routes` が Custom Domain のホスト1件だけであること
   (両 `wrangler.*.jsonc` の既定どおり。Version URL を無効化し、独自ドメインだけで出す)
 
@@ -306,8 +390,10 @@ npx wrangler secret put ADMIN_EMAIL -c wrangler.admin.jsonc           # ← ロ�
 - `wrangler r2 bucket create adpop-images`(§3)
 - `wrangler d1 migrations apply --remote`(§4。本番 D1 への実際の適用)
 - `wrangler d1 execute --remote --command "PRAGMA optimize;"`(§4)
-- `wrangler deploy`(§6。配信・管理画面の両 Worker)。ここで初めて Custom Domain の証明書が
-  発行される(§5 手順2・3)
+- `npm run deploy:delivery` / `npm run deploy:admin`(§6。配信・管理画面の両 Worker)。ここで初めて
+  Custom Domain の証明書が発行される(§5 手順2・3)
 - DNSSEC の有効化(§5 手順4)
-- `npm run admin:hash` と4つの `wrangler secret put`(§7。運用者の端末で)
-- §8 の外形確認
+- 管理画面の Worker に Cloudflare Access を設定する(§6「Cloudflare Access」)
+- `npm run admin:hash` と4つの `wrangler secret put`(§7。運用者の端末で)。パスワード管理ツールの
+  一致方式の確認も同じ節
+- §8 の外形確認(旧 URL の停止・証明書・routes の一覧を含む)

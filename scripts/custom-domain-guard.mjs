@@ -36,6 +36,9 @@ export function workersDevDisabledProblems({ label, workersDev }) {
  * - `custom_domain: true` が付いていない route(= zone の route)が1件でもある → 問題
  * - `pattern` の一覧が期待したホスト名1件とちょうど一致しない → 問題
  */
+/** `route` オブジェクトが持つことを許す鍵は、この2つだけ(`pattern` と `custom_domain`)。 */
+const ALLOWED_ROUTE_KEYS = ["pattern", "custom_domain"];
+
 export function customDomainRouteProblems({ label, routes, expectedHost }) {
   const problems = [];
 
@@ -45,8 +48,22 @@ export function customDomainRouteProblems({ label, routes, expectedHost }) {
   }
 
   for (const route of routes) {
-    if (typeof route !== "object" || route === null || route.custom_domain !== true) {
+    if (typeof route !== "object" || route === null) {
+      problems.push(`${label}: routes の要素が object ではない: ${JSON.stringify(route)}`);
+      continue;
+    }
+    if (route.custom_domain !== true) {
       problems.push(`${label}: zone の routes(custom_domain: true が付いていない route)がある: ${JSON.stringify(route)}`);
+    }
+    // 🔴 レビュー指摘への対応: `custom_domain: true` だけでは、`zone_name`/`zone_id`(zone の route の鍵)・
+    //   `enabled: false`(Cloudflare の公式スキーマに在る。無効化されていても検査は合格してしまう)・
+    //   `previews_enabled` が混ざっていても合格してしまう。route オブジェクトは
+    //   `pattern`・`custom_domain` の2つの鍵だけを許し、他の鍵が1つでもあれば落とす。
+    const extraKeys = Object.keys(route).filter((key) => !ALLOWED_ROUTE_KEYS.includes(key));
+    if (extraKeys.length > 0) {
+      problems.push(
+        `${label}: route に ${ALLOWED_ROUTE_KEYS.join("・")} 以外の鍵がある(${extraKeys.join("・")}): ${JSON.stringify(route)}`,
+      );
     }
   }
 

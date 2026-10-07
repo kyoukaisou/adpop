@@ -1,5 +1,5 @@
 /*
-  管理画面の API(Hono)。設計 = notes の ADPOP-PR3b-設計 改訂 v2(security 監査 2026-10-01 を全件採用 = D-302)。
+  管理画面の API(Hono)。設計はセキュリティ監査(2026-10-01)の指摘を全件採用している。
 
   🔴 **D1・R2 の値に触らない**。データ層の関数へ `c.env`(バインドの入れ物)ごと渡す(境界の検査 = tests/d1-access-boundary)。
   🔴 **認証は既定で拒否**: `/api/admin/*` 全体に掛け、除外は `POST /api/admin/login` の1本だけ(監査 L4)。
@@ -78,7 +78,7 @@ function fromResult<T>(c: Ctx, result: admin.Result<T>, okStatus: 200 | 201 = 20
     case "no_deliverable_variant":
       return fail(c, 409, "no_deliverable_variant");
     case "last_deliverable_variant":
-      // 🔴 稼働中のポップから、配信できる最後のパターンを奪う操作(本部裁定。Codex #8 1巡目 Blocker 1)
+      // 🔴 稼働中のポップから、配信できる最後のパターンを奪う操作(設計の決定。レビュー指摘)
       return fail(c, 409, "last_deliverable_variant", {
         message: "稼働中のポップには、配信できるパターンが1つ以上必要です。先に停止してください",
       });
@@ -94,7 +94,7 @@ function fromResult<T>(c: Ctx, result: admin.Result<T>, okStatus: 200 | 201 = 20
 
 /**
  * 画像に触る操作の結果。🔴 **R2 から消せずに積んでいる画像があれば、ログに出し、応答にも数を載せる**
- *   (`data.cleanupPending`。Codex #7 Blocker 2: 黙って 200 を返さない)。積んだキーは次の画像の操作で消し直す。
+ *   (`data.cleanupPending`。レビュー指摘: 黙って 200 を返さない)。積んだキーは次の画像の操作で消し直す。
  */
 function withCleanup<T extends images.ImageOutcome>(c: Ctx, where: string, result: admin.Result<T>) {
   if (!result.ok) return fromResult(c, result);
@@ -294,7 +294,7 @@ export function createAdminApp(): Hono<AppEnv> {
   });
 
   // 🔴 数値(表示・クリック・閉じた。PR5a)。一覧は `data[popupId].sevenDay`、アーカイブ済み・完全削除の確認は
-  //   `data[popupId].lifetime` を読む(画面側の選び方は notes/プロダクト事業部/ADPOP-画面設計.md)。
+  //   `data[popupId].lifetime` を読む(画面設計で決めた、一覧とアーカイブ済みそれぞれの選び方)。
   app.get(`${API_PREFIX}/sites/:siteId/popups/stats`, async (c) => {
     const siteId = param(c, "siteId");
     if (siteId === null) return fail(c, 404, "not_found");

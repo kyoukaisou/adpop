@@ -38,7 +38,7 @@ describe("attachBeforeUnloadGuard", () => {
     detach();
   });
 
-  it("🔴 Codex r1 Blocker: bypass は1回使ったら消費され、2回目の beforeunload は通常どおり止める(以前は一度 true にすると永久に抑止され続けていた)", () => {
+  it("🔴 レビュー指摘: bypass は1回使ったら消費され、2回目の beforeunload は通常どおり止める(以前は一度 true にすると永久に抑止され続けていた)", () => {
     const dom = new JSDOM("<!doctype html>");
     let bypassed = true;
     const detach = attachBeforeUnloadGuard(

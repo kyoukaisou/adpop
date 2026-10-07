@@ -105,7 +105,7 @@ describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
     expect(csp).toContain(`img-src 'self' blob: ${DELIVERY_ORIGIN_FOR_TEST}`);
   });
 
-  it("🔴 Codex r1 Blocker: img-src に blob: がトークンとして完全一致で入っている(新規画像パターンの URL.createObjectURL() プレビューが CSP で断られないため)。blob: を外したら落ちる", async () => {
+  it("🔴 レビュー指摘: img-src に blob: がトークンとして完全一致で入っている(新規画像パターンの URL.createObjectURL() プレビューが CSP で断られないため)。blob: を外したら落ちる", async () => {
     const response = await worker.fetch("http://adpop.test/popup");
     const csp = response.headers.get("content-security-policy") ?? "";
     expect(directiveTokens(csp, "img-src")).toContain("blob:");

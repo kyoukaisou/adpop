@@ -1,10 +1,10 @@
 // 管理画面の Worker(API `/api/admin/*` + Next の静的書き出し = PR3c で画面が入った)。
-// 配信の Worker(wrangler.delivery.jsonc)とは別。**配信の不具合と管理画面の不具合を切り離す**(D-296)。
+// 配信の Worker(wrangler.delivery.jsonc)とは別。**配信の不具合と管理画面の不具合を切り離す**。
 //
 // 🔴 **秘密はここに書かない**(ADMIN_PASSWORD_HASH / ADMIN_EMAIL / ADMIN_OWNER_ID / ADMIN_RATE_LIMIT_KEY)。
 //   `npm run admin:hash` の出力を `wrangler secret put` で置く。ローカルは `.dev.vars`(.gitignore 済み)。
 //   ⚠ この設定ファイルに鍵の名前が現れたら検査が落ちる(tests/admin-config.test.ts)。
-// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。D-344)の id(docs/deploy.md §2)。
+// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。)の id(docs/deploy.md §2)。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adpop-admin",

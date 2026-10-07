@@ -144,7 +144,7 @@ afterEach(() => {
 });
 
 describe("トリガ(PR2 で動くのは ⑥exit intent の1つだけ)", () => {
-  it("🔴 PR2 で動くトリガは exit intent の1つだけ(2026-09-12 本部裁定)", () => {
+  it("🔴 PR2 で動くトリガは exit intent の1つだけ(2026-09-12 設計の決定)", () => {
     /*
       🔴 **「戻る」は PR4 へ送った。** 4巡のうち3巡で、この1機能から Blocker が出続けたため。
         ⚠ **設定の型は残してある**(DB の enum・`popup_triggers` の行)ので、
@@ -666,7 +666,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
   /*
     🔴 jsdom は `resources` を有効にしていない限り `<img src>` を実際に取りに行かない
       (`load`/`error` のどちらも自然には発火しない)。**本体は画像の読み込みを待ってから描く**
-      (Codex #8 1巡目 Blocker 2)ので、検査側で `HTMLImageElement.prototype.src` の setter を
+      (レビュー指摘)ので、検査側で `HTMLImageElement.prototype.src` の setter を
       差し替え、`src` が設定された瞬間に `load`/`error` を**非同期(マイクロタスク)**で発火させる
       (ブラウザの実際の挙動=同期では発火しない、に合わせる)。`newDom()` が作る `win` ごとに
       差し替えるので、他のテストへは漏れない。
@@ -856,7 +856,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
     expect(sent.at(-1)?.closeReason).toBe("backdrop");
   });
 
-  it("🔴 a11y: 画像の読み込みを待っている間にフォーカスを移していたら、閉じたときはその新しい場所へ戻る(Codex #8 2巡目 Should fix)", async () => {
+  it("🔴 a11y: 画像の読み込みを待っている間にフォーカスを移していたら、閉じたときはその新しい場所へ戻る(レビュー指摘)", async () => {
     /*
       再現: exit intent が発火した時点(トリガー時点)では要素Aにフォーカスがあったが、画像の読み込みを
       待っている最大8秒の間に、利用者が(ポップとは無関係に)LP の別の要素Bへフォーカスを移した。
@@ -919,7 +919,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
     expect(doc.activeElement, "発火時点の A へ戻ってしまった(B へ戻るべき)").toBe(elementB);
   });
 
-  describe("🔴 画像の読み込みに失敗したら、何も出さない(Codex #8 1巡目 Blocker 2)", () => {
+  describe("🔴 画像の読み込みに失敗したら、何も出さない(レビュー指摘)", () => {
     /*
       再現(Blocker 2 の原文どおり): LP が旧 imageKey を含む config を取得済みの状態で、管理側が
       画像を差し替え・削除して旧キーが `/img/<old-key>` で 404 になってから exit intent が発火する。
@@ -968,7 +968,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
       }
     });
 
-    it("🔴 画像を待っている間に本体がもう一度読み込まれても、ポップは1つしか出ない(Codex #8 2巡目 Blocker)", async () => {
+    it("🔴 画像を待っている間に本体がもう一度読み込まれても、ポップは1つしか出ない(レビュー指摘)", async () => {
       // ⚠ 本体がまだ DOM に挿していない <img> を直接つかむため、`doc.createElement` を捕まえる
       const createdImages: HTMLImageElement[] = [];
       const originalCreateElement = doc.createElement.bind(doc);
@@ -997,7 +997,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
       await flush();
 
       /*
-        🔴 **画像の `load` を保留したまま、`startRuntime()` を2回呼ぶ**(Codex 原文どおりの再現)。
+        🔴 **画像の `load` を保留したまま、`startRuntime()` を2回呼ぶ**(レビュー指摘)。
           以前は `drawing` が `startRuntime()` のローカル変数だったため、1回目が画像を待っている間に
           2回目を呼ぶと、2回目は**別の `drawing = false`** を見て、同じ画像をもう一度読み込みに行けた
           (両方成功すると DOM が2つ・impression も2件になっていた)。
@@ -1017,7 +1017,7 @@ describe("画像型(§4-3 B・PR4a。2026-10-04 追補v2)", () => {
       expect(sent.filter((e) => e.kind === "impression"), "impression が複数送られた").toHaveLength(1);
     });
 
-    it("🔴 タイムアウトの後に load が遅れて届いても、DOM・shown・impression のどれも成立しない(Codex #8 2巡目 Should fix)", async () => {
+    it("🔴 タイムアウトの後に load が遅れて届いても、DOM・shown・impression のどれも成立しない(レビュー指摘)", async () => {
       // ⚠ 本体がまだ DOM に挿していない <img> を直接つかむため、`doc.createElement` を捕まえる
       const createdImages: HTMLImageElement[] = [];
       const originalCreateElement = doc.createElement.bind(doc);

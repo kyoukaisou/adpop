@@ -1,19 +1,19 @@
 // @vitest-environment node
 //
-// 管理画面の数値(表示・クリック・閉じた)= `admin.getPopupStats`(PR5a・本部発注 D-330)。
+// 管理画面の数値(表示・クリック・閉じた)= `admin.getPopupStats`(PR5a・設計上の要件)。
 // 固定するもの:
 //   ・数える単位は**ポップごと**・クリックは**生の件数**(ユニークに畳まない)
 //   ・「直近7日」はリクエスト時刻からの 7×24 時間の**ローリング窓**そのもの(UTCの暦日にもJSTの暦日にも
-//     寄せない)——Codex 1巡目 Should fix 1: 境界(締切ちょうど・±1ms)と、暦日区切りに退行したら
+// 寄せない)——レビュー指摘: 境界(締切ちょうど・±1ms)と、暦日区切りに退行したら
 //     落ちる具体的な時刻を撃つ
 //   ・「累計」は期間の制約なし
 //   ・**件数0件**と**取得そのものの失敗**を区別する(P-011。0件はグループ化した行が無いだけの正しい値)。
 //     ⚠ ここで撃てるのは「DBバインドが無い」経路(= 例外を投げること)まで。「正常なバインドでクエリ自体が
 //     失敗したとき、APIが実際に何を返すか(500/503)」は tests/admin-api.test.ts が HTTP 層で撃つ
-//     (Codex 1巡目 Should fix 2)。
+//     (レビュー指摘)。
 //   ・所有者の分離は tests/d1-owner-isolation.test.ts が CASES 経由で撃つ(ここでは重複させない)
 //   ・新しい索引 `events_site_kind_occurred_at` の列順と、実クエリでの利用は tests/d1-stats-index.test.ts
-//     (Codex 1巡目 Should fix 3)
+//     (レビュー指摘)
 import type { D1Database } from "@cloudflare/workers-types";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as admin from "../src/lib/data/admin";
@@ -59,7 +59,7 @@ async function insertEvent(args: {
 }
 
 /*
-  🔴 **固定した「いま」(Codex 1巡目 Should fix 1)**: UTC 2026-10-04T23:30:00.000Z
+  🔴 **固定した「いま」(レビュー指摘)**: UTC 2026-10-04T23:30:00.000Z
     = JST 2026-10-05T08:30:00(+09:00)。**UTCの日付とJSTの日付が違う時刻**を選んだ
     (これを選ばないと、UTC暦日・JST暦日のどちらに退行しても同じ結果になり、検査が何も区別できない)。
   真の締切(7×24時間のローリング窓) = NOW − 7日 = 2026-09-27T23:30:00.000Z。
@@ -192,7 +192,7 @@ describe("admin.getPopupStats", () => {
         管理画面の Worker(`src/admin/app.ts`)では、この経路は `onError` の `MissingBindingError` 分岐で
         **503**("config")になる(=設定の問題)。**正常なバインドの状態でクエリ自体が失敗したとき**に
         初めて `onError` の既定分岐(**500**・"upstream")に落ちる——その経路は HTTP 層でしか再現できない
-        ので tests/admin-api.test.ts が撃つ(Codex 1巡目 Should fix 2)。ここで確かめたいのは
+        ので tests/admin-api.test.ts が撃つ(レビュー指摘)。ここで確かめたいのは
         「0 件という"正常な結果"にすり替えず、必ず例外のまま呼び出し側へ届く」ことだけ。
     */
     await expect(admin.getPopupStats({}, OWNER_A, ids.site)).rejects.toThrow();

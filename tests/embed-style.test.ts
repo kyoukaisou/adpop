@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // 🔴 埋め込みのスタイルが、埋め込み先(LP)の文書ルートの `font-size` に左右されないことを固定する
-//   (Codex #8 1巡目 Should fix)。`rem`/`em` は `<html>` の `font-size` を基準にするので、
+//   (レビュー指摘)。`rem`/`em` は `<html>` の `font-size` を基準にするので、
 //   `:host { all: initial }` では遮れない——**寸法は px の絶対値**にする、という決定そのものを撃つ。
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
