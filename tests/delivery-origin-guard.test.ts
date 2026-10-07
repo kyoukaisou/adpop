@@ -58,11 +58,18 @@ describe("deliveryOriginGuardProblems(追加の境界)", () => {
 });
 
 describe("readExpectedDeliveryOrigin / deploy/delivery-origin.txt", () => {
-  it("リポジトリの現在の状態は UNSET(まだ確定していない)", () => {
-    expect(readExpectedDeliveryOrigin()).toBe(UNSET_DELIVERY_ORIGIN);
+  // 配信ホストは独自ドメインの Custom Domain(adpop.kyoukaisou.dev)に確定した。
+  // UNSET のままだったのは、workers.dev のアカウント名が deploy するまで読めなかったため
+  // (旧構成。docs/deploy.md の旧 §5)。独自ドメインは deploy の前から決まるので、ここで確定する。
+  it("リポジトリの現在の状態は確定済みの独自ドメイン(https://adpop.kyoukaisou.dev)", () => {
+    expect(readExpectedDeliveryOrigin()).toBe("https://adpop.kyoukaisou.dev");
   });
 
   it("DELIVERY_ORIGIN_FILE が実際にそのファイルを指している", () => {
-    expect(readFileSync(DELIVERY_ORIGIN_FILE, "utf8").trim()).toBe(UNSET_DELIVERY_ORIGIN);
+    expect(readFileSync(DELIVERY_ORIGIN_FILE, "utf8").trim()).toBe("https://adpop.kyoukaisou.dev");
+  });
+
+  it("UNSET_DELIVERY_ORIGIN という定数自体は、まだ『未確定』を表す値として検査に残っている(①の境界で使う)", () => {
+    expect(UNSET_DELIVERY_ORIGIN).toBe("UNSET");
   });
 });

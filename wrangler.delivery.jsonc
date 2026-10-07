@@ -13,10 +13,15 @@
   //   ライセンス境界の検査も通してから deploy する。`database_id` の一致も同じコマンドで見る
   //   (どちらの Worker を先に deploy しても検査が走る)。
   "build": {
-    "command": "npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs"
+    "command": "npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs && node scripts/check-custom-domain.mjs"
   },
   // 🔴 既定値に頼らず明示する(security 監査 M7)。Version URL は修正前の版を本番のデータのまま動かすので切る。
-  "workers_dev": true,
+  // 🔴 配信は Custom Domain(`adpop.kyoukaisou.dev`)で受ける。zone の routes(パターンで受ける方式)
+  //   ではない —— custom_domain の Worker より前に走ってしまうため(Cloudflare 公式文書「Custom
+  //   Domains」)。広い pattern を持つ別の Worker が1つ増えるだけで、配信の通信を横取りできる経路に
+  //   なる。`workers_dev` はダッシュボードで切るだけでは次の deploy で復活するので、ここで false にする。
+  "workers_dev": false,
+  "routes": [{ "pattern": "adpop.kyoukaisou.dev", "custom_domain": true }],
   "preview_urls": false,
   // 🔴 静的配信: 埋め込みスクリプト(`npm run build:embed` の出力)。
   //   ファイルがある URL は Worker を起こさずに配る(課金されない。Workers の公式 pricing)。

@@ -58,25 +58,15 @@ jobs:
       - name: build
         run: npm run build
 
-      # 🔴 両 Worker の build.command には、本番向けの検査(database_id の仮の値を断る・
-      #   配信元が deploy/delivery-origin.txt の確定値と完全一致するかを見る)を**省略する経路が
-      #   無い**(前巡の `CI_DRY_RUN` フラグは、そのフラグを立てたまま `wrangler deploy` を直接
-      #   実行すれば本番でも検査を回避できる欠陥だったため削除した。Codex r3 Blocker)。
-      #   本番の D1 は作成済みで(database_id は実在の値。D-344)、database_id の検査はこのまま
-      #   通る。配信元はまだ確定していない(deploy/delivery-origin.txt は UNSET のまま。
-      #   docs/deploy.md §5)ので、CI がこのまま dry-run すると配信元の検査で必ず落ちる。
-      #   このステップは、配信元だけ**コミットしない一時的な値**を CI ジョブのワークスペースの
-      #   中だけに入れ、検査を通常の経路のまま(省略せず)満たす。使う値は本番の値になりえない形にする:
-      #   RFC 2606 が予約する `.invalid` ドメイン(Cloudflare は絶対にこのドメインを発行しないので、
-      #   本番の値と構文的にも衝突しない)。ジョブが終わればランナーごと消えるので、この値が
-      #   コミットや本番の deploy に渡ることは無い。
-      #   ⚠ database_id は置き換えない。すでに本番の実在の id がコミットされているため、置き換える
-      #   仮の値が無い(置き換える前巡の仕組みは database_id がまだ仮の値だった間だけのものだった)。
-      - name: 配信元に CI 専用の値を一時的に入れる(コミットしない)
-        run: |
-          if [ "$(cat deploy/delivery-origin.txt)" = "UNSET" ]; then
-            printf '%s' "https://adpop-delivery.ci-dryrun.invalid" > deploy/delivery-origin.txt
-          fi
+      # 🔴 両 Worker の build.command には、本番向けの検査(database_id の仮の値を断る・配信元が
+      #   deploy/delivery-origin.txt の確定値と完全一致するかを見る・Custom Domain のホストが
+      #   確定値と一致し workers_dev が false か見る)を**省略する経路が無い**(前巡の `CI_DRY_RUN`
+      #   フラグは、そのフラグを立てたまま `wrangler deploy` を直接実行すれば本番でも検査を回避
+      #   できる欠陥だったため削除した。Codex r3 Blocker)。
+      #   配信元(deploy/delivery-origin.txt)・database_id ともに、すでに確定した実在の値が
+      #   コミットされている。CI はこの値を書き換えず、通常の経路のまま
+      #   dry-run する(コミットされた確定値そのものは秘密ではなく、Cloudflare に接続しない
+      #   dry-run へ渡しても実害が無いため)。
 
       # 配信の Worker を、デプロイと同じ束ね方で束ねる(アップロードはしない = 認証は要らない)。
       # ⚠ 束ねられないもの(Node 専用の import など)はここで落ちる。
@@ -85,9 +75,9 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
-      # 🔴 `NEXT_PUBLIC_DELIVERY_ORIGIN` は、1つ前のステップで(必要なら)書き換えた
-      #   `deploy/delivery-origin.txt` の値と完全一致させる(シェルでファイルから読む。
-      #   YAML の `env:` は静的な文字列しか書けないため、ここは `run:` の中で評価する)。
+      # 🔴 `NEXT_PUBLIC_DELIVERY_ORIGIN` は `deploy/delivery-origin.txt` の確定値と完全一致させる
+      #   (シェルでファイルから読む。YAML の `env:` は静的な文字列しか書けないため、
+      #   ここは `run:` の中で評価する)。
       - name: 管理画面の Worker を束ねる(dry-run)
         run: |
           NEXT_PUBLIC_DELIVERY_ORIGIN="$(cat deploy/delivery-origin.txt)" \

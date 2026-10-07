@@ -197,9 +197,18 @@ npm run admin:dev                 # http://localhost:8787 — /api/* 以外は o
 | CSRF | GET/HEAD 以外は Origin の完全一致・`Sec-Fetch-Site`(在れば same-origin)・Content-Type(JSON / 画像は `application/octet-stream`)。CORS のヘッダは返さない |
 | 所有者 | 所有者 id はセッションからだけ取る。他人の行・存在しない行は 404 |
 
-🔴 **管理画面は、LP と別の登録ドメインに置いてください**(例: `*.workers.dev` か、LP と違うドメイン)。
-`SameSite=Strict` は**同じサイトの別のオリジンには効きません**。LP に第三者のタグが載っていると、
-同じサイトに他人のスクリプトがいることになり、そのときに守っているのは Origin と Content-Type の検査だけです。
+🔴 **管理画面は、LP と別の登録ドメインに置くか、同じ登録ドメインの別サブドメイン + 下の条件で置いてください。**
+`SameSite=Strict` は**同じサイト(登録ドメインが同じ)の別のオリジンには効きません**。LP に第三者のタグが
+載っていると、同じサイトに他人のスクリプトがいることになり、そのときに守っているのは Origin の完全一致・
+`Sec-Fetch-Site`・Content-Type の検査と、`__Host-` 接頭辞の Cookie(`Domain` 属性を持てない)です。
+同じ登録ドメインの別サブドメインに置く場合は、次の条件を満たしてください:
+
+1. **そのゾーンに zone の routes(パターンで受ける方式)を作らない。** Custom Domain(ホスト名の完全一致)
+   だけにする。zone の route は Custom Domain の Worker より前に走る(Cloudflare 公式文書「Custom Domains」)ため、
+   広い pattern の Worker が1つ増えるだけでログインの通信を横取りできる経路になる。
+2. **管理画面の Cookie に `Domain` 属性を付けない。** `__Host-` 接頭辞(このリポジトリの既定)を使う。
+3. できれば管理画面の前に Cloudflare Access を置く(無料枠がある。設定していない場合はパスワード・
+   セッションの守りがそのまま効いている状態)。
 
 🔴 **Cloudflare のアカウントを守ってください**: 二要素認証を必ず有効にし、デプロイに使う API トークンは
 D1・R2・Workers に絞ってください。**アカウントが乗っ取られたら、管理画面も全部取られます**(secret を書き換えられる)。

@@ -16,11 +16,16 @@
   //   D1 の id の一致を見る検査」の全工程を通す。
   //   `NEXT_PUBLIC_DELIVERY_ORIGIN` はこのコマンドを呼ぶシェルの環境変数で渡す(docs/deploy.md)。
   "build": {
-    "command": "npm run build && node scripts/check-admin-headers.mjs && node scripts/check-database-ids-match.mjs"
+    "command": "npm run build && node scripts/check-admin-headers.mjs && node scripts/check-database-ids-match.mjs && node scripts/check-custom-domain.mjs"
   },
   // 🔴 既定値に頼らず明示する(security 監査 M7)。
   //   Version URL(preview_urls)は、修正前の版を本番の secret と D1 のまま動かし続けるので切る。
-  "workers_dev": true,
+  // 🔴 管理画面は Custom Domain(`adpop-admin.kyoukaisou.dev`)で受ける。zone の routes ではない
+  //   —— custom_domain の Worker より前に走ってしまうため(Cloudflare 公式文書「Custom Domains」)。
+  //   広い pattern を持つ別の Worker が1つ増えるだけで、ログインの通信を横取りできる経路になる。
+  //   `workers_dev` はダッシュボードで切るだけでは次の deploy で復活するので、ここで false にする。
+  "workers_dev": false,
+  "routes": [{ "pattern": "adpop-admin.kyoukaisou.dev", "custom_domain": true }],
   "preview_urls": false,
   // 🔴 `/api/*` だけ Worker を先に走らせる(Hono)。それ以外は Next の静的書き出し(`out/`)を静的配信する
   //   (ADPOP-PR3b-設計 改訂v2 §0)。静的ファイルがある URL は Worker を起こさず配る(課金されない)。
