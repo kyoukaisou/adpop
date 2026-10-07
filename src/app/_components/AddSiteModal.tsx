@@ -1,7 +1,7 @@
 "use client";
 
 /*
-  「サイトを追加」「サイトを編集」モーダル(画面設計 §3-2 / Codex 1巡目 Should fix: 編集導線の欠落)。
+  「サイトを追加」「サイトを編集」モーダル(画面設計 §3-2 / レビュー指摘: 編集導線の欠落)。
   名前+許可ドメイン(チップ形式で複数追加)。追加・編集は同じ部品を使う(承認済み見本の部品を増やさない)。
 */
 import { useId, useRef, useState } from "react";
@@ -103,7 +103,7 @@ function SiteFormModal({
           <input
             id="site-name"
             type="text"
-            placeholder="例: nkarte LP"
+            placeholder="例: 商品LP"
             value={name}
             disabled={submitting}
             onChange={(e) => setName(e.target.value)}

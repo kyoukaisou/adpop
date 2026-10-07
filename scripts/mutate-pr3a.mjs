@@ -260,7 +260,7 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "W3 Worker が文字列の添字と非 null で D1 に触る(Codex 2巡目の形)",
+    "name": "W3 Worker が文字列の添字と非 null で D1 に触る(レビュー指摘の形)",
     "file": "src/delivery/worker.ts",
     "from": "  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",
     "to": "  if (route === \"events\" && request.headers.get(\"x-debug\") === \"1\") await env[\"DB\"]![\"prepare\"](\"select 1\")[\"run\"]();\n  return route === \"config\" ? handleConfig(request, env) : handleEvents(request, env);",

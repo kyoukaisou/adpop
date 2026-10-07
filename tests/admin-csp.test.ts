@@ -53,9 +53,11 @@ beforeAll(async () => {
   execFileSync(process.execPath, [path.join(REPO_ROOT, "scripts/build-admin-headers.mjs")], { cwd: REPO_ROOT, env, stdio: "pipe" });
 
   // 🔴 本物の `wrangler.admin.jsonc` は一切書き換えない。`build.command`(deploy 前の検査を含む)は
-  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、このリポジトリは配信元を
-  //   まだ確定していない(deploy/delivery-origin.txt は UNSET のまま。docs/deploy.md §5)ので、
-  //   その検査は必ず非ゼロで終わる(本番の D1 は作成済み・docs/deploy.md §2)。
+  //   `wrangler dev`/`unstable_startWorker` でも走る(Wrangler の仕様)が、この検査は本物の
+  //   `wrangler.admin.jsonc`(workers_dev: false・routes: [custom domain])をそのまま
+  //   `unstable_startWorker` に渡すと、ローカル開発サーバでも Custom Domain の検査
+  //   (`scripts/check-custom-domain.mjs`)等がそのまま走って本題と関係ない理由で詰まる(本番の
+  //   D1 は作成済み・docs/deploy.md §2。配信元もこの PR で確定済み・docs/deploy.md §5)。
   //   この検査自体は `tests/admin-config.test.ts`・`tests/delivery-origin-guard.test.ts` で
   //   別途固定済みなので、ここでは `build` フィールドを外した一時ファイルを使い、
   //   `unstable_startWorker` がカスタムビルドを一切起動しないようにする(省略する「経路」を検査
@@ -103,7 +105,7 @@ describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
     expect(csp).toContain(`img-src 'self' blob: ${DELIVERY_ORIGIN_FOR_TEST}`);
   });
 
-  it("🔴 Codex r1 Blocker: img-src に blob: がトークンとして完全一致で入っている(新規画像パターンの URL.createObjectURL() プレビューが CSP で断られないため)。blob: を外したら落ちる", async () => {
+  it("🔴 レビュー指摘: img-src に blob: がトークンとして完全一致で入っている(新規画像パターンの URL.createObjectURL() プレビューが CSP で断られないため)。blob: を外したら落ちる", async () => {
     const response = await worker.fetch("http://adpop.test/popup");
     const csp = response.headers.get("content-security-policy") ?? "";
     expect(directiveTokens(csp, "img-src")).toContain("blob:");

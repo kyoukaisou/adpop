@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // 🔴 `requiresImageAlt`(画像の説明の必須判定)が、欠落値に対して fail-open にならないことを固定する
-//   (Codex #8 1巡目 Blocker 3)。保存 API の入口(body.ts)とデータ層(admin.ts)は**この同じ関数**を
+//   (レビュー指摘)。保存 API の入口(body.ts)とデータ層(admin.ts)は**この同じ関数**を
 //   呼ぶので、ここで1か所を撃てば両方の関門を守ったことになる。
 import { describe, expect, it } from "vitest";
 import { normalizeToText, requiresImageAlt } from "../src/lib/data/shapes";

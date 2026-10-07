@@ -39,7 +39,7 @@ describe("formatStatCount", () => {
 });
 
 describe("deleteConfirmStatsText", () => {
-  it("🔴 Codex r1 Should fix: stats が null でも null を返さず、各項目を「—」にした文字列を返す(数字が消えることを伝える、という確認の目的を消さない)", () => {
+  it("🔴 レビュー指摘: stats が null でも null を返さず、各項目を「—」にした文字列を返す(数字が消えることを伝える、という確認の目的を消さない)", () => {
     expect(deleteConfirmStatsText(null, "p1")).toBe("表示 —・クリック —・閉じた —");
   });
 
@@ -56,7 +56,7 @@ describe("deleteConfirmStatsText", () => {
   });
 });
 
-describe("nextStatsState(Codex r1 Should fix: 古い数字を残さない)", () => {
+describe("nextStatsState(レビュー指摘: 古い数字を残さない)", () => {
   it("site・popups・stats すべて成功 → stats のデータをそのまま返す", () => {
     expect(nextStatsState(true, true, { ok: true, data: MAP })).toBe(MAP);
   });

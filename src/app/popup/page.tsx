@@ -22,7 +22,7 @@ import { useBeforeUnloadGuard, type LeaveGuard } from "../_lib/unsavedChanges";
 import { toggleInSet } from "../_lib/toggleSet";
 
 /**
- * Codex 1巡目 Should fix: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
+ * レビュー指摘: パターンのアーカイブAPIの結果を捨てていた(常に成功扱いで再読み込み)。
  * 401・404・409 を個別に扱う。409 は並行PR(#8)で「稼働中のポップには、配信できるパターンが
  * 1つ以上必要です。先に停止してください」が返るようになる想定で、その文言をそのまま出せるようにしておく。
  */
@@ -73,7 +73,7 @@ function PopupContent() {
   const [triggers, setTriggers] = useState<ApiTrigger[] | null>(null);
   const [variants, setVariants] = useState<ApiVariant[] | null>(null);
   const [loadError, setLoadError] = useState(false);
-  // 🔴 Codex 5巡目 Blocker: 一度表示した後の再取得(保存・アーカイブ・トリガー切替後のload()等)が
+  // 🔴 レビュー指摘: 一度表示した後の再取得(保存・アーカイブ・トリガー切替後のload()等)が
   //   失敗しても、編集画面全体をエラー画面に置き換えない(全VariantCardがアンマウントされ、
   //   未保存の入力が消えるため)。今の画面を残したまま上部に帯を出す(nextLoadErrorState参照)。
   const [reloadError, setReloadError] = useState(false);
@@ -81,7 +81,7 @@ function PopupContent() {
 
   const [name, setName] = useState("");
   const [frequency, setFrequency] = useState<Frequency | null>(null);
-  // 🔴 Codex 6巡目 Blocker: 「最後にサーバーと同期したポップ設定(名前・頻度)」。
+  // 🔴 レビュー指摘: 「最後にサーバーと同期したポップ設定(名前・頻度)」。
   //   これと今の入力が違う間は、再取得の値でポップ設定を上書きしない(VariantCardと同じ考え方)。
   const [settingsBaseline, setSettingsBaseline] = useState<PopupSettingsFields | null>(null);
   // load() は useCallback([popupId]) で固定されるクロージャなので、settingsDirty を直接参照すると
@@ -94,7 +94,7 @@ function PopupContent() {
   const [draftKeys, setDraftKeys] = useState<string[]>([]);
   const [variantActionError, setVariantActionError] = useState<string | null>(null);
   const archiveInFlightRef = useRef(false);
-  // 🔴 ページを離れるときの確認(パンくず・ログアウト・閉じる/再読み込み。本部発注)。
+  // 🔴 ページを離れるときの確認(パンくず・ログアウト・閉じる/再読み込み。設計上の要件)。
   //   既存の判定を集めるだけ(#12 の基準・新しい判定は作らない):
   //   ①ポップ設定(名前・頻度)の dirty(下の settingsDirty。popupSettingsSync.ts)
   //   ②各パターンカードの dirty(VariantCard の isDirtyFrom。onDirtyChange で集計)
@@ -106,7 +106,7 @@ function PopupContent() {
     setDirtyVariantIds((prev) => toggleInSet(prev, variantId, dirty));
   }, []);
 
-  // 🔴 Codex r1 Should fix: 保存・アップロード・画像削除の**進行中**(busy)を、dirtyとは別の集合で持つ。
+  // 🔴 レビュー指摘: 保存・アップロード・画像削除の**進行中**(busy)を、dirtyとは別の集合で持つ。
   //   dirtyの基準は変えない(文字欄の差分のまま)。drafts も含む全カード共通のキーで管理する
   //   (保存済みカードは variant.id、下書きは draftKeys の key をそのまま使う)。
   const [busyCardIds, setBusyCardIds] = useState<ReadonlySet<string>>(new Set());
@@ -129,7 +129,7 @@ function PopupContent() {
   // 🔴 パンくず・ログアウトの確認は「既存の確認ダイアログの部品」(`UnsavedChangesDialog` = `Modal`
   //   の再利用)で出す(window.confirm のような素のブラウザダイアログは使わない)。
   //   `pendingLeave` に「確認がOKなら実際に行う操作」を1つだけ保持する。
-  //   `proceed` は「実際に離脱(遷移)できたか」を返す(Codex r1 Should fix: ログアウト失敗のように
+  // `proceed` は「実際に離脱(遷移)できたか」を返す(レビュー指摘: ログアウト失敗のように
   //   離脱できなかった場合、`bypassOnce()` で武装した beforeunload の抑止を `cancelBypass()` で解除する)。
   const [pendingLeave, setPendingLeave] = useState<{ proceed: () => Promise<boolean> | boolean; reason: "busy" | "unsaved" } | null>(
     null,
@@ -146,7 +146,7 @@ function PopupContent() {
     if (popupId === "") return;
     const popupResult = await getJson<{ popup: ApiPopup; triggers: ApiTrigger[]; variants: ApiVariant[] }>(`/popups/${popupId}`);
     if (!popupResult.ok) {
-      // 🔴 Codex 5巡目 Blocker: 一度表示した後の失敗(hasLoadedOnce)では画面を置き換えない
+      // 🔴 レビュー指摘: 一度表示した後の失敗(hasLoadedOnce)では画面を置き換えない
       const next = nextLoadErrorState(false, loadedOnceRef.current);
       setLoadError(next.loadError);
       setReloadError(next.reloadError);
@@ -160,7 +160,7 @@ function PopupContent() {
     setPopup(p);
     setTriggers(t);
     setVariants(v);
-    // 🔴 Codex 6巡目 Blocker: ポップ名・頻度を未保存で編集中(dirty)の間は、再取得の値で
+    // 🔴 レビュー指摘: ポップ名・頻度を未保存で編集中(dirty)の間は、再取得の値で
     //   上書きしない(VariantCardのprops同期と同じ考え方)。dirtyでなければbaselineも揃える。
     if (shouldApplyPopupSettingsFromServer(settingsDirtyRef.current)) {
       setName(p.name);
@@ -212,7 +212,7 @@ function PopupContent() {
       setSettingsError("保存できませんでした。もう一度お試しください。");
       return;
     }
-    // 🔴 Codex 6巡目 Blocker: 保存が成功したので、今の入力をそのままbaselineにする
+    // 🔴 レビュー指摘: 保存が成功したので、今の入力をそのままbaselineにする
     //   (表示値=保存値。P-012と同じ考え方)。loadを呼ぶ前にdirtyを解消しておく(ref直書きで確定させる)。
     const savedFrequency: Frequency = {
       suppressDays: String(numbers.suppressDays),
@@ -543,7 +543,7 @@ function PopupContent() {
             bypassOnce();
             const { proceed } = pendingLeave;
             setPendingLeave(null);
-            // 🔴 Codex r1 Should fix: 実際に離脱(遷移)できなかった(例: ログアウト失敗)なら、
+            // 🔴 レビュー指摘: 実際に離脱(遷移)できなかった(例: ログアウト失敗)なら、
             //   武装した beforeunload の抑止を解除する(次の離脱でも確認が出るように戻す)。
             const left = await proceed();
             if (!left) cancelBypass();

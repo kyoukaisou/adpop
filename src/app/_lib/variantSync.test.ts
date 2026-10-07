@@ -59,7 +59,7 @@ describe("variantSync", () => {
     expect(shouldApplyPropsSync({ hasVariant: false, busy: false, dirty: false })).toBe(false);
   });
 
-  describe("computeSyncPatch(Codex 4巡目: 画像だけの操作は文字欄・baselineに触れない)", () => {
+  describe("computeSyncPatch(レビュー指摘: 画像だけの操作は文字欄・baselineに触れない)", () => {
     const baseline = extractSyncedFields(VARIANT_A);
 
     it("再現: 文字欄が書きかけのまま「差し替え」(image-only)しても、文字欄・baselineは変わらない", () => {
@@ -86,7 +86,7 @@ describe("variantSync", () => {
     });
 
     it("壊れた実装(image-onlyでもfields/baselineを返してしまう)だと、このテストが落ちることを確認する", () => {
-      // 🔴 Codex 4巡目の裁定「壊したら落ちることを1回確かめる」に対応する検査。
+      // 🔴 レビュー指摘の裁定「壊したら落ちることを1回確かめる」に対応する検査。
       function brokenComputeSyncPatch(event: Parameters<typeof computeSyncPatch>[0]) {
         if (event.kind === "image-only") {
           // 以前のバグ: 画像だけの操作なのに、保持していたbaselineをそのままfields/baselineとして返してしまう

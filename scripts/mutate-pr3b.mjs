@@ -363,7 +363,7 @@ export const MUTATIONS = [
     ]
   },
   {
-    "name": "C13 新しいキーの行を、参照の有無を見ずに外す(Codex #7 3巡目)",
+    "name": "C13 新しいキーの行を、参照の有無を見ずに外す(レビュー指摘)",
     "file": "src/lib/data/admin.ts",
     "from": "           where key = ?1 and owner_id = ?2\n             and exists (select 1 from variants where id = ?3 and owner_id = ?2 and json_extract(content, '$.imageKey') = ?1)`,",
     "to": "           where key = ?1 and owner_id = ?2 and ?3 is not null`,",

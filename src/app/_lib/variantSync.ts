@@ -1,5 +1,5 @@
 /*
-  VariantCard の「保存していない入力を勝手に上書きしない」判定(Codex 3巡目 Blocker)。
+  VariantCard の「保存していない入力を勝手に上書きしない」判定(レビュー指摘)。
 
   🔴 以前は、親から新しい `variant` props が来たら(他のパターンの保存・アーカイブ、
     ポップ設定の保存、トリガーの切り替え、いずれも一覧全体を再取得する)無条件に
@@ -7,7 +7,7 @@
     ——パターンAを編集中(保存していない)に、無関係な操作Bが一覧を再読み込みさせると、
     Aの入力が警告なく保存済みの値に戻っていた。
 
-  本部裁定:
+  設計の決定:
   - カードごとに「最後にサーバーと同期した値」(baseline)を持つ
   - 今の入力が baseline と異なれば dirty。dirty なカードには props 同期をかけない
   - そのカード自身の保存(または画像の回復処理での再同期)が成功したときだけ baseline を更新する
@@ -57,7 +57,7 @@ export function shouldApplyPropsSync(params: { hasVariant: boolean; busy: boolea
 }
 
 /*
-  🔴 Codex 4巡目 Blocker: 3巡目のdirtyガードは props 同期の useEffect にしか効いておらず、
+  🔴 レビュー指摘: 3巡目のdirtyガードは props 同期の useEffect にしか効いておらず、
     画像だけを確定した経路(差し替え・外す・回復)がカード全体を直接 `applyVariant` して
     文字欄・baselineまで上書きしていた。
 

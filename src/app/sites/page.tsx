@@ -14,7 +14,7 @@ import { AddSiteModal } from "../_components/AddSiteModal";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { nextLoadErrorState } from "../_lib/pageLoad";
 
-// 🔴 Codex 1巡目 Should fix: サイトごとのポップ取得が失敗したことを「稼働ポップなし」に混ぜない。
+// 🔴 レビュー指摘: サイトごとのポップ取得が失敗したことを「稼働ポップなし」に混ぜない。
 //   取得できたか(`popupsOk`)を別に持ち、失敗はその行にだけ明示する(一覧全体は失敗にしない=他のサイトは見える)。
 type SiteRow = ApiSite & { activePopupName: string | null; popupsOk: boolean };
 
@@ -27,7 +27,7 @@ export default function SitesPage() {
   const sessionState = useRequireSession();
   const [rows, setRows] = useState<SiteRow[] | null>(null);
   const [loadError, setLoadError] = useState(false);
-  // 🔴 Codex 5巡目: 最初の読み込みと、一度表示した後の再取得を区別する(文言・扱いをポップ編集画面と揃える)。
+  // 🔴 レビュー指摘: 最初の読み込みと、一度表示した後の再取得を区別する(文言・扱いをポップ編集画面と揃える)。
   const [reloadError, setReloadError] = useState(false);
   const loadedOnceRef = useRef(false);
   const [showAdd, setShowAdd] = useState(false);

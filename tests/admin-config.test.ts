@@ -5,12 +5,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SECRET_NAMES } from "../src/admin/config";
+import { ADMIN_CUSTOM_DOMAIN_HOST, customDomainRouteProblems, workersDevDisabledProblems } from "../scripts/custom-domain-guard.mjs";
 import { databaseIdMismatchProblems, isPlaceholderDatabaseId, PLACEHOLDER_DATABASE_ID } from "../scripts/database-id-guard.mjs";
+import { readExpectedDeliveryOrigin } from "../scripts/delivery-origin-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./helpers/wrangler-config";
 
 type Config = {
   workers_dev?: boolean;
   preview_urls?: boolean;
+  routes?: Array<{ pattern?: string; custom_domain?: boolean }>;
   vars?: Record<string, string>;
   observability?: { logs?: { invocation_logs?: boolean } };
   r2_buckets?: Array<{ binding: string; bucket_name: string }>;
@@ -24,9 +27,9 @@ describe.each([
 ])("%s の Worker の設定", (_label, file) => {
   const config = readWranglerConfig(file) as Config;
 
-  it("🔴 Version URL(preview_urls)を切り、workers_dev を明示している(既定値に頼らない・M7)", () => {
+  it("🔴 Version URL(preview_urls)を切り、workers_dev を false にしている(既定値に頼らない・M7)", () => {
     expect(config.preview_urls).toBe(false);
-    expect(config.workers_dev).toBe(true);
+    expect(config.workers_dev).toBe(false);
   });
 
   it("🔴 呼び出しのログ(invocation logs)を残さない(L11)", () => {
@@ -53,12 +56,12 @@ describe(".gitignore(L9)", () => {
   });
 });
 
-describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker 1)", () => {
-  it("現在のリポジトリの状態: 両方とも本番 D1(D-344)の実在の id で一致していて、仮の値ではない", () => {
+describe("2つの wrangler 設定の database_id(レビュー指摘)", () => {
+  it("現在のリポジトリの状態: 両方とも本番 D1の実在の id で一致していて、仮の値ではない", () => {
     // `wrangler d1 create adpop` で作った本番の D1 の id(docs/deploy.md §2)。
     // 🔴 ここは「仮の値ではない」「2つが一致している」だけでは、両ファイルが同じ誤った値や
-    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(Codex r1 Blocker)。
-    //   本部が確認した本番 D1 の id と**完全一致**することまで固定する。
+    //   CI 専用の値(`ci-dryrun-not-a-real-database-id` 等)に化けても通ってしまう(レビュー指摘)。
+    // 確認済みの本番 D1 の id と**完全一致**することまで固定する。
     const PRODUCTION_DATABASE_ID = "2d56e040-2e9a-4cb2-b431-2829cb488a96";
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
@@ -115,25 +118,153 @@ describe("2つの wrangler 設定の database_id(Codex r1 Blocker 4 / r2 Blocker
   });
 });
 
-describe("build.command の配線(Codex r1 Should-fix 1)", () => {
+describe("Custom Domain の routes(workers.dev・zone の routes に頼らない)", () => {
+  it("現在のリポジトリの状態: 配信・管理画面とも workers_dev: false・Custom Domain の routes が確定ホストと完全一致している", () => {
+    const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
+    const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
+    const expectedDeliveryHost = readExpectedDeliveryOrigin().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
+    expect(
+      workersDevDisabledProblems({ label: "配信", workersDev: delivery.workers_dev }),
+    ).toEqual([]);
+    expect(
+      workersDevDisabledProblems({ label: "管理画面", workersDev: admin.workers_dev }),
+    ).toEqual([]);
+    expect(
+      customDomainRouteProblems({ label: "配信", routes: delivery.routes, expectedHost: expectedDeliveryHost }),
+    ).toEqual([]);
+    expect(
+      customDomainRouteProblems({ label: "管理画面", routes: admin.routes, expectedHost: ADMIN_CUSTOM_DOMAIN_HOST }),
+    ).toEqual([]);
+
+    // 確定したホスト名そのもの(綴りの揺れが無いか)。
+    expect(expectedDeliveryHost).toBe("adpop.kyoukaisou.dev");
+    expect(ADMIN_CUSTOM_DOMAIN_HOST).toBe("adpop-admin.kyoukaisou.dev");
+  });
+
+  it("✅ 通る例: custom_domain: true のホスト1件が期待値と一致", () => {
+    expect(
+      customDomainRouteProblems({
+        label: "配信",
+        routes: [{ pattern: "adpop.kyoukaisou.dev", custom_domain: true }],
+        expectedHost: "adpop.kyoukaisou.dev",
+      }),
+    ).toEqual([]);
+  });
+
+  it("🔴 落ちる例: workers_dev が true", () => {
+    expect(workersDevDisabledProblems({ label: "配信", workersDev: true }).length).toBeGreaterThan(0);
+    expect(workersDevDisabledProblems({ label: "配信", workersDev: undefined }).length).toBeGreaterThan(0);
+  });
+
+  it("🔴 落ちる例: routes が無い", () => {
+    expect(customDomainRouteProblems({ label: "配信", routes: undefined, expectedHost: "adpop.kyoukaisou.dev" }).length).toBeGreaterThan(0);
+    expect(customDomainRouteProblems({ label: "配信", routes: [], expectedHost: "adpop.kyoukaisou.dev" }).length).toBeGreaterThan(0);
+  });
+
+  it("🔴 落ちる例: zone の route(custom_domain が付いていない)が混ざっている", () => {
+    const problems = customDomainRouteProblems({
+      label: "配信",
+      routes: [{ pattern: "adpop.kyoukaisou.dev/*" }],
+      expectedHost: "adpop.kyoukaisou.dev",
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.some((p: string) => p.includes("zone の routes"))).toBe(true);
+  });
+
+  it("🔴 落ちる例: custom domain のホストが確定値と違う(別名・タイプミス)", () => {
+    const problems = customDomainRouteProblems({
+      label: "配信",
+      routes: [{ pattern: "evil.kyoukaisou.dev", custom_domain: true }],
+      expectedHost: "adpop.kyoukaisou.dev",
+    });
+    expect(problems.length).toBeGreaterThan(0);
+  });
+
+  it("🔴 落ちる例: 確定ホストに加えて別の route が増えている(相乗り)", () => {
+    const problems = customDomainRouteProblems({
+      label: "配信",
+      routes: [
+        { pattern: "adpop.kyoukaisou.dev", custom_domain: true },
+        { pattern: "other.kyoukaisou.dev", custom_domain: true },
+      ],
+      expectedHost: "adpop.kyoukaisou.dev",
+    });
+    expect(problems.length).toBeGreaterThan(0);
+  });
+
+  // 🔴 レビュー指摘への対応: `custom_domain: true` と期待したホストが一致していても、
+  //   route オブジェクトに他の鍵が混ざっていたら合格にしない。`pattern`・`custom_domain` 以外の
+  //   鍵が1つでもあれば、それぞれ個別に落ちることを固定する(壊したら落ちることを1回ずつ確かめた)。
+  it.each([
+    ["zone_name(zone の route の鍵)", { zone_name: "kyoukaisou.dev" }],
+    ["zone_id(zone の route の鍵)", { zone_id: "abc123" }],
+    ["enabled: false(「正しいホストで配信中」という保証を壊す)", { enabled: false }],
+    ["previews_enabled: true", { previews_enabled: true }],
+  ])("🔴 落ちる例: route に %s が混ざっている", (_label, extra) => {
+    const problems = customDomainRouteProblems({
+      label: "配信",
+      routes: [{ pattern: "adpop.kyoukaisou.dev", custom_domain: true, ...extra }],
+      expectedHost: "adpop.kyoukaisou.dev",
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.some((p: string) => p.includes("以外の鍵がある"))).toBe(true);
+  });
+});
+
+describe("build.command の配線(レビュー指摘: toContain から厳密化)", () => {
   // 🔴 `build.command` からどれかの検査を外しても CI は気づかない(dry-run の前に別ステップで
   //   `npm run build` 等を一度は走らせているため)。この検査は**設定ファイルの文字列**を見て、
   //   deploy 前に必ず走るはずのコマンドが実際にそこへ書かれているかを固定する。
+  //
+  // 🔴 レビュー指摘への対応: 以前は `toContain` だけだったため、`node scripts/check-custom-domain.mjs || true`
+  //   のように無効化しても、文字列としては「含んでいる」ので通ってしまっていた(`;` で別のコマンドを
+  //   こっそり足す場合も同様)。` && ` で分割し、**各要素が期待した文字列と完全一致**しているか・
+  //   コマンド全体に `;`/`||` が無いかまで見る。
 
-  it("🔴 管理画面: build.command が npm run build と check-admin-headers.mjs を含む", () => {
+  /** `build.command` を ` && ` で分割する(他の区切り方は許さない)。 */
+  function splitBuildCommand(command: string): string[] {
+    return command.split(" && ").map((segment) => segment.trim());
+  }
+
+  it("🔴 管理画面: build.command が期待した4コマンドの ` && ` 連結と完全一致(`;`/`||` が無い)", () => {
     const admin = readWranglerConfig(ADMIN_WRANGLER_PATH) as Config;
     const command = admin.build?.command ?? "";
-    expect(command).toContain("npm run build");
-    expect(command).toContain("scripts/check-admin-headers.mjs");
-    expect(command).toContain("scripts/check-database-ids-match.mjs");
+    expect(command).not.toContain(";");
+    expect(command).not.toContain("||");
+    expect(splitBuildCommand(command)).toEqual([
+      "npm run build",
+      "node scripts/check-admin-headers.mjs",
+      "node scripts/check-database-ids-match.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
   });
 
-  it("🔴 配信: build.command が build:embed・サイズ上限・ライセンス境界・database_id の一致を含む", () => {
+  it("🔴 配信: build.command が期待した5コマンドの ` && ` 連結と完全一致(`;`/`||` が無い)", () => {
     const delivery = readWranglerConfig(DELIVERY_WRANGLER_PATH) as Config;
     const command = delivery.build?.command ?? "";
-    expect(command).toContain("npm run build:embed");
-    expect(command).toContain("npm run check:bundle-size");
-    expect(command).toContain("npm run check:embed-independence");
-    expect(command).toContain("scripts/check-database-ids-match.mjs");
+    expect(command).not.toContain(";");
+    expect(command).not.toContain("||");
+    expect(splitBuildCommand(command)).toEqual([
+      "npm run build:embed",
+      "npm run check:bundle-size",
+      "npm run check:embed-independence",
+      "node scripts/check-database-ids-match.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
+  });
+
+  // 🔴 落ちる例: 判定(splitBuildCommand + toEqual)自体が、`|| true` を見逃さないことを固定する。
+  it("🔴 落ちる例: 最後のコマンドに `|| true` を付けて無効化すると、分割後の要素が一致しない", () => {
+    const disabled = "node scripts/check-admin-headers.mjs && node scripts/check-custom-domain.mjs || true";
+    expect(splitBuildCommand(disabled)).not.toEqual([
+      "node scripts/check-admin-headers.mjs",
+      "node scripts/check-custom-domain.mjs",
+    ]);
+  });
+
+  it("🔴 落ちる例: `;` で別のコマンドを継ぎ足しても、`;` の不在チェックで検出できる", () => {
+    const smuggled = "node scripts/check-admin-headers.mjs && node scripts/check-custom-domain.mjs; echo ok";
+    expect(smuggled.includes(";")).toBe(true);
   });
 });

@@ -70,7 +70,7 @@ export type SessionRow = {
 
 /**
  * 期限切れ・無操作のまま時間が過ぎたセッションを消す(所有者の分)。
- * 🔴 **ログインを試みるたびに呼ぶ**(成功したときだけではない = Codex #7 Should)。
+ * 🔴 **ログインを試みるたびに呼ぶ**(成功したときだけではない = レビュー指摘)。
  */
 export async function purgeExpiredSessions(source: DbSource, ownerId: string, now: Date, idleMs: number): Promise<void> {
   const db = resolveDb(source);

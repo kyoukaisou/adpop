@@ -6,7 +6,7 @@
 // 🔴 **これは網羅ではない**(README)。リポジトリの中の静的な検査は、編集できる人には外せる。
 //   **実際の守りは、データ層の関数(所有者の条件)と D1 のトリガ**で、ここは「うっかり外で触る」を早く見つける補助。
 //
-// 🔴🔴 **判定は「呼び出しの形」ではなく「値の型」**(Codex #4 Blocker 2 / 2巡目)。
+// 🔴🔴 **判定は「呼び出しの形」ではなく「値の型」**(レビュー指摘)。
 //   前の版は `db.prepare(...)` の形(呼び出し先が直接のプロパティ参照)だけを数えていたので、
 //   `const { prepare } = db` / `db["prepare"](...)` / `db.prepare.bind(db)` で抜けられた。
 //   2巡目: 識別子だけを見ていたので、`env["DB"]!["prepare"](…)["run"]()`(文字列の添字の連なり)を抜けられた。
@@ -16,7 +16,7 @@
 // ⚠ 限界(【限界】の it で固定): **一度も D1 の型を持たずに `any` から取り出した値**は見えない
 //   (例: `(env as any).DB.prepare(...)` —— `env` も `.DB` も型が D1 ではない)。
 //
-// 同じ束で、**データ層の SQL に REPLACE 系の構文が無いこと**も見る(Codex #4 Blocker 1。DB の守りが届かない分)。
+// 同じ束で、**データ層の SQL に REPLACE 系の構文が無いこと**も見る(レビュー指摘。DB の守りが届かない分)。
 import path from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import ts from "typescript";
@@ -94,7 +94,7 @@ function typeOf(checker: ts.TypeChecker, node: ts.Node): ts.Type | null {
 }
 
 /**
- * `files` の中で、**型に D1 を含む式・識別子**を返す(Codex #4 2巡目: 識別子だけだと
+ * `files` の中で、**型に D1 を含む式・識別子**を返す(レビュー指摘: 識別子だけだと
  * `env["DB"]!["prepare"](…)["run"]()` のような添字の連なりを抜けられた)。
  * ⚠ 見るのは全部のノード(型の位置と import を除く)。式でないノードは型が D1 にならないので数に入らない。
  */
@@ -153,7 +153,7 @@ describe("D1 の値に触る場所", () => {
     ["変数への別名", `const again = db; void again;`],
     ["データ層の外の関数への引数渡し", `function elsewhere(x: unknown) { return x; } elsewhere(db);`],
     ["バインドの入れ物から取り出す", `const fromEnv = env.DB; void fromEnv;`],
-    ["文字列の添字と非 null アサーションの連なり(Codex 2巡目)", `void env["DB"]!["prepare"]("select 1")["run"]();`],
+    ["文字列の添字と非 null アサーションの連なり(レビュー指摘)", `void env["DB"]!["prepare"]("select 1")["run"]();`],
     ["括弧と as で包んだ D1 の値", `void (env.DB as D1Database)["prepare"]("select 1");`],
     ["R2 のバインドから直接書く(PR3b)", `void env.IMAGES!.put("images/x.png", "x");`],
   ])("🔴 検出器の前提: %s を見つける", (_label, body) => {
@@ -184,7 +184,7 @@ describe("D1 の値に触る場所", () => {
 });
 
 /*
-  🔴 **データ層の SQL に、既存の行を消して入れ替える構文を書かない**(Codex #4 Blocker 1)。
+  🔴 **データ層の SQL に、既存の行を消して入れ替える構文を書かない**(レビュー指摘)。
     DB 側は一意なキーごとに BEFORE トリガで REPLACE を断っているが(tests/d1-replace.test.ts)、
     **一意なキーを足してトリガを足し忘れた日**に備え、使う側からも構文を締め出す。
     ⚠ 見ているのは `src/lib/data/` の**文字列・テンプレートの字面**。組み立てた文字列(`"re" + "place"`)は見えない。

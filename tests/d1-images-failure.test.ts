@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// 🔴 画像の書き込み・削除の**失敗の経路**(Codex #7 1巡目 Blocker 1・2 / 2巡目 Blocker = write-ahead)。
+// 🔴 画像の書き込み・削除の**失敗の経路**(レビュー指摘・2= write-ahead)。
 //   ・置いた後で `head` / DB / `put` が投げても、新しいキーが R2 に残らない
 //   ・D1 の取引(batch)が落ちたら、参照も消し直し待ちの行も**一緒に巻き戻る**
 //   ・R2 の削除が途中で止まっても、消し直し待ちの行が残り、次の消し直しで消える
@@ -176,7 +176,7 @@ describe("先に積む(write-ahead)", () => {
     expect(await pending()).toEqual([]);
   });
 
-  it("🔴 アップロードの途中でパターンが消されたら、新しいキーの行は残り、次の消し直しで R2 から消える(Codex #7 3巡目)", async () => {
+  it("🔴 アップロードの途中でパターンが消されたら、新しいキーの行は残り、次の消し直しで R2 から消える(レビュー指摘)", async () => {
     const variantId = await newVariant(await newSite());
     const before = await r2Snapshot(t.images);
     // R2 に置いた直後(head の後・DB の記録の前)に、別の要求がそのパターンを消した状況を作る

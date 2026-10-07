@@ -110,7 +110,7 @@ export async function ensureOwner(source: DbSource, ownerId: string): Promise<Re
 
 
 /*
-  ─────────────── 画像の後始末の「先に積む」(write-ahead・Codex #7 2巡目 Blocker) ───────────────
+  ─────────────── 画像の後始末の「先に積む」(write-ahead・レビュー指摘) ───────────────
   🔴 画像の参照を外す・行を消す DB の操作と**同じ batch(1つの取引)の中で、先に** `pending_image_deletions` に積む。
     batch が落ちれば、参照も積んだ行も**一緒に巻き戻る**(どちらか片方だけ残らない)。
     R2 から消すのは batch の後(`images.ts`)。消せたら積んだ行を消す。消せなければ行が残り、次に消し直す。
@@ -121,7 +121,7 @@ type DeleteScope = { siteId: string } | { popupId: string } | { variantId: strin
 /**
  * その範囲の(アーカイブ済みを含む)全パターンの画像のキーを、所有者の条件つきで `pending_image_deletions` に積む文。
  * 🔴 **`extraCondition` は、同じ取引の `deleteStatement` が断られたときに、この INSERT だけが
- *   実行されてしまわないようにするためのもの**(Codex #8 2巡目 Should fix)。`deleteVariant` は
+ *   実行されてしまわないようにするためのもの**(レビュー指摘)。`deleteVariant` は
  *   「稼働中のポップから最後の配信可能パターンを奪う削除」を WHERE で断る(`keepsDeliverableGuard`)が、
  *   このガードは DELETE の文だけに掛かっていて、**同じ batch の INSERT(ここ)は無条件で実行されていた**
  *   —— 断られた削除でも画像キーが積まれ、`cleanupPending` とログに偽の未処理削除が出ていた。
@@ -168,7 +168,7 @@ async function deleteWithQueue(
    */
   onZeroChanges: () => Promise<Result<Deleted>> = async () => notFound(),
   /**
-   * 🔴 **`enqueueImagesUnder` に足す条件(Codex #8 2巡目 Should fix)**。`deleteStatement` が
+   * 🔴 **`enqueueImagesUnder` に足す条件(レビュー指摘)**。`deleteStatement` が
    *   ガードで断るときは、**同じ条件をここにも渡す**——渡さないと、削除は0件のままなのに
    *   画像キーだけが `pending_image_deletions` に積まれる(断った操作が内部状態を変えてしまう)。
    */
@@ -182,7 +182,7 @@ async function deleteWithQueue(
   if (deleted.meta.changes === 0) {
     /*
       ⚠ 消す行が無かった(他人の行・既に無い・またはガードが断った)。
-      🔴 **積んだ行も無い**(Codex #8 2巡目 Should fix で修正): `enqueueExtraCondition` に
+      🔴 **積んだ行も無い**(レビュー指摘で修正): `enqueueExtraCondition` に
       `deleteStatement` と同じガードを渡しているときは、INSERT もここで0件のまま確定する
       (同じ batch = 同じ取引なので、他の文が何を書いても一緒にコミットされるだけで、
       INSERT 自身の WHERE が偽なら元々0行)。
@@ -565,7 +565,7 @@ function textContent(input: VariantInput): string {
 }
 
 /*
-  🔴 `requiresImageAlt` は `./shapes.ts` にある(Codex #8 1巡目 Blocker 3)。
+  🔴 `requiresImageAlt` は `./shapes.ts` にある(レビュー指摘)。
     `src/admin/body.ts`(1枚目の関門)とここ(2枚目)が**同じ関数**を呼ぶことで、定義の重複による
     fail-open の再発を防ぐ。`admin.ts` に置かないのは、DB に触らないこの純粋関数を export すると
     `tests/d1-owner-isolation.test.ts`(「データ層の公開関数はすべて `ownerId` を2番目に取る」を
@@ -573,10 +573,10 @@ function textContent(input: VariantInput): string {
 */
 
 /*
-  ─────────────── 稼働中のポップから「配信できる最後のパターン」を奪わせない(Codex #8 1巡目 Blocker 1) ───────────────
+  ─────────────── 稼働中のポップから「配信できる最後のパターン」を奪わせない(レビュー指摘) ───────────────
   🔴 **画像を外す・アーカイブする・削除する・(画像の無い画像型へ)編集する**の4つの操作は、
     稼働中(`status = 'active'`)のポップを配信 0 件のまま放置しうる。**黙って停止に切り替えず、操作そのものを断る**
-    (本部裁定 2026-10-?: 押した操作と違う結果になるため)。
+    (設計の決定 2026-10-?: 押した操作と違う結果になるため)。
   🔴 **判定は書き込みと同じ1つの文の WHERE に埋め込む**(先に読んでから書く、ではない)。
     activatePopup と同じ形: 条件が偽なら変更が0件のまま終わり、呼び出し側が「なぜ変わらなかったか」を後から1回読む。
 */
@@ -759,13 +759,13 @@ function applyRows(target: Record<string, PopupStats>, rows: StatsRow[], field: 
 
 /**
  * サイト配下の全ポップ(アーカイブ済みを含む)の、表示・クリック・閉じたの数字。
- * 🔴 **単位・期間(本部発注 D-330 の決め。notes/プロダクト事業部/離脱ポップ-要件書.md §4-7 の続き)**:
+ * 🔴 **単位・期間(設計上の要件の決め。要件書 §4-7 の続き)**:
  *   ・数える単位は**ポップごと**(バリアント別・トリガ別の内訳は要件書 §10 の数値ダッシュボードの仕事で、
  *     本PR = 管理画面のポップ一覧・アーカイブ一覧・完全削除の確認、の範囲外)。
  *   ・クリックは**生の件数**(同じ表示で複数回押されたら複数回数える。要件書 §4-7 のとおり)。
  *     CTR(ユニーク・impression_id あたり1)に畳む指標は、この3画面には出ない。
  *   ・「直近7日」は**リクエスト時刻からの 7×24 時間のローリング窓(UTC)**。カレンダー日・JST では切らない
- *     ——社長1人の運用で、時差の扱いを決めるだけの実データがまだ無いため最も単純な基準を採った。
+ * ——運営者1人の運用で、時差の扱いを決めるだけの実データがまだ無いため最も単純な基準を採った。
  *     ずれが問題になったら、要件書に時差の方針を足してから変える(README にも書く)。
  *   ・「累計」は保持期間の制約なし(§6 裁定4 の90日保持は PR5 本体の宿題。本PRでは削除を実装していないので
  *     累計 = 今 DB に残っている全件)。
@@ -836,7 +836,7 @@ export async function setVariantImage(
   const previousOf = `select json_extract(content, '$.imageKey') from variants where id = ?1 and owner_id = ?2`;
   /*
     🔴 **画像を「外す」(`key === null`)だけガードを掛ける**(稼働中のポップから最後の配信可能パターンを
-    奪わせない。Codex #8 1巡目 Blocker 1)。置く・差し替える(`key` が非 null)は配信できる状態を
+    奪わせない。レビュー指摘)。置く・差し替える(`key` が非 null)は配信できる状態を
     減らさないので、ガード無し(既存のまま)。**同じ条件を、積む文(②)と書く文(③)の両方に掛ける**
     —— ③だけに掛けると、ブロックされた(= content が変わらない)のに②だけが R2 への消し直しを
     予約してしまい、宙に浮いた pending 行が残る(実害は無い=drain 側が「まだ参照されている」で
@@ -875,7 +875,7 @@ export async function setVariantImage(
         )
         .bind(...(key === null ? [variantId, ownerId] : [variantId, ownerId, key])),
       // 🔴 新しいキーの行を外すのは、**上の UPDATE が当たって、そのキーを実際に参照している行があるとき だけ**
-      //   (Codex #7 3巡目)。並行する削除でパターンが消えていたら、行は残り、後の消し直しで R2 から消える。
+      //   (レビュー指摘)。並行する削除でパターンが消えていたら、行は残り、後の消し直しで R2 から消える。
       db
         .prepare(
           `delete from pending_image_deletions

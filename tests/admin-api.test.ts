@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // 管理画面の API(src/admin/app.ts)を、**実物のローカル D1 と R2**(getPlatformProxy)の上で撃つ。
-// 設計 = notes の ADPOP-PR3b-設計 改訂 v2(security 監査 2026-10-01 を全件採用 = D-302)。
+// 設計はセキュリティ監査(2026-10-01)の指摘を全件採用している。
 //
 // 🔴 この束が固定するもの:
 //   ・CSRF の層を**1枚ずつ独立に**撃つ(Origin / Sec-Fetch-Site / Content-Type)= 監査 M5
@@ -186,7 +186,7 @@ describe("ログイン(監査 H1 / M1 / M2 / L7)", () => {
 
   it("🔴🔴 並列に 12 本撃っても、パスワードまで進むのは 5 本まで(試行を PBKDF2 の前に数える・M1)", async () => {
     const ip = freshIp();
-    // 🔴 状態コードだけでなく、**PBKDF2 が実際に回った回数**を数える(Codex #7 Should:
+    // 🔴 状態コードだけでなく、**PBKDF2 が実際に回った回数**を数える(レビュー指摘:
     //   上限の判定を PBKDF2 の後ろへ動かしても、状態コードは同じに返せるため)
     const derive = vi.spyOn(crypto.subtle, "deriveBits");
     const results = await Promise.all(
@@ -235,7 +235,7 @@ describe("ログイン(監査 H1 / M1 / M2 / L7)", () => {
     expect(sixth.status).toBe(429);
   });
 
-  it("🔴 ログインを**試みた**だけで、期限切れ・無操作のセッションの行が消える(成功を待たない・Codex #7 Should)", async () => {
+  it("🔴 ログインを**試みた**だけで、期限切れ・無操作のセッションの行が消える(成功を待たない・レビュー指摘)", async () => {
     // 所有者の行が無ければ作る(既に在れば owners の BEFORE INSERT が黙って捨てる)
     await t.db.prepare("insert into owners (id) values (?1)").bind(secrets.ownerId).run();
     const old = (hash: string, expires: string) =>
@@ -468,7 +468,7 @@ describe("ルートと所有者の分離(監査 L3 / L4・設計 3 章)", () => 
       for (const table of ["sites", "site_allowed_origins", "popups", "popup_triggers", "variants", "events"]) {
         out[table] = (await t.db.prepare(`select * from ${table} where owner_id = ?1 order by rowid`).bind(OTHER_OWNER).all()).results;
       }
-      // 🔴 キーだけでなく本文のバイト列と Content-Type も比べる(Codex #7 Should)
+      // 🔴 キーだけでなく本文のバイト列と Content-Type も比べる(レビュー指摘)
       out.r2 = await r2Snapshot(t.images);
       return out;
     };
@@ -605,7 +605,7 @@ describe("サイト・ポップ・パターンの API(通る側)", () => {
   });
 });
 
-describe("稼働中のポップから最後の配信可能パターンを奪う操作は 409(Codex #8 1巡目 Blocker 1)", () => {
+describe("稼働中のポップから最後の配信可能パターンを奪う操作は 409(レビュー指摘)", () => {
   it("🔴 唯一のパターンのアーカイブは 409・文言つき。削除・編集(画像の無い画像型へ)も同様", async () => {
     const cookie = await login();
     const site = await call("/api/admin/sites", { method: "POST", body: { name: "floor", allowedOrigins: [] }, cookie });
@@ -731,7 +731,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
     expect(Array.from(bytes)).toEqual(Array.from(jpeg(16, 16)));
   });
 
-  it("🔴 長い辺が 2,400px を超える画像は 413 と文言(D-303)", async () => {
+  it("🔴 長い辺が 2,400px を超える画像は 413 と文言", async () => {
     const site = await call("/api/admin/sites", { method: "POST", body: { name: "dims", allowedOrigins: [] }, cookie });
     const siteId = ((await site.json()) as { data: { id: string } }).data.id;
     const popup = await call(`/api/admin/sites/${siteId}/popups`, { method: "POST", body: { name: "p" }, cookie });
@@ -750,7 +750,7 @@ describe("画像のアップロード(監査 M4 / L1 / L2)", () => {
   });
 });
 
-describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
+describe("R2 から消せなかった画像(レビュー指摘)", () => {
   it("🔴 画像を外すときに R2 から消せなければ、応答に数が載り(黙って 200 にしない)、ログに出て、次の操作で消し直す", async () => {
     const cookie = await login();
     const site = await call("/api/admin/sites", { method: "POST", body: { name: "cleanup", allowedOrigins: [] }, cookie });
@@ -792,7 +792,7 @@ describe("R2 から消せなかった画像(Codex #7 Blocker 2)", () => {
   });
 });
 
-describe("数値(表示・クリック・閉じた。PR5a・Codex 1巡目 Should fix 2)", () => {
+describe("数値(表示・クリック・閉じた。PR5a・レビュー指摘)", () => {
   it("✅ イベントが1件も無いポップは 200 で、数字が0であること(0件と取得失敗を区別する前提)", async () => {
     const cookie = await login();
     const site = await call("/api/admin/sites", { method: "POST", body: { name: "stats-empty", allowedOrigins: [] }, cookie });

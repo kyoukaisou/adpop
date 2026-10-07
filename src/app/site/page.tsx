@@ -30,7 +30,7 @@ import { DELIVERY_ORIGIN } from "../_lib/delivery";
 import { nextLoadErrorState } from "../_lib/pageLoad";
 
 /**
- * 🔴 Codex 2巡目 Should fix: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
+ * 🔴 レビュー指摘: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
  *   できてしまっていた。未設定なら `null` を返し、呼び出し側はタグ自体を組み立てない
  *   (サムネイルの `deliveryImageUrl` と同じ考え方)。
  */
@@ -51,7 +51,7 @@ function SiteContent() {
   //   取得の成否を分けて持つ——§2026-10-04-09 の型と同じ考え方)。
   const [stats, setStats] = useState<ApiPopupStatsMap | null>(null);
   const [loadError, setLoadError] = useState(false);
-  // 🔴 Codex 5巡目: 最初の読み込みと、一度表示した後の再取得(各種操作後のload())を区別する。
+  // 🔴 レビュー指摘: 最初の読み込みと、一度表示した後の再取得(各種操作後のload())を区別する。
   //   このページは元々再取得失敗でも一覧を消していなかったが、文言と扱いをポップ編集画面と揃える。
   const [reloadError, setReloadError] = useState(false);
   const loadedOnceRef = useRef(false);
@@ -61,7 +61,7 @@ function SiteContent() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showEditSite, setShowEditSite] = useState(false);
-  // 🔴 Codex 1巡目 Blocker 1: busyId(state)だけでは連打の瞬間に間に合わないことがあるため、
+  // 🔴 レビュー指摘: busyId(state)だけでは連打の瞬間に間に合わないことがあるため、
   //   同期的に読める ref で「いま進行中か」を二重に見る(操作系の共通ガード)。
   const actionInFlightRef = useRef(false);
 
@@ -76,7 +76,7 @@ function SiteContent() {
       const next = nextLoadErrorState(false, loadedOnceRef.current);
       setLoadError(next.loadError);
       setReloadError(next.reloadError);
-      // 🔴 Codex r1 Should fix: この早期returnでstatsに触れないと、前回表示していた数字が
+      // 🔴 レビュー指摘: この早期returnでstatsに触れないと、前回表示していた数字が
       //   古いまま残り続ける(site/popupsの取得が失敗したのに、数字だけ最新のふりをする)。
       //   次の stats state は `nextStatsState` に1本化する(site/popups が失敗した = この回の
       //   読み込みは丸ごと信用できないので、ここでは常に null になる)。

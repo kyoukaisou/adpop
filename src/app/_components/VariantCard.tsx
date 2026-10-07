@@ -11,7 +11,7 @@
     buttonLabelが空かつimageAltが空)を使う——判定がサーバーとずれると、画面では送れたのに
     サーバーが400で断る/画面で止めたのにサーバーは通る、という食い違いが起きるため。
 
-  🔴 Codex 1巡目 Blocker 2 の対応方針(画像の無い画像パターンを保存させない):
+  🔴 レビュー指摘の対応方針(画像の無い画像パターンを保存させない):
     **新しく作る画像パターンは、画像を選んでも「画面の中だけの下書き」のまま持ち、
     実際にAPIへ送るのは「保存」を押した瞬間だけ**にした(先にバリアントだけ作る方式は採らない)。
     「保存」ボタンは画像が選ばれていない間は無効化する。保存の処理順序は
@@ -21,21 +21,21 @@
     既に保存済みのパターン(画像の差し替え・外した後の選び直し)は、この限りではなく即アップロードする
     (そのパターン自体は差し替え前から有効なレコードとして既に存在しているため)。
 
-  🔴 Codex 1巡目 Should fix(P-012): 保存・アップロード・画像の削除が成功したら、
+  🔴 レビュー指摘(P-012): 保存・アップロード・画像の削除が成功したら、
     サーバーへ `GET /variants/:id` を取りに行って**サーバーが実際に持っている値で画面の状態を置き換える**
     (`syncFromServer`)。trimされた値やimageKeyを、送った値をそのまま仮定して表示しない。
 
-  🔴 Codex 2巡目 Blocker: 新規画像パターンで、作成直後のアップロードが失敗したときの補償DELETEの
+  🔴 レビュー指摘: 新規画像パターンで、作成直後のアップロードが失敗したときの補償DELETEの
     結果を確かめていなかった(404・409・通信失敗を黙って握りつぶしていた)。
     `src/app/_lib/variantRecovery.ts` の `recoverFailedImageUpload` に分岐ロジックを切り出し、
     まずGETで実際の状態を確認してから、消す/消さないを決める(詳細はそのファイルのコメント参照)。
 
-  🔴 Codex 2巡目 Should fix 1(P-012の残り): `syncFromServer` が失敗したときに成功扱いしない
+  🔴 レビュー指摘(P-012の残り): `syncFromServer` が失敗したときに成功扱いしない
     (`onSaved({ silent: true, errorMessage })` で親にエラーを伝える)。また、親から新しい
     `variant` props が来たとき(他のカードの保存・一覧の再読み込み等)にもこのカードの表示を
     合わせる(`useEffect` で同期。保存・アップロード中は上書きしない)。
 
-  🔴 Codex 3巡目 Blocker: 上のprops同期が、**保存していない入力まで上書きしていた**。
+  🔴 レビュー指摘: 上のprops同期が、**保存していない入力まで上書きしていた**。
     パターンAを編集中(保存前)に、別の操作(トリガー切替・ポップ設定の保存・別パターンBの
     保存/アーカイブ)が一覧全体を再読み込みさせると、Aの入力が警告なく保存済みの値に戻っていた
     ——「操作中でないこと(busy)」と「未編集であること」は同義ではない。
@@ -43,7 +43,7 @@
     と今の入力が違うカードには props 同期をかけない**。そのカード自身の保存・画像の回復処理での
     再同期が成功したときだけ baseline を更新する(`markSynced`)。
 
-  🔴 Codex 4巡目 Blocker: 3巡目のdirtyガードは**props同期のeffectにしか効いていなかった**。
+  🔴 レビュー指摘: 3巡目のdirtyガードは**props同期のeffectにしか効いていなかった**。
     既存パターンの文字欄を編集中(未保存)のまま「差し替え」で画像を選ぶと、アップロード成功後の
     直接の再同期(`uploadToExisting` → 旧`syncFromServer` → `applyVariant`)が、
     dirtyを見ずにカード全体をサーバーの古い文字の値で上書きしていた。
@@ -108,14 +108,14 @@ export function VariantCard({
   onArchived: (() => Promise<void> | void) | null;
   onCancelDraft: (() => void) | null;
   /**
-   * 🔴 ページを離れるときの確認(本部発注)。このカードの `dirty`(=既存の判定。新しい判定は作らない)を
+   * 🔴 ページを離れるときの確認(設計上の要件)。このカードの `dirty`(=既存の判定。新しい判定は作らない)を
    *   そのまま親へ知らせるだけ。下書きカード(variant===null)は呼ばない——`isDirtyFrom` は
    *   baseline が無い下書きを常に dirty=false にする設計(下のコメント参照)だが、下書きの存在
    *   そのものは親が `draftKeys` で既に把握しているので、ここで重ねて判定を作らない。
    */
   onDirtyChange?: (dirty: boolean) => void;
   /**
-   * 🔴 Codex r1 Should fix: 保存・アップロード・画像削除が**進行中**であることを親へ知らせる。
+   * 🔴 レビュー指摘: 保存・アップロード・画像削除が**進行中**であることを親へ知らせる。
    *   `dirty`(=未保存の入力差分)とは別の状態——画像の差し替えのような「即時送信」の操作は
    *   文字欄が dirty でなくても、送信中に離脱するとリクエストが中断される。下書きカードも
    *   アップロード中はこれを呼ぶ(dirtyと違い、下書きかどうかを区別しない)。
@@ -132,7 +132,7 @@ export function VariantCard({
   const [showErrors, setShowErrors] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(variant?.id ?? null);
   const [imageKey, setImageKey] = useState<string | null>(variant ? variantImageKey(variant) : null);
-  // 🔴 Codex 3巡目 Blocker: 「最後にサーバーと同期した値」。これと今の入力が違うカードには
+  // 🔴 レビュー指摘: 「最後にサーバーと同期した値」。これと今の入力が違うカードには
   //   親からの新しい variant props を適用しない(未保存の入力を勝手に上書きしない)。
   const [baseline, setBaseline] = useState<SyncedFields | null>(initialBaseline);
   // 🔴 下書き(savedId===null)が選んだがまだアップロードしていないファイル(Blocker 2 対応)
@@ -153,7 +153,7 @@ export function VariantCard({
   const busy = status !== "idle";
   const dirty = isDirtyFrom(baseline, { kind, headline, body, buttonLabel, imageAlt, destinationUrl });
 
-  // 🔴 ページを離れるときの確認(本部発注)。既存の `dirty` をそのまま親へ知らせる。
+  // 🔴 ページを離れるときの確認(設計上の要件)。既存の `dirty` をそのまま親へ知らせる。
   //   `onDirtyChange` を effect の依存に入れると、親が毎レンダーで新しい関数を渡した場合に
   //   不要な再実行が起きるため、最新の関数は ref で読む(settingsDirtyRef と同じ理由)。
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -188,7 +188,7 @@ export function VariantCard({
   }, [pendingPreviewUrl]);
 
   /**
-   * 🔴 Codex 4巡目 Blocker: 「何を確定したか」で反映する範囲を分ける判定(`computeSyncPatch`)を
+   * 🔴 レビュー指摘: 「何を確定したか」で反映する範囲を分ける判定(`computeSyncPatch`)を
    *   実際に適用する唯一の入口。`patch.fields`/`patch.baseline` が `null` のときは触れない
    *   (画像だけの操作で、文字欄・baselineを上書きしないため)。
    */
@@ -212,7 +212,7 @@ export function VariantCard({
   }
 
   /**
-   * 🔴 Codex 2巡目 Should fix 1 → 3巡目 Blocker で条件を追加: 親から新しい `variant` props が
+   * 🔴 レビュー指摘で条件を追加: 親から新しい `variant` props が
    *   来たら(他のカードの保存・一覧の再読み込み等)、このカードの表示をそれに合わせる。
    *   ただし **保存・アップロード中(busy)**、または **未保存の変更がある(dirty)** ときは
    *   自分の入力・操作結果を上書きしてしまうため同期しない。下書き(variant===null)も対象外。
@@ -226,9 +226,9 @@ export function VariantCard({
 
   /**
    * 保存(文字欄を送った直後)の後、サーバーが実際に持っている値で画面を置き換える(P-012対応)。
-   * 🔴 Codex 2巡目 Should fix 1: この取得自体が失敗したら呼び出し側は**成功の通知を出さない**
+   * 🔴 レビュー指摘: この取得自体が失敗したら呼び出し側は**成功の通知を出さない**
    *   (戻り値で知らせる。黙って諦めない)。
-   * 🔴 Codex 4巡目 Blocker: **文字欄を送っていない経路(画像だけの操作)ではこれを呼ばない**
+   * 🔴 レビュー指摘: **文字欄を送っていない経路(画像だけの操作)ではこれを呼ばない**
    *   (`syncImageFromServer` を使う)。ここは「保存」経路専用——呼ぶのは、今の入力をそのまま
    *   サーバーに送った直後だけ(= 送った値と確定する値が一致する前提が成り立つとき)。
    */
@@ -240,7 +240,7 @@ export function VariantCard({
   }
 
   /**
-   * 🔴 Codex 4巡目 Blocker: 既存パターンの画像だけの操作(差し替え)の後に `syncFromServer`
+   * 🔴 レビュー指摘: 既存パターンの画像だけの操作(差し替え)の後に `syncFromServer`
    *   (= 文字欄とbaselineも上書きする「保存」の patch)を呼んでいたため、文字欄を編集中(未保存)の
    *   まま画像を差し替えると入力が消えていた。**画像だけを確定した経路では、`computeSyncPatch` に
    *   `{ kind: "image-only" }` を渡し、imageKey だけを反映する(文字欄・baselineには触れない)。**
@@ -286,7 +286,7 @@ export function VariantCard({
       setError(imageErrorMessage(result.reason, result.message));
       return;
     }
-    // 🔴 Codex 4巡目 Blocker: 画像だけの操作(差し替え)。文字欄・baselineは触らない
+    // 🔴 レビュー指摘: 画像だけの操作(差し替え)。文字欄・baselineは触らない
     const synced = await syncImageFromServer(id);
     if (!synced) {
       setError("アップロードはできましたが、最新の状態を確認できませんでした。画面を再読み込みしてください。");
@@ -312,7 +312,7 @@ export function VariantCard({
       return;
     }
     // 🔴 画像だけの操作(外す)。DELETEの結果からimageKeyがnullになったことだけ分かっているので、
-    //   それだけを反映する(GETし直さない。文字欄・baselineには触れない。Codex 4巡目 Blocker参照)
+    //   それだけを反映する(GETし直さない。文字欄・baselineには触れない。レビュー指摘参照)
     applyPatch(computeSyncPatch({ kind: "image-only", imageKey: null }));
     await onSaved();
   }
@@ -357,7 +357,7 @@ export function VariantCard({
         setUploadProgress(null);
         if (!uploaded.ok) {
           /*
-            🔴 Codex 2巡目 Blocker: 「失敗したら消す」の結果を確かめずに握りつぶしていた
+            🔴 レビュー指摘: 「失敗したら消す」の結果を確かめずに握りつぶしていた
             (404・409・通信失敗を無視)。まずGETで実際の状態を確かめてから、消す/消さないを決める
             (`recoverFailedImageUpload`。詳細はファイル先頭のコメントと variantRecovery.ts 参照)。
           */

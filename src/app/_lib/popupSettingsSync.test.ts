@@ -37,7 +37,7 @@ describe("popupSettingsSync", () => {
   });
 
   it("壊れた判定(baselineを無視して常にdirtyでないとする)だと、このテストが落ちることを確認する", () => {
-    // 🔴 Codex 6巡目の裁定「壊したら落ちることを1回確かめる」に対応する検査。
+    // 🔴 レビュー指摘の裁定「壊したら落ちることを1回確かめる」に対応する検査。
     const current: PopupSettingsFields = { ...BASELINE, name: "編集中の名前(未保存)" };
     const BROKEN_NOT_DIRTY = false;
     expect(isPopupSettingsDirty(BASELINE, current)).not.toBe(BROKEN_NOT_DIRTY);

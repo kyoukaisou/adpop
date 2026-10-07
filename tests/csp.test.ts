@@ -74,7 +74,7 @@ describe("buildCsp", () => {
     expect(csp).toContain("img-src 'self' blob: https://delivery.example.com");
   });
 
-  it("🔴 Codex r1 Blocker: img-src に blob: が無いと、新規画像パターンの URL.createObjectURL() プレビューが断られる", () => {
+  it("🔴 レビュー指摘: img-src に blob: が無いと、新規画像パターンの URL.createObjectURL() プレビューが断られる", () => {
     const csp = buildCsp({ scriptHashes: [], deliveryOrigin: null });
     expect(csp).toMatch(/img-src [^;]*\bblob:/);
   });

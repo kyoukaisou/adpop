@@ -62,7 +62,7 @@ describe("JPEG の APP1(Exif・XMP)を落とす", () => {
   });
 });
 
-describe("寸法の上限(長い辺 2,400px・D-303)", () => {
+describe("寸法の上限(長い辺 2,400px)", () => {
   it("上限の値と、画面に出す文言の数字が同じ", () => {
     expect(MAX_IMAGE_SIDE).toBe(2400);
     expect(IMAGE_TOO_LARGE_MESSAGE).toContain(MAX_IMAGE_SIDE.toLocaleString("en-US"));

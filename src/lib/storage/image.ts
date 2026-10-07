@@ -6,7 +6,7 @@
   🔴 **受け付けるのは PNG / JPEG / GIF / WebP だけ。** SVG は受けない(スクリプトを持てる)。
   🔴 **JPEG は APP1(Exif・XMP)を落としてから置く**(security 監査 L1: 撮影位置が全訪問者に配られる)。
     ⚠ 落とすのは JPEG の APP1 だけ。PNG の eXIf / tEXt、WebP の EXIF / XMP チャンクは落としていない(README)。
-  🔴 **寸法の上限は長い辺 2,400px**(D-303: ポップの表示の最大幅と、高い画素密度の画面での2倍を見込んだ値)。
+  🔴 **寸法の上限は長い辺 2,400px**(ポップの表示の最大幅と、高い画素密度の画面での2倍を見込んだ値)。
     寸法はヘッダから読む(画像を展開しない)。**読めない画像は断る**(上限を確かめられないものを通さない)。
   ⚠ 大きさの上限は要件書 §4-3 の仮置き(画像 2MB・GIF 3MB)。
 */
@@ -17,7 +17,7 @@ export const IMAGE_LIMIT_BYTES = 2 * 1024 * 1024;
 export const GIF_LIMIT_BYTES = 3 * 1024 * 1024;
 /** 本文を読む上限(大きいほうの上限)。これを超えたら、中身を見る前に読むのをやめる。 */
 export const MAX_UPLOAD_BYTES = GIF_LIMIT_BYTES;
-/** 長い辺の上限(px)。D-303 */
+/** 長い辺の上限(px)。 */
 export const MAX_IMAGE_SIDE = 2400;
 /** 画面に出す文言(画面の PR が使う)。⚠ 数字は MAX_IMAGE_SIDE と同じであること(検査が突き合わせる) */
 export const IMAGE_TOO_LARGE_MESSAGE = "画像が大きすぎます(長い辺 2,400px まで)";

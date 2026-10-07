@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// 🔴 稼働中のポップから「配信できる最後のパターン」を奪う操作を断る(Codex #8 1巡目 Blocker 1・本部裁定)。
+// 🔴 稼働中のポップから「配信できる最後のパターン」を奪う操作を断る(レビュー指摘・設計の決定)。
 //   対象の4操作: 画像を外す(setVariantImage null) / 唯一のtext型を画像の無いimage型に変える(updateVariant) /
 //   アーカイブする(archiveVariant) / 削除する(deleteVariant)。
 //   🔴 黙って停止に切り替えるのではなく、操作そのものを 409(`last_deliverable_variant`)で断る。
@@ -143,7 +143,7 @@ describe("稼働中のポップから最後の配信可能パターンを奪う�
     expect((await admin.getVariant(db, OWNER_A, variantId)).ok).toBe(true);
   });
 
-  it("🔴 断られた削除では、画像キーが pending_image_deletions に積まれない(Codex #8 2巡目 Should fix)", async () => {
+  it("🔴 断られた削除では、画像キーが pending_image_deletions に積まれない(レビュー指摘)", async () => {
     const site = await newActiveSite();
     const popupId = value(await admin.createPopup(db, OWNER_A, site, { name: "p" })).id;
     const variantId = value(await admin.createVariant(db, OWNER_A, popupId, imageInput())).id;
@@ -191,7 +191,7 @@ describe("稼働中のポップから最後の配信可能パターンを奪う�
   });
 
   /*
-    🔴 **並行性(Codex #8 2巡目 Should fix)**。ガードは「書き込みと同じ文の WHERE」に埋め込んであるので、
+    🔴 **並行性(レビュー指摘)**。ガードは「書き込みと同じ文の WHERE」に埋め込んであるので、
     D1 が1つずつ処理する限り、同じポップの配信可能な2行に対して2つの破壊的操作を**同時に**投げても、
     最初にコミットされた側だけが「他に配信できる行がある」を見て通り、後からコミットされた側は
     「もう無い」を見て断られる、という順序性が保たれるはず——それを実際に `Promise.all` で確かめる。

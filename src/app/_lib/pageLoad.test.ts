@@ -16,7 +16,7 @@ describe("nextLoadErrorState", () => {
   });
 
   it("壊れた判定(hasLoadedOnceを無視して常にloadErrorにする)だと、再現テストが落ちることを確認する", () => {
-    // 🔴 Codex 5巡目の裁定「壊したら落ちることを1回確かめる」に対応する検査。
+    // 🔴 レビュー指摘の裁定「壊したら落ちることを1回確かめる」に対応する検査。
     function brokenNextLoadErrorState(ok: boolean): LoadErrorStateLike {
       return ok ? { loadError: false, reloadError: false } : { loadError: true, reloadError: false };
     }

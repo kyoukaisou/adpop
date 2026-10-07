@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /*
   管理画面の CSP を組み立てる純粋関数。
-  設計: notes/プロダクト事業部/ADPOP-PR3b-設計.md 改訂v2 §6 #5(M8)。
-  security 監査: notes/本部/セキュリティ監査-ADPOP-PR3b-2026-10-01.md §0 #5(実測: Next の静的書き出しは
-  1ページにつきインライン `<script>` を2本出す。中身はビルド時に決まる定数)。
+  設計: 画面設計 §6(M8)。
+  実測: Next の静的書き出しは1ページにつきインライン `<script>` を2本出す(中身はビルド時に決まる定数)。
 
   🔴 手で書き写さない: ハッシュはビルドのたびに実物の HTML から数える(`scripts/build-admin-headers.mjs`)。
   🔴 unsafe-inline・unsafe-eval・ワイルドカードは使わない。

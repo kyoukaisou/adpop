@@ -7,9 +7,9 @@
 
   🔴 **省略する経路は無い。** 前巡の `CI_DRY_RUN` フラグは、このフラグを立てたまま
   `wrangler deploy` を直接実行すれば本番でも仮の値を許してしまう欠陥だったため削除した
-  (Codex r3 Blocker)。本番の D1 は作成済みで(D-344)、両ファイルには実在の id がすでに
-  コミットされているため、CI はこの検査をそのまま(database_id を書き換えずに)通す
-  (`.github/workflows/ci.yml` 参照。CI が書き換えるのは配信元の確定値だけ)。
+  (レビュー指摘)。本番の D1 は作成済みで、両ファイルには実在の id がすでに
+  コミットされているため、CI は値を何も書き換えずにこの検査をそのまま通す
+  (`.github/workflows/ci.yml` 参照)。
 */
 import { databaseIdMismatchProblems } from "./database-id-guard.mjs";
 import { ADMIN_WRANGLER_PATH, DELIVERY_WRANGLER_PATH, readWranglerConfig } from "./wrangler-config.mjs";

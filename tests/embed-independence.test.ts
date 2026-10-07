@@ -3,7 +3,7 @@
 // `packages/embed/`(MIT)が AGPL 側を読まないことの検査を、**両側**で固定する。
 // ⚠ 実物は今きれいなので、実物だけを測っても「検査が働くか」は分からない。
 //
-// 🔴 **Codex 1巡目(2026-09-08)で、正規表現の版に2つの抜け方が実在した。**
+// 🔴 **レビュー指摘(2026-09-08)で、正規表現の版に2つの抜け方が実在した。**
 //   その2つを**そのまま「落ちる例」として**、esbuild に実際に解決させて撃つ。
 //   ⚠ 合成した metafile を渡すだけでは足りない —— 抜けたのは
 //     「**esbuild は解決するのに、こちらの走査が見つけられない**」という差なので、
@@ -53,7 +53,7 @@ afterAll(() => {
   for (const root of trees) rmSync(root, { recursive: true, force: true });
 });
 
-describe("Codex 1巡目で実在した抜け方(正規表現の版が素通ししたもの)", () => {
+describe("レビュー指摘で実在した抜け方(正規表現の版が素通ししたもの)", () => {
   it("🔴 空白の無い `import{x}from\"…\"` でも捕まえる(Astra の例)", async () => {
     const root = makeTree({
       "packages/embed/src/loader.ts": `import{metadata}from"../../../src/app/layout";\nexport const v = metadata;\n`,
@@ -102,7 +102,7 @@ describe("Codex 1巡目で実在した抜け方(正規表現の版が素通し�
   });
 });
 
-describe("第2段: metafile に出ないもの(Codex 2巡目 Medium)", () => {
+describe("第2段: metafile に出ないもの(レビュー指摘)", () => {
   it("🔴 `import type` は metafile に出ないが、第2段が捕まえる", async () => {
     const root = makeTree({
       "packages/embed/src/loader.ts": `import type { Site } from "../../../src/lib/types";\nexport const v: Site | null = null;\n`,
@@ -126,7 +126,7 @@ describe("第2段: metafile に出ないもの(Codex 2巡目 Medium)", () => {
       ⚠ 書きかけのファイルは、まだどこからも import されていないので **metafile に1行も出ない**。
         「いま出荷されていないから安全」ではない —— **次に誰かが import した瞬間に混ざる**。
 
-      🔴 **手製の配列を渡していたのが弱かった**(Codex 3巡目 Low)。
+      🔴 **手製の配列を渡していたのが弱かった**(レビュー指摘)。
         それだと **`collectEmbedFiles()` が未到達ファイルを拾わなくなっても、この検査は緑のまま**
         (= 判定だけを測って、収集を1ミリも測っていない)。
       ✅ **一時ディレクトリに実ファイルを書き、`collectEmbedFiles()` から通す。**

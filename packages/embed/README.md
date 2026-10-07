@@ -55,4 +55,4 @@
   (頻度制御の識別子で、秘密でも認証でもないため)。
 - **①戻るトリガは埋め込み先の履歴を触る**(`history.pushState` を1枚)。OFF にすれば触らない。
 - **`(pointer: coarse)` も `navigator.maxTouchPoints` も無い環境は「PC」と数える。**
-- ⚠ `private: true` を外す(= npm に publish できる状態にする)のは**公開ゲート**(社長承認)の後。
+- ⚠ `private: true` を外す(= npm に publish できる状態にする)のは**公開ゲート**の後。

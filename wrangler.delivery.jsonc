@@ -1,7 +1,7 @@
 // 配信の Worker(`/api/v1/config`・`/api/v1/events`・`/embed/*`)。
-// 管理画面は別の Worker(PR3b)。**配信の不具合と管理画面の不具合を切り離す**ため(D-296 3)。
+// 管理画面は別の Worker(PR3b)。**配信の不具合と管理画面の不具合を切り離す**ため。
 //
-// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop`。D-344)の id(docs/deploy.md §2)。
+// 🔴 `database_id` は本番の D1(`wrangler d1 create adpop` で作ったもの)の id(docs/deploy.md §2)。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "adpop-delivery",
@@ -9,14 +9,19 @@
   "compatibility_date": "2026-09-30",
   // 🔴 `wrangler deploy` は `dist/delivery-assets` をそのまま配る。`build.command` を設定しないと、
   //   埋め込みソースを直した後に `build:embed` を忘れたまま deploy すると**古い成果物が上がる**
-  //   (本番前の点検 P1 / Codex r1 Blocker 3)。deploy のたびに埋め込みを束ね直し、サイズ上限・
+  //   (本番前の点検 P1 / レビュー指摘)。deploy のたびに埋め込みを束ね直し、サイズ上限・
   //   ライセンス境界の検査も通してから deploy する。`database_id` の一致も同じコマンドで見る
   //   (どちらの Worker を先に deploy しても検査が走る)。
   "build": {
-    "command": "npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs"
+    "command": "npm run build:embed && npm run check:bundle-size && npm run check:embed-independence && node scripts/check-database-ids-match.mjs && node scripts/check-custom-domain.mjs"
   },
   // 🔴 既定値に頼らず明示する(security 監査 M7)。Version URL は修正前の版を本番のデータのまま動かすので切る。
-  "workers_dev": true,
+  // 🔴 配信は Custom Domain(`adpop.kyoukaisou.dev`)で受ける。zone の routes(パターンで受ける方式)
+  //   ではない —— custom_domain の Worker より前に走ってしまうため(Cloudflare 公式文書「Custom
+  //   Domains」)。広い pattern を持つ別の Worker が1つ増えるだけで、配信の通信を横取りできる経路に
+  //   なる。`workers_dev` はダッシュボードで切るだけでは次の deploy で復活するので、ここで false にする。
+  "workers_dev": false,
+  "routes": [{ "pattern": "adpop.kyoukaisou.dev", "custom_domain": true }],
   "preview_urls": false,
   // 🔴 静的配信: 埋め込みスクリプト(`npm run build:embed` の出力)。
   //   ファイルがある URL は Worker を起こさずに配る(課金されない。Workers の公式 pricing)。
@@ -32,7 +37,7 @@
   // 画像(PR3b)。⚠ バインドを「読むだけ」に絞る設定は無い。配信の Worker は読むだけの
   //   `src/lib/data/image-read.ts` しか import しない(tests/delivery-imports.test.ts)。
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "adpop-images" }],
-  // 🔴 **呼び出しのログ(invocation logs)を Cloudflare に残さない**(Codex #4 Blocker 3・本部裁定)。
+  // 🔴 **呼び出しのログ(invocation logs)を Cloudflare に残さない**(レビュー指摘・設計の決定)。
   //   呼び出しのログは「Request, Response, and related metadata」を保存する(Workers Logs の公式文書)。
   //   README の「IP アドレスを保存しない」と両立させるため切る。残すのは、こちらが console に出す
   //   **匿名化したエラーの1行だけ**(src/lib/log/redact.ts)。

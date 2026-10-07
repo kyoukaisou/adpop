@@ -104,7 +104,7 @@ export function parseVariant(body: unknown): Parsed<VariantInput> {
   /*
     🔴 **画像の説明は、画像型かつボタン文言が空のときだけ必須**(2026-10-04 追補v2 §7-7-1 の5番)。
       ⚠ **1枚目の関門**(入口)。`src/lib/data/admin.ts` の `requiresImageAlt` を**そのまま import して使う**
-      ——定義を2か所に複製しない(Codex #8 1巡目 Blocker 3。片方だけ直して欠落値への fail-open が
+      ——定義を2か所に複製しない(レビュー指摘。片方だけ直して欠落値への fail-open が
       再発することを防ぐ)。2枚目(データ層での再チェック)も同じ関数を呼ぶ。
   */
   if (requiresImageAlt(value)) return { ok: false, field: "imageAlt" };
