@@ -112,8 +112,15 @@ function installTag(): void {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function exitIntent(): void {
-  doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+function exitIntent(clientY = 0): void {
+  // 🔴 主の検知は `document.documentElement` の `mouseleave`(2026-10-10 Codex 1巡目・本部裁定で
+  //   `document` 直付けから変更。Safari/Firefox では `document` に届かないため。loader.ts 参照)
+  doc.documentElement.dispatchEvent(new win.MouseEvent("mouseleave", { clientY, relatedTarget: null }));
+}
+
+/** 控え(フォールバック): `document` の `mouseout`。主の `mouseleave` が届かないブラウザ向け。 */
+function exitIntentFallback(clientY = 0): void {
+  doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY, relatedTarget: null }));
 }
 
 /** ポップの中身(Shadow root の中)。⚠ `mode: "open"` にしてあるので読める。 */
@@ -171,17 +178,83 @@ describe("トリガ(PR2 で動くのは ⑥exit intent の1つだけ)", () => {
     expect(doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)).not.toBeNull();
   });
 
-  it("⑥ 画面の上端でないマウスアウトでは発火しない", async () => {
+  it("⑥ 画面の上端でないマウスリーブでは発火しない", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    doc.documentElement.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 200, relatedTarget: null }));
+    // 子要素間の移動(relatedTarget あり)も発火しない
+    doc.documentElement.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 0, relatedTarget: doc.body }));
+    await flush();
+
+    expect(sent).toEqual([]);
+  });
+
+  it("⑥ 上端の数 px 以内(速い移動の丸め)でも発火する", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    // 0 ちょうどではなく、上端に幅を持たせた範囲(EXIT_INTENT_EDGE_PX)での抜けを固定する
+    exitIntent(5);
+    await flush();
+
+    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+    expect(sent[0].triggerKind).toBe("exit_intent");
+  });
+
+  it("⑥ ページ内の要素の mouseleave(バブリングしない)では発火しない", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    /*
+      🔴 主の検知は `document.documentElement` に `mouseleave` を付けている。`mouseleave` は
+      バブリングしないので、子要素(ここでは body)で起きた mouseleave は documentElement の
+      listener へ届かない。これは「ページ内を移動しただけ」では誤爆しないことの土台そのもの
+      (relatedTarget の判定とは別に、イベントの種類自体が誤爆を防ぐ)。
+    */
+    doc.body.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 0, relatedTarget: null }));
+    await flush();
+
+    expect(sent).toEqual([]);
+  });
+
+  it("⑥ 控え(document の mouseout)でも発火する(主の mouseleave が届かないブラウザ向け)", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    exitIntentFallback(0);
+    await flush();
+
+    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+    expect(sent[0].triggerKind).toBe("exit_intent");
+  });
+
+  it("⑥ 控え(mouseout)も上端の帯の外・relatedTarget ありでは発火しない", async () => {
     stubNetwork();
     installTag();
     await bootLoader();
 
     doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 200, relatedTarget: null }));
-    // 子要素間の移動(relatedTarget あり)も発火しない
     doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 0, relatedTarget: doc.body }));
     await flush();
 
     expect(sent).toEqual([]);
+  });
+
+  it("🔴 主(mouseleave)と控え(mouseout)が両方発火しても、送信は1回だけ", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    exitIntent();
+    exitIntentFallback();
+    await flush();
+
+    expect(sent.filter((e) => e.kind === "fire")).toHaveLength(1);
   });
 
   it("🔴 1ページの表示は最大1回(最初に条件を満たしたトリガだけを記録する)", async () => {

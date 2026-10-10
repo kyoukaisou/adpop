@@ -44,6 +44,12 @@ export const SITE_ATTRIBUTE = "data-adpop-site";
 /** プレビュー用の強制表示(要件書 §4-4)。⚠ **この表示は数値に数えない**。 */
 export const PREVIEW_PARAM = "adpop_preview";
 
+/**
+ * exit intent(⑥)の「上端」とみなす幅(px)。⚠ **0 ではなく数 px の幅を持たせてある**
+ * (2026-10-10 本番実測。高速な移動・丸めで `clientY` が0px ちょうどに乗らず抜けることがある)。
+ */
+const EXIT_INTENT_EDGE_PX = 10;
+
 // ⚠ パスは `./bridge`(副作用の無いモジュール)が持つ —— 検査が起動させずに読めるように。
 
 /**
@@ -410,19 +416,42 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
   /*
     ── ⑥ exit intent(PC のみ。要件書 §4-2 の⑥)────────────────────
     🔴 **タッチ端末では登録もしない**(誤爆源を作らない)。
+
+    🔴 2026-10-10 本番実測で `mouseout`(`document`)から切り替えた。
+      本番の Chrome で、マウスを速く動かして上へ抜けたとき・DevTools を開いたまま抜けたときに
+      一度も発火しなかった(events が0件)。自動の Chromium で `clientY:0` を送ったときだけ発火した
+      = **再現しづらい取りこぼし**だった。
+
+    🔴🔴 2026-10-10 Codex クロスレビュー1巡目(本部裁定)で、`document` への `mouseleave` は
+      ブラウザごとに配送が割れる(一次情報): Safari は WebKit が「`mouseenter`/`mouseleave` を
+      `Document` へ送るのは誤り」として直している(WebKit bug 120862)。Firefox も `document` では
+      動かず `document.documentElement` でのみ動くという報告がある。
+      → **主の検知を `document.documentElement` の `mouseleave` に変更**。
+      → 元の `mouseout`(`document`・バブリングする)は**控えとして残し**、同じ `fire` を呼ぶ
+        (主がどのブラウザかで届かなくても、控えが拾う)。
+      ⚠ `fire` 自体に `fired` のラッチがあるので、両方から呼ばれても二重発火はしない
+        (このファイル内で検算済み。`arm` 内の `fire` 冒頭 `if (fired) return`)。
+      ⚠ 左右の端の上部 `EXIT_INTENT_EDGE_PX` から出た場合も対象に入る(Codex 指摘のとおり)。
+        誤発火としての実害は小さいと判断し、いまは受け入れる(README/PR本文に明記)。
+
+    条件は主・控えとも共通: `relatedTarget === null`(子要素間の移動は無視。要件書どおり維持)
+      かつ `clientY <= EXIT_INTENT_EDGE_PX`(上端の数px の帯。座標の丸め・高速な移動で
+      0px ちょうどに乗らない取りこぼしに対応)。
   */
   if (enabled.indexOf("exit_intent") >= 0 && ctx.device === "desktop") {
     quiet(() => {
-      ctx.doc.addEventListener(
-        "mouseout",
-        (event: MouseEvent) => {
-          // 画面の上端へ抜けたときだけ。⚠ 子要素間の移動(relatedTarget あり)は無視
-          if (event.relatedTarget !== null) return;
-          if (typeof event.clientY === "number" && event.clientY <= 0) fire("exit_intent");
-        },
-        // ⚠ passive / 非キャプチャ(要件書 §5-2)。preventDefault は1度も呼ばない
-        { passive: true },
-      );
+      function maybeFire(event: MouseEvent): void {
+        // 子要素間の移動(relatedTarget あり)は無視
+        if (event.relatedTarget !== null) return;
+        if (typeof event.clientY === "number" && event.clientY <= EXIT_INTENT_EDGE_PX) {
+          fire("exit_intent");
+        }
+      }
+      // 主: documentElement の mouseleave(非バブリング。Chrome/Edge/Firefox で確認できている経路)
+      ctx.doc.documentElement.addEventListener("mouseleave", maybeFire, { passive: true });
+      // 控え: document の mouseout(バブリングする。主が届かないブラウザのためのフォールバック)
+      // ⚠ passive / 非キャプチャ(要件書 §5-2)。preventDefault は1度も呼ばない
+      ctx.doc.addEventListener("mouseout", maybeFire, { passive: true });
     });
   }
 }

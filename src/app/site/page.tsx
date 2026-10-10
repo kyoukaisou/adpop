@@ -28,6 +28,7 @@ import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44 } from "../_lib/a11y";
 import { DELIVERY_ORIGIN } from "../_lib/delivery";
 import { nextLoadErrorState } from "../_lib/pageLoad";
+import { shouldShowNoActivePopupNotice } from "../_lib/siteNotice";
 
 /**
  * 🔴 レビュー指摘: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
@@ -208,6 +209,20 @@ function SiteContent() {
                     </div>
                   );
                 })()}
+                {/*
+                  🔴 配信の config は、稼働中のポップが無いサイトでは 403(サイトキーの実在を
+                  外から探られないための意図した作り。変えない)を返す。タグを貼っても何も
+                  出ない原因が分からなかった(実機で確認)ので、稼働中のポップが0件のときだけ
+                  ここに案内を出す。判定は純粋関数 `shouldShowNoActivePopupNotice` に切り出してある
+                  (読み込み中・初回失敗・再取得失敗(古いデータの可能性)・0件・アーカイブ済みだけ、
+                  の5通りを `siteNotice.test.ts` で固定済み)。
+                  見た目は左の「配信先が未設定です」と同じ注記の帯(新しい色・部品は足さない)。
+                */}
+                {shouldShowNoActivePopupNotice(popups, reloadError) && (
+                  <div className="mt-2 rounded-lg border border-dashed border-line bg-paper px-3 py-2.5 text-xs text-ink/60">
+                    稼働中のポップがありません。ポップを稼働にすると、タグを貼ったページに表示されます
+                  </div>
+                )}
               </div>
               <div>
                 <div className="mb-1.5 text-xs font-medium text-ink/60">許可ドメイン</div>

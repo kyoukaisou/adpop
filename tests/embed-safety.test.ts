@@ -237,7 +237,7 @@ function currentBridge(): { request?: unknown; shown?: boolean } | undefined {
  * 離脱を検知させ、**本体が読み込まれる直前まで**進める。
  *
  * 🔴 **待つ条件を「script タグが増えたか」にしてはいけない**(2026-09-12 に踏んだ)。
- *   この束は **jsdom がファイルで1つ**なので、**前のテストが仕掛けた `mouseout` の listener が生きている**。
+ *   この束は **jsdom がファイルで1つ**なので、**前のテストが仕掛けた `mouseleave`/`mouseout` の listener が生きている**。
  *   そちらが先に反応して script を足すと、**こちらのローダがまだ設定を取り終えていないのに**
  *   待つのをやめてしまい、**描かれないまま「描画まで通した」と読む**ことになる。
  * ✅ **いまの bridge に注文が載ったか**で待つ。前のテストのローダは**古い bridge を掴んでいる**ので、
@@ -245,7 +245,8 @@ function currentBridge(): { request?: unknown; shown?: boolean } | undefined {
  */
 async function driveToRuntime(): Promise<void> {
   await waitFor(() => {
-    document.dispatchEvent(new MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+    // 🔴 主の検知は document.documentElement の mouseleave(loader.ts 参照。控えは document の mouseout)
+    document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { clientY: 0, relatedTarget: null }));
     return currentBridge()?.request !== undefined;
   }, "離脱を検知しても本体への注文が載らない");
 }
