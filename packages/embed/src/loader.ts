@@ -44,6 +44,12 @@ export const SITE_ATTRIBUTE = "data-adpop-site";
 /** プレビュー用の強制表示(要件書 §4-4)。⚠ **この表示は数値に数えない**。 */
 export const PREVIEW_PARAM = "adpop_preview";
 
+/**
+ * exit intent(⑥)の「上端」とみなす幅(px)。⚠ **0 ではなく数 px の幅を持たせてある**
+ * (2026-10-10 本番実測。高速な移動・丸めで `clientY` が0px ちょうどに乗らず抜けることがある)。
+ */
+const EXIT_INTENT_EDGE_PX = 10;
+
 // ⚠ パスは `./bridge`(副作用の無いモジュール)が持つ —— 検査が起動させずに読めるように。
 
 /**
@@ -410,15 +416,35 @@ function arm(ctx: Runtime, popup: PopupConfig): void {
   /*
     ── ⑥ exit intent(PC のみ。要件書 §4-2 の⑥)────────────────────
     🔴 **タッチ端末では登録もしない**(誤爆源を作らない)。
+
+    🔴 **`mouseout` ではなく `mouseleave` を `document` に付ける**(2026-10-10 本番実測で切替)。
+      本番の Chrome で、マウスを速く動かして上へ抜けたとき・DevTools を開いたまま抜けたときに
+      一度も発火しなかった(events が0件)。自動の Chromium で `clientY:0` を送ったときだけ発火した
+      = **再現しづらい取りこぼし**だった。
+      `mouseout` はバブリングするので、本来は「子要素間の移動を relatedTarget で弾く」側で
+      誤爆を防いでいたが、ブラウザによっては高速な移動で `relatedTarget` が null にならない
+      (別要素を経由したと判定される)ことがあり、条件に一度も合致しないまま終わる。
+      `mouseleave` はバブリングしない( MDN )ため、`document` に直接付けると
+      「ページの中の要素間を移動しただけ」では発火せず、**本当にページ(= document)を
+      出たときだけ**発火する。誤爆防止を relatedTarget の判定に頼らず event の種類そのものに
+      持たせられるぶん、取りこぼしの経路が減る(参考: bugfactory.io の exit intent 実装例・MDN
+      Element: mouseleave event)。
+    ⚠ `relatedTarget !== null` の判定は変えずに残す(要件書どおり子要素間の移動を弾く)。
+    🔴 上端の判定に `EXIT_INTENT_EDGE_PX` ぶんの幅を持たせる。`clientY` を厳密に0でしか
+      見ないと、座標の丸めや高速な移動で0px に乗らずに抜けた1回を取りこぼす。
+      ⚠ 誤爆防止はイベントの非バブリングに持たせてあるので、この幅を広げても
+      「ページ内の移動で出る」は増えない(mouseleave は document を出たときにしか来ない)。
   */
   if (enabled.indexOf("exit_intent") >= 0 && ctx.device === "desktop") {
     quiet(() => {
       ctx.doc.addEventListener(
-        "mouseout",
+        "mouseleave",
         (event: MouseEvent) => {
-          // 画面の上端へ抜けたときだけ。⚠ 子要素間の移動(relatedTarget あり)は無視
+          // 子要素間の移動(relatedTarget あり)は無視
           if (event.relatedTarget !== null) return;
-          if (typeof event.clientY === "number" && event.clientY <= 0) fire("exit_intent");
+          if (typeof event.clientY === "number" && event.clientY <= EXIT_INTENT_EDGE_PX) {
+            fire("exit_intent");
+          }
         },
         // ⚠ passive / 非キャプチャ(要件書 §5-2)。preventDefault は1度も呼ばない
         { passive: true },

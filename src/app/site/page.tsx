@@ -208,6 +208,23 @@ function SiteContent() {
                     </div>
                   );
                 })()}
+                {/*
+                  🔴 配信の config は、稼働中のポップが無いサイトでは 403(サイトキーの実在を
+                  外から探られないための意図した作り。変えない)を返す。タグを貼っても何も
+                  出ない原因が分からなかった(実機で確認)ので、稼働中のポップが0件のときだけ
+                  ここに案内を出す。読み込み中・取得失敗(popups === null)では出さない
+                  (無いことを確認できていないのに「無い」と言わない。P-011と同じ考え方)。
+                  ⚠ ポップが1件も無いとき(popups.length === 0)は出さない —— その状況は下の
+                  `EmptyState`(「まだポップがありません」)が既に案内済みで、同じ趣旨の帯が
+                  2つ並ぶと煩雑(H8: 美的で最小限のデザイン)。ここは「ポップはあるが
+                  どれも稼働していない」ときのための案内。
+                  見た目は左の「配信先が未設定です」と同じ注記の帯(新しい色・部品は足さない)。
+                */}
+                {popups !== null && popups.length > 0 && !popups.some((p) => p.status === "active") && (
+                  <div className="mt-2 rounded-lg border border-dashed border-line bg-paper px-3 py-2.5 text-xs text-ink/60">
+                    稼働中のポップがありません。ポップを稼働にすると、タグを貼ったページに表示されます
+                  </div>
+                )}
               </div>
               <div>
                 <div className="mb-1.5 text-xs font-medium text-ink/60">許可ドメイン</div>

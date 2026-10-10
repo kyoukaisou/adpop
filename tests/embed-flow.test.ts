@@ -112,8 +112,9 @@ function installTag(): void {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function exitIntent(): void {
-  doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 0, relatedTarget: null }));
+function exitIntent(clientY = 0): void {
+  // 🔴 実装は `mouseout` ではなく `mouseleave` を見る(2026-10-10 本番実測で切替。loader.ts 参照)
+  doc.dispatchEvent(new win.MouseEvent("mouseleave", { clientY, relatedTarget: null }));
 }
 
 /** ポップの中身(Shadow root の中)。⚠ `mode: "open"` にしてあるので読める。 */
@@ -171,14 +172,44 @@ describe("トリガ(PR2 で動くのは ⑥exit intent の1つだけ)", () => {
     expect(doc.querySelector(`script[src="${DELIVERY}/embed/adpop.js"]`)).not.toBeNull();
   });
 
-  it("⑥ 画面の上端でないマウスアウトでは発火しない", async () => {
+  it("⑥ 画面の上端でないマウスリーブでは発火しない", async () => {
     stubNetwork();
     installTag();
     await bootLoader();
 
-    doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 200, relatedTarget: null }));
+    doc.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 200, relatedTarget: null }));
     // 子要素間の移動(relatedTarget あり)も発火しない
-    doc.dispatchEvent(new win.MouseEvent("mouseout", { clientY: 0, relatedTarget: doc.body }));
+    doc.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 0, relatedTarget: doc.body }));
+    await flush();
+
+    expect(sent).toEqual([]);
+  });
+
+  it("⑥ 上端の数 px 以内(速い移動の丸め)でも発火する", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    // 0 ちょうどではなく、上端に幅を持たせた範囲(EXIT_INTENT_EDGE_PX)での抜けを固定する
+    exitIntent(5);
+    await flush();
+
+    expect(sent.map((e) => e.kind)).toEqual(["fire"]);
+    expect(sent[0].triggerKind).toBe("exit_intent");
+  });
+
+  it("⑥ ページ内の要素の mouseleave(バブリングしない)では発火しない", async () => {
+    stubNetwork();
+    installTag();
+    await bootLoader();
+
+    /*
+      🔴 実装は `document` に直接 `mouseleave` を付けている。`mouseleave` はバブリングしない
+      ので、子要素(ここでは body)で起きた mouseleave は document の listener へ届かない。
+      これは「ページ内を移動しただけ」では誤爆しないことの土台そのもの(relatedTarget の
+      判定とは別に、イベントの種類自体が誤爆を防ぐ)。
+    */
+    doc.body.dispatchEvent(new win.MouseEvent("mouseleave", { clientY: 0, relatedTarget: null }));
     await flush();
 
     expect(sent).toEqual([]);
