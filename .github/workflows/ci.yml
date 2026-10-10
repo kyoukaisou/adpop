@@ -30,6 +30,13 @@ jobs:
 
       - run: npm ci
 
+      # 本番で動く依存(`dependencies`)に High 以上の advisory が出たら落とす。
+      # dev 専用の依存(lint/test の道具)はここでは見ない——本番の Worker には入らないため
+      # (2026-10-10 の依存の点検に基づく)。
+      # ⚠ dev 側の advisory(例: `braces` の修正版なし)は、ここでは意図的に見逃している。
+      - name: npm audit(本番依存のみ・High 以上で失敗)
+        run: npm audit --omit=dev --audit-level=high
+
       - name: lint
         run: npm run lint
 
