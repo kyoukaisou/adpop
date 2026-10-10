@@ -8,9 +8,9 @@ next 16.3.6 → 16.3.8・wrangler ^4.145.0 → ^4.149.0 への版上げが、管
 2. `node scripts/admin-hash.mjs` の出力を `.dev.vars`(コミットしない)に書く
 3. ダミーのサイト・ポップ・バリアント・30日分のイベントを SQL で直接 INSERT
 4. `NEXT_PUBLIC_DELIVERY_ORIGIN=https://adpop.kyoukaisou.dev npx wrangler dev -c wrangler.admin.jsonc --port 8799`
-5. Playwright(`playwright-core`。このリポジトリには無いので `repos/nailkarte/node_modules` から絶対パスで借りた)でログイン→各画面へ遷移→1280px/390pxでスクリーンショット
+5. Playwright(`playwright-core`。このリポジトリには無いので外部に用意した Playwright 環境から借りた)でログイン→各画面へ遷移→1280px/390pxでスクリーンショット
 
-シード・撮影に使った一時スクリプトは使い捨て(scratchpad)で、このリポジトリには残していない。
+シード・撮影に使った一時スクリプトは使い捨てで、このリポジトリには残していない。
 
 ## 画像一覧
 
