@@ -818,6 +818,84 @@ export async function getPopupStats(
   return ok(out);
 }
 
+/* ─────────────── 日別の集計(ダッシュボードの推移グラフ。D-384) ─────────────── */
+
+export type DailyStatsPoint = { date: string; impression: number; click: number; close: number };
+export const DAILY_STATS_PERIODS = [7, 30, 90] as const;
+export type DailyStatsPeriod = (typeof DAILY_STATS_PERIODS)[number];
+
+/** `YYYY-MM-DD`(UTC の暦日)。 */
+function utcDateOnly(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** `dateOnly`(UTC の暦日)から `delta` 日ずらした `YYYY-MM-DD` を返す。 */
+function addUtcDays(dateOnly: string, delta: number): string {
+  const d = new Date(`${dateOnly}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return utcDateOnly(d);
+}
+
+type DailyRow = { day: string; kind: string; n: number };
+
+/**
+ * サイト単位(全ポップ合算・アーカイブ済みを含む=既存の `getPopupStats` と同じ単位)の、
+ * 表示・クリック・閉じたの**日別**の数字。ダッシュボードの推移グラフ・期間連動タイル(D-384)のためのAPI。
+ *
+ * 🔴 **日の区切りは UTC の 0 時**(`occurred_at` は `strftime('...Z','now')` で書かれた UTC の
+ *   ISO8601 文字列=db/migrations/0001_schema.sql。`strftime('%Y-%m-%d', occurred_at)` はこれを
+ *   そのまま UTC の暦日として切り出せる)。
+ * 🔴 **期間は 7/30/90 日(今日を含む・UTCの今日を起点にさかのぼる)。数字が無い日は 0 で埋める**
+ *   (件数0の日と、行自体が無い日を区別しない=0件は0件のまま出す。P-011で守るのは
+ *   「取得そのものの失敗」と0件の区別であって、日の穴埋めとは別の話)。
+ * 🔴 **取れなかったときは 0 を返さない(P-011)**: `getPopupStats` と同じ形(try/catchで握り潰さない)。
+ *   D1 の例外はそのまま投げる(呼び出し側 = `app.ts` の `onError` が 500/503 に写す)。
+ * ⚠ **索引**: 既存の `events_site_kind_occurred_at`(site_id, kind, occurred_at。migration 0003)が
+ *   `site_id` の絞り込みに効く。このクエリのために新しい索引は足していない。
+ */
+export async function getDailySiteStats(
+  source: DbSource,
+  ownerId: string,
+  siteId: string,
+  period: DailyStatsPeriod,
+): Promise<Result<DailyStatsPoint[]>> {
+  const db = resolveDb(source);
+  const site = await db.prepare(`select 1 from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).first();
+  if (site === null) return notFound();
+
+  // 🔴 Codexレビュー指摘5: `new Date()`(引数無し)はエンジンの時計を直接見るだけで、
+  //   `vi.spyOn(Date, "now")` では固定できない(`Date.now()` と`new Date()`は別の経路)。
+  //   「いま」の取り方は `getPopupStats` の `cutoff` 計算と同じく、必ず `Date.now()` を経由する
+  //   (テストがこの1箇所だけ押さえれば、日付をまたいでも固定した「今日」で検算できる)。
+  const today = utcDateOnly(new Date(Date.now()));
+  const startDate = addUtcDays(today, -(period - 1));
+  const cutoff = `${startDate}T00:00:00.000Z`;
+
+  const byDay = new Map<string, DailyStatsPoint>();
+  for (let i = 0; i < period; i++) {
+    const date = addUtcDays(startDate, i);
+    byDay.set(date, { date, impression: 0, click: 0, close: 0 });
+  }
+
+  const rows = await db
+    .prepare(
+      `select strftime('%Y-%m-%d', occurred_at) as day, kind, count(*) as n from events
+       where site_id = ?1 and owner_id = ?2 and occurred_at >= ?3
+         and kind in ('impression', 'click', 'close')
+       group by day, kind`,
+    )
+    .bind(siteId, ownerId, cutoff)
+    .all<DailyRow>();
+
+  for (const row of rows.results) {
+    const point = byDay.get(row.day);
+    if (point === undefined) continue; // ⚠ 期間の外(時計のずれ等)の行は読み飛ばすだけに留める
+    if (!(STATS_KINDS as readonly string[]).includes(row.kind)) continue;
+    point[row.kind as (typeof STATS_KINDS)[number]] = row.n;
+  }
+  return ok([...byDay.values()]);
+}
+
 /**
  * パターンの画像のキーを書く(R2 に置くのは `images.ts` の仕事。ここは DB だけ)。
  * 🔴 **`imageKey` を書く唯一の関数**。キーの形を確かめてから書く。

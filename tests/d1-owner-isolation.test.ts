@@ -84,6 +84,7 @@ const CASES: Record<string, [Case, Expect]> = {
   ],
   listVariants: [(d) => admin.listVariants(d, OWNER_B, a.popup), (r) => expect(r).toEqual({ ok: true, value: [] })],
   getPopupStats: [(d) => admin.getPopupStats(d, OWNER_B, a.site), (r) => expect(r).toEqual(NOT_FOUND)],
+  getDailySiteStats: [(d) => admin.getDailySiteStats(d, OWNER_B, a.site, 7), (r) => expect(r).toEqual(NOT_FOUND)],
   getVariant: [(d) => admin.getVariant(d, OWNER_B, a.variant), (r) => expect(r).toEqual(NOT_FOUND)],
   createVariant: [(d) => admin.createVariant(d, OWNER_B, a.popup, variantInput), (r) => expect(r).toEqual(FOREIGN_KEY)],
   updateVariant: [(d) => admin.updateVariant(d, OWNER_B, a.variant, variantInput), (r) => expect(r).toEqual(NOT_FOUND)],
@@ -232,5 +233,8 @@ describe("所有者の分離(データ層の全関数)", () => {
     expect(Object.keys((stats as { value: Record<string, unknown> }).value).sort()).toEqual(
       [a.popup, a.archivedPopup].sort(),
     );
+    const daily = await admin.getDailySiteStats(db, OWNER_A, a.site, 7);
+    expect(daily.ok).toBe(true);
+    expect((daily as { value: unknown[] }).value).toHaveLength(7);
   });
 });

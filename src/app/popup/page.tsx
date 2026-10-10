@@ -7,8 +7,8 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ApiResult, getJson, postJson, putJson } from "../_lib/api";
 import { ApiPopup, ApiSite, ApiTrigger, ApiTriggerKind, ApiVariant, VARIANT_LIMIT, deliverableVariantId } from "../_lib/types";
-import { Header } from "../_components/Header";
-import { Breadcrumb } from "../_components/Breadcrumb";
+import { AppShell } from "../_components/AppShell";
+import { AddSiteModal } from "../_components/AddSiteModal";
 import { Loading } from "../_components/Loading";
 import { ErrorBanner, FieldError } from "../_components/ErrorBanner";
 import { Toast } from "../_components/Toast";
@@ -92,6 +92,7 @@ function PopupContent() {
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [draftKeys, setDraftKeys] = useState<string[]>([]);
+  const [showAddSite, setShowAddSite] = useState(false);
   const [variantActionError, setVariantActionError] = useState<string | null>(null);
   const archiveInFlightRef = useRef(false);
   // 🔴 ページを離れるときの確認(パンくず・ログアウト・閉じる/再読み込み。設計上の要件)。
@@ -239,29 +240,28 @@ function PopupContent() {
     await load();
   }
 
+  async function handleCreateSite(input: { name: string; allowedOrigins: string[] }): Promise<string | null> {
+    const result = await postJson<{ id: string }>("/sites", input);
+    if (!result.ok) {
+      if (result.status === 409 && result.reason === "limit") return "サイトの上限に達しています";
+      if (result.status === 400) return "入力内容を確認してください";
+      return "作成できませんでした。もう一度お試しください。";
+    }
+    window.location.href = `/dashboard?site=${result.data.id}`;
+    return null;
+  }
+
   if (sessionState !== "ready") return null;
   if (popupId === "") return <ErrorBanner message="ポップが指定されていません。" />;
 
+  // ⚠ ロード中・初回失敗の間は `popup.siteId` が無く、サイドバー(サイト切替・パンくず)を
+  //   組み立てられない。この2状態だけは全体構成(AppShell)に載せず、素の文面で返す。
   if (loadError) {
-    return (
-      <>
-        <Header />
-        <main className="mx-auto max-w-[960px] px-6 py-10">
-          <ErrorBanner message="ポップを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
-        </main>
-      </>
-    );
+    return <ErrorBanner message="ポップを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />;
   }
 
   if (popup === null || triggers === null || variants === null || frequency === null) {
-    return (
-      <>
-        <Header onBeforeLeave={onBeforeLeave} />
-        <main className="mx-auto max-w-[960px] px-6 py-10">
-          <Loading label="ポップを読み込み中" />
-        </main>
-      </>
-    );
+    return <Loading label="ポップを読み込み中" />;
   }
 
   const activeVariants = variants.filter((v) => v.archivedAt === null);
@@ -273,17 +273,18 @@ function PopupContent() {
 
   return (
     <>
-      <Header onBeforeLeave={onBeforeLeave} />
-      <main className="mx-auto max-w-[960px] px-6 py-10">
-        <Breadcrumb
-          items={[
-            { label: "サイト", href: "/sites" },
-            { label: site?.name ?? "", href: site ? `/site?id=${site.id}` : undefined },
-            { label: popup.name },
-          ]}
-          onBeforeLeave={onBeforeLeave}
-        />
-
+      <AppShell
+        activeNav="popups"
+        siteId={popup.siteId}
+        currentSiteName={site?.name ?? ""}
+        breadcrumbItems={[
+          { label: site?.name ?? "", href: `/dashboard?site=${popup.siteId}` },
+          { label: "ポップ管理", href: `/popups?site=${popup.siteId}` },
+          { label: popup.name },
+        ]}
+        onAddSite={() => setShowAddSite(true)}
+        onBeforeLeave={onBeforeLeave}
+      >
         {reloadError && (
           <div className="mb-6">
             <ErrorBanner message="最新の状態を読み込めませんでした" onRetry={load} retryLabel="再読み込み" />
@@ -532,9 +533,10 @@ function PopupContent() {
             ))}
           </div>
         </section>
-      </main>
+      </AppShell>
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
+      {showAddSite && <AddSiteModal onCancel={() => setShowAddSite(false)} onCreate={handleCreateSite} />}
       {pendingLeave && (
         <UnsavedChangesDialog
           reason={pendingLeave.reason}

@@ -61,3 +61,32 @@ export function deleteConfirmStatsText(stats: ApiPopupStatsMap | null, popupId: 
   const { impression, click, close } = entry.lifetime;
   return `表示 ${impression.toLocaleString("ja-JP")}・クリック ${click.toLocaleString("ja-JP")}・閉じた ${close.toLocaleString("ja-JP")}`;
 }
+
+/*
+  ダッシュボードの推移グラフ・期間連動タイル(D-384)。
+  API は `admin.getDailySiteStats`(`GET /sites/:siteId/stats/daily?period=7|30|90`)。
+  ⚠ ここも「取得そのものの失敗」と「0件」を混同しない(P-011)。`DailyStatsPoint[] | null` の
+  `null` は失敗、`[]`(本来period分埋まるので実際には起きない)・各日0件は成功、で呼び出し側を分ける。
+*/
+
+export type DailyStatsPeriod = 7 | 30 | 90;
+export const DAILY_STATS_PERIODS: readonly DailyStatsPeriod[] = [7, 30, 90];
+export type DailyStatsPoint = EventCounts & { date: string };
+
+export function isDailyStatsPeriod(value: number): value is DailyStatsPeriod {
+  return (DAILY_STATS_PERIODS as readonly number[]).includes(value);
+}
+
+/** 期間ぶんの日別点を合計する(ダッシュボードのタイルは、選んだ期間の合計値を出す)。 */
+export function sumDailyStats(points: DailyStatsPoint[]): EventCounts {
+  return points.reduce<EventCounts>(
+    (acc, p) => ({ impression: acc.impression + p.impression, click: acc.click + p.click, close: acc.close + p.close }),
+    { impression: 0, click: 0, close: 0 },
+  );
+}
+
+/** クリック率(クリック数 ÷ 表示数)。表示数が0なら割り算をしない(0除算で NaN/Infinity を見せない)。 */
+export function formatClickThroughRate(impression: number, click: number): string {
+  if (impression <= 0) return "0.0%";
+  return `${((click / impression) * 100).toFixed(1)}%`;
+}
