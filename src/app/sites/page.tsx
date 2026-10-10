@@ -129,7 +129,7 @@ export default function SitesPage() {
             {rows.map((site) => (
               <a
                 key={site.id}
-                href={`/site?id=${site.id}`}
+                href={`/dashboard?site=${site.id}`}
                 className="group flex flex-col gap-3 px-5 py-4 hover:bg-paper/70 sm:flex-row sm:items-center sm:justify-between sm:gap-6
                            focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ink"
               >

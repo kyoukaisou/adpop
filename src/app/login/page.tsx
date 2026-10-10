@@ -20,7 +20,9 @@ export default function LoginPage() {
     const result = await postJson<unknown>("/login", { email, password });
     setSubmitting(false);
     if (result.ok) {
-      window.location.href = "/sites";
+      // 🔴 D-384: どこへ送るかの判定(サイト0件なら/sites・1件以上ならダッシュボード)は
+      //   ホーム(`/`)に1本化してある。ここで`/sites`に決め打ちしない。
+      window.location.href = "/";
       return;
     }
     if (result.status === 401) {

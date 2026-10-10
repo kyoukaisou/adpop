@@ -1,69 +1,48 @@
 "use client";
 
 /*
-  サイト内・ポップ一覧(画面設計 §3-3)。
-  🔴 表示/クリック/閉じた の集計値は `GET /sites/:siteId/popups/stats`(PR5a)から読む。
-    一覧は `sevenDay`、アーカイブ済み・完全削除の確認は `lifetime`(ADPOP-画面設計.md の決め)。
-    取得そのものが失敗(通信失敗・500・503)したら `stats` を `null` にし、`formatStatCount`/
-    `deleteConfirmStatsText` が「—」を返す(0件と取得失敗を混同しない。P-011)。
-    site・popups の取得失敗(loadError/reloadError)とは**別に**扱う——集計が落ちても
-    一覧自体は表示できる(集計の列・削除確認の文言だけが「—」になる)。
+  ポップ管理(画面設計 §3-3・§9。旧 `/site?id=` の内容を全体構成(D-384)に載せ替えたもの)。
+  🔴 埋め込みタグ・許可ドメインの表示は「タグの設置」(`/tags`)へ移した(§9-1-4)。
+    ここには軽い案内帯だけ残す(同じ内容を2箇所に重複させない)。
+  🔴 機能・守りは旧 `/site` から変えていない: 未保存確認は無い画面(フォームを持たないため元から
+    無い)・削除の2秒待ち(`ConfirmDeleteDialog`)・稼働0件の案内(`shouldShowNoActivePopupNotice`)・
+    CSPに影響する変更はしていない。
 */
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { deleteJson, getJson, postJson, putJson } from "../_lib/api";
+import { deleteJson, getJson, postJson } from "../_lib/api";
 import { ApiPopup, ApiSite, POPUP_LIMIT } from "../_lib/types";
 import { ApiPopupStatsMap, deleteConfirmStatsText, formatStatCount, nextStatsState } from "../_lib/stats";
-import { Header } from "../_components/Header";
-import { Breadcrumb } from "../_components/Breadcrumb";
+import { AppShell } from "../_components/AppShell";
 import { Loading } from "../_components/Loading";
 import { ErrorBanner } from "../_components/ErrorBanner";
 import { EmptyState, PopupIcon } from "../_components/EmptyState";
-import { CopyButton } from "../_components/CopyButton";
 import { PopupStatusChip } from "../_components/StatusChip";
 import { AddPopupModal } from "../_components/AddPopupModal";
-import { EditSiteModal } from "../_components/AddSiteModal";
+import { AddSiteModal } from "../_components/AddSiteModal";
 import { ConfirmDeleteDialog } from "../_components/ConfirmDeleteDialog";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { TAP_TARGET_44 } from "../_lib/a11y";
-import { DELIVERY_ORIGIN } from "../_lib/delivery";
 import { nextLoadErrorState } from "../_lib/pageLoad";
 import { shouldShowNoActivePopupNotice } from "../_lib/siteNotice";
 
-/**
- * 🔴 レビュー指摘: 配信元が未設定のとき、壊れたURLのタグを表示してコピーまで
- *   できてしまっていた。未設定なら `null` を返し、呼び出し側はタグ自体を組み立てない
- *   (サムネイルの `deliveryImageUrl` と同じ考え方)。
- */
-function embedTag(siteKey: string): string | null {
-  if (DELIVERY_ORIGIN === "") return null;
-  return `<script async src="${DELIVERY_ORIGIN}/embed/t.js" data-adpop-site="${siteKey}"></script>`;
-}
-
-function SiteContent() {
+function PopupsContent() {
   const sessionState = useRequireSession();
   const params = useSearchParams();
-  const siteId = params.get("id") ?? "";
+  const siteId = params.get("site") ?? "";
 
   const [site, setSite] = useState<ApiSite | null>(null);
   const [popups, setPopups] = useState<ApiPopup[] | null>(null);
-  // 🔴 集計(表示・クリック・閉じた)は site/popups とは別の fetch。取得できなければ null にし、
-  //   一覧自体の表示は妨げない(「APIが終わっている」前提を鵜呑みにせず、画面が読む値ごとに
-  //   取得の成否を分けて持つ——§2026-10-04-09 の型と同じ考え方)。
   const [stats, setStats] = useState<ApiPopupStatsMap | null>(null);
   const [loadError, setLoadError] = useState(false);
-  // 🔴 レビュー指摘: 最初の読み込みと、一度表示した後の再取得(各種操作後のload())を区別する。
-  //   このページは元々再取得失敗でも一覧を消していなかったが、文言と扱いをポップ編集画面と揃える。
   const [reloadError, setReloadError] = useState(false);
   const loadedOnceRef = useRef(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
+  const [showAddSite, setShowAddSite] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApiPopup | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [showEditSite, setShowEditSite] = useState(false);
-  // 🔴 レビュー指摘: busyId(state)だけでは連打の瞬間に間に合わないことがあるため、
-  //   同期的に読める ref で「いま進行中か」を二重に見る(操作系の共通ガード)。
   const actionInFlightRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -77,10 +56,6 @@ function SiteContent() {
       const next = nextLoadErrorState(false, loadedOnceRef.current);
       setLoadError(next.loadError);
       setReloadError(next.reloadError);
-      // 🔴 レビュー指摘: この早期returnでstatsに触れないと、前回表示していた数字が
-      //   古いまま残り続ける(site/popupsの取得が失敗したのに、数字だけ最新のふりをする)。
-      //   次の stats state は `nextStatsState` に1本化する(site/popups が失敗した = この回の
-      //   読み込みは丸ごと信用できないので、ここでは常に null になる)。
       setStats(nextStatsState(siteResult.ok, popupsResult.ok, statsResult));
       return;
     }
@@ -107,8 +82,19 @@ function SiteContent() {
     return null;
   }
 
+  async function handleCreateSite(input: { name: string; allowedOrigins: string[] }): Promise<string | null> {
+    const result = await postJson<{ id: string }>("/sites", input);
+    if (!result.ok) {
+      if (result.status === 409 && result.reason === "limit") return "サイトの上限に達しています";
+      if (result.status === 400) return "入力内容を確認してください";
+      return "作成できませんでした。もう一度お試しください。";
+    }
+    window.location.href = `/popups?site=${result.data.id}`;
+    return null;
+  }
+
   async function runAction(popupId: string, action: "pause" | "activate" | "archive" | "restore") {
-    if (actionInFlightRef.current) return; // 🔴 同期ラッチで二重送信を防ぐ
+    if (actionInFlightRef.current) return;
     actionInFlightRef.current = true;
     setBusyId(popupId);
     setActionError(null);
@@ -117,7 +103,6 @@ function SiteContent() {
     setBusyId(null);
     if (!result.ok) {
       if (result.reason === "no_deliverable_variant") {
-        // ⚠ #8 で画像型も「画像を設定済みなら配信できる」側に入った(deliverableVariantSql)。文言を合わせる
         setActionError("配信できるパターンがありません。テキストか、画像を設定した画像のパターンを1つ保存してから稼働にしてください。");
       } else {
         setActionError("操作できませんでした。もう一度お試しください。");
@@ -142,17 +127,6 @@ function SiteContent() {
     await load();
   }
 
-  async function handleEditSite(input: { name: string; allowedOrigins: string[] }): Promise<string | null> {
-    const result = await putJson<null>(`/sites/${siteId}`, input);
-    if (!result.ok) {
-      if (result.status === 400) return "入力内容を確認してください";
-      return "保存できませんでした。もう一度お試しください。";
-    }
-    setShowEditSite(false);
-    await load();
-    return null;
-  }
-
   if (sessionState !== "ready") return null;
   if (siteId === "") return <ErrorBanner message="サイトが指定されていません。" />;
 
@@ -161,10 +135,13 @@ function SiteContent() {
 
   return (
     <>
-      <Header />
-      <main className="mx-auto max-w-[960px] px-6 py-10">
-        <Breadcrumb items={[{ label: "サイト", href: "/sites" }, { label: site?.name ?? "" }]} />
-
+      <AppShell
+        activeNav="popups"
+        siteId={siteId}
+        currentSiteName={site?.name ?? ""}
+        breadcrumbItems={[{ label: site?.name ?? "", href: `/dashboard?site=${siteId}` }, { label: "ポップ管理" }]}
+        onAddSite={() => setShowAddSite(true)}
+      >
         {loadError && (
           <ErrorBanner message="サイトを取得できませんでした。もう一度お試しください。" onRetry={load} retryLabel="再読み込み" />
         )}
@@ -176,70 +153,33 @@ function SiteContent() {
         {site === null && popups === null && !loadError && <Loading label="サイトを読み込み中" />}
 
         {site !== null && (
-          <div className="mb-8 rounded-xl border border-line bg-surface p-6">
-            <div className="mb-5 flex items-start justify-between">
-              <h1 className="text-xl font-semibold tracking-tight">{site.name}</h1>
-              <button
-                type="button"
-                onClick={() => setShowEditSite(true)}
-                className={`text-sm font-medium text-ink/60 hover:text-ink
-                  focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
+          <>
+            {/*
+              🔴 埋め込みタグ・許可ドメインは「タグの設置」へ移した(§9-1-4)。ここには
+              軽い案内帯だけ残す(発注の確認事項4の裁定に沿う。重複させない)。
+            */}
+            <div className="mb-6 flex flex-col gap-2 rounded-lg border border-line bg-paper px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="inline-flex items-center gap-2 text-sm text-ink/70">
+                <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M7 6L3 10l4 4M13 6l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                埋め込みタグの確認・許可ドメインの変更は「タグの設置」から
+              </span>
+              <a
+                href={`/tags?site=${siteId}`}
+                className={`text-sm font-semibold text-ink underline underline-offset-2 hover:text-ink/80
+                           focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${TAP_TARGET_44}`}
               >
-                編集
-              </button>
+                タグの設置を見る
+              </a>
             </div>
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-8">
-              <div>
-                <div className="mb-1.5 text-xs font-medium text-ink/60">埋め込みタグ</div>
-                {(() => {
-                  const tag = embedTag(site.siteKey);
-                  if (tag === null) {
-                    return (
-                      <div className="rounded-lg border border-dashed border-line bg-paper px-3 py-2.5 text-xs text-ink/60">
-                        配信先が未設定です
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="flex items-center gap-2 rounded-lg border border-line bg-paper px-3 py-2.5">
-                      <code className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-ink/70">
-                        {tag}
-                      </code>
-                      <CopyButton text={tag} label="埋め込みタグをコピー" />
-                    </div>
-                  );
-                })()}
-                {/*
-                  🔴 配信の config は、稼働中のポップが無いサイトでは 403(サイトキーの実在を
-                  外から探られないための意図した作り。変えない)を返す。タグを貼っても何も
-                  出ない原因が分からなかった(実機で確認)ので、稼働中のポップが0件のときだけ
-                  ここに案内を出す。判定は純粋関数 `shouldShowNoActivePopupNotice` に切り出してある
-                  (読み込み中・初回失敗・再取得失敗(古いデータの可能性)・0件・アーカイブ済みだけ、
-                  の5通りを `siteNotice.test.ts` で固定済み)。
-                  見た目は左の「配信先が未設定です」と同じ注記の帯(新しい色・部品は足さない)。
-                */}
-                {shouldShowNoActivePopupNotice(popups, reloadError) && (
-                  <div className="mt-2 rounded-lg border border-dashed border-line bg-paper px-3 py-2.5 text-xs text-ink/60">
-                    稼働中のポップがありません。ポップを稼働にすると、タグを貼ったページに表示されます
-                  </div>
-                )}
+
+            {shouldShowNoActivePopupNotice(popups, reloadError) && (
+              <div className="mb-6 rounded-lg border border-dashed border-line bg-paper px-4 py-3 text-xs text-ink/60">
+                稼働中のポップがありません。ポップを稼働にすると、タグを貼ったページに表示されます
               </div>
-              <div>
-                <div className="mb-1.5 text-xs font-medium text-ink/60">許可ドメイン</div>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {site.allowedOrigins.length === 0 ? (
-                    <span className="text-sm text-ink/60">未設定</span>
-                  ) : (
-                    site.allowedOrigins.map((origin) => (
-                      <span key={origin} className="rounded-md border border-line bg-paper px-2.5 py-1 font-mono text-xs text-ink/70">
-                        {origin}
-                      </span>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+            )}
+          </>
         )}
 
         {actionError && <ErrorBanner message={actionError} />}
@@ -247,7 +187,7 @@ function SiteContent() {
         {popups !== null && (
           <>
             <div className="mb-3 flex items-end justify-between">
-              <h2 className="text-base font-semibold tracking-tight">ポップ</h2>
+              <h1 className="text-xl font-semibold tracking-tight">ポップ</h1>
               <div className="flex items-center gap-4">
                 <span className="font-mono text-xs text-ink/60">{popups.length} / {POPUP_LIMIT}</span>
                 {active.length > 0 && (
@@ -459,17 +399,10 @@ function SiteContent() {
             )}
           </>
         )}
-      </main>
+      </AppShell>
 
       {showAddPopup && <AddPopupModal onCancel={() => setShowAddPopup(false)} onCreate={handleCreatePopup} />}
-      {showEditSite && site !== null && (
-        <EditSiteModal
-          initialName={site.name}
-          initialOrigins={site.allowedOrigins}
-          onCancel={() => setShowEditSite(false)}
-          onSave={handleEditSite}
-        />
-      )}
+      {showAddSite && <AddSiteModal onCancel={() => setShowAddSite(false)} onCreate={handleCreateSite} />}
       {deleteTarget && (
         <ConfirmDeleteDialog
           name={deleteTarget.name}
@@ -482,10 +415,10 @@ function SiteContent() {
   );
 }
 
-export default function SitePage() {
+export default function PopupsPage() {
   return (
     <Suspense fallback={null}>
-      <SiteContent />
+      <PopupsContent />
     </Suspense>
   );
 }

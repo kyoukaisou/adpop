@@ -4,16 +4,10 @@
   モーダルの土台(role="dialog" aria-modal="true")。
   🔴 画面設計 §5-1 の申し送り: フォーカストラップ・開く前のフォーカス位置への復帰・Esc で閉じる、の3点セット。
     `packages/embed/src/runtime.ts` が離脱ポップ本体に実装している規律と同じものを管理画面にも適用する。
+  🔴 D-384: このロジック自体は `useFocusTrap`(`_lib/useFocusTrap.ts`)に切り出した。390pxの新しい
+    ドロワー(`Drawer.tsx`)にも同じ規律を適用するための1本化(振る舞いは変えていない)。
 */
-import { useEffect, useRef } from "react";
-
-function focusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((el) => el.offsetParent !== null || el === document.activeElement);
-}
+import { useFocusTrap } from "../_lib/useFocusTrap";
 
 export function Modal({
   titleId,
@@ -26,42 +20,7 @@ export function Modal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    previouslyFocused.current = document.activeElement as HTMLElement | null;
-    const panel = panelRef.current;
-    const first = panel ? focusableElements(panel)[0] : undefined;
-    first?.focus();
-    return () => {
-      previouslyFocused.current?.focus();
-    };
-  }, []);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || panelRef.current === null) return;
-      const items = focusableElements(panelRef.current);
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  const panelRef = useFocusTrap<HTMLDivElement>(true, onClose);
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-ink/40 px-6">

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { deleteConfirmStatsText, formatStatCount, nextStatsState, type ApiPopupStatsMap } from "./stats";
+import {
+  deleteConfirmStatsText,
+  formatClickThroughRate,
+  formatStatCount,
+  isDailyStatsPeriod,
+  nextStatsState,
+  sumDailyStats,
+  type ApiPopupStatsMap,
+  type DailyStatsPoint,
+} from "./stats";
 
 const MAP: ApiPopupStatsMap = {
   p1: {
@@ -75,5 +84,45 @@ describe("nextStatsState(レビュー指摘: 古い数字を残さない)", () =
 
   it("🔴 site・popups・stats すべて失敗 → null", () => {
     expect(nextStatsState(false, false, { ok: false })).toBeNull();
+  });
+});
+
+describe("isDailyStatsPeriod", () => {
+  it("✅ 7・30・90 だけ true", () => {
+    expect(isDailyStatsPeriod(7)).toBe(true);
+    expect(isDailyStatsPeriod(30)).toBe(true);
+    expect(isDailyStatsPeriod(90)).toBe(true);
+  });
+  it("🔴 それ以外は false(8・0・負数・小数)", () => {
+    expect(isDailyStatsPeriod(8)).toBe(false);
+    expect(isDailyStatsPeriod(0)).toBe(false);
+    expect(isDailyStatsPeriod(-7)).toBe(false);
+    expect(isDailyStatsPeriod(7.5)).toBe(false);
+  });
+});
+
+describe("sumDailyStats", () => {
+  const points: DailyStatsPoint[] = [
+    { date: "2026-10-01", impression: 100, click: 5, close: 60 },
+    { date: "2026-10-02", impression: 0, click: 0, close: 0 },
+    { date: "2026-10-03", impression: 50, click: 3, close: 20 },
+  ];
+  it("期間ぶんの日別点を合計する", () => {
+    expect(sumDailyStats(points)).toEqual({ impression: 150, click: 8, close: 80 });
+  });
+  it("✅ 空配列は全部0(0件と取得失敗はここでは区別しない=呼び出し側がnullで区別する)", () => {
+    expect(sumDailyStats([])).toEqual({ impression: 0, click: 0, close: 0 });
+  });
+});
+
+describe("formatClickThroughRate", () => {
+  it("表示数0なら0.0%(0除算でNaN/Infinityを見せない)", () => {
+    expect(formatClickThroughRate(0, 0)).toBe("0.0%");
+  });
+  it("小数第1位までの%表記", () => {
+    expect(formatClickThroughRate(4427, 258)).toBe("5.8%");
+  });
+  it("クリックが0なら0.0%", () => {
+    expect(formatClickThroughRate(100, 0)).toBe("0.0%");
   });
 });

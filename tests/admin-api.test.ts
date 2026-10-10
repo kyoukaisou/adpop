@@ -363,6 +363,7 @@ const ROUTES = [
   "DELETE /api/admin/sites/:siteId",
   "GET /api/admin/sites/:siteId/popups",
   "GET /api/admin/sites/:siteId/popups/stats",
+  "GET /api/admin/sites/:siteId/stats/daily",
   "POST /api/admin/sites/:siteId/popups",
   "GET /api/admin/popups/:popupId",
   "PUT /api/admin/popups/:popupId/name",
@@ -844,6 +845,81 @@ describe("数値(表示・クリック・閉じた。PR5a・レビュー指摘)"
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     // ⚠ DB が無いと、この手前のセッション検査(auth.findSession)が先に MissingBindingError で落ちる
     const response = await call(`/api/admin/sites/${siteId}/popups/stats`, { cookie }, env({ DB: undefined }));
+    expect(response.status).toBe(503);
+    errors.mockRestore();
+  });
+});
+
+describe("日別の集計(ダッシュボードの推移グラフ。D-384)", () => {
+  it("✅ イベントが1件も無いサイトでも 200 で、期間ぶんの日が 0 件で埋まる(0件と取得失敗を区別する前提)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "daily-empty", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+
+    const response = await call(`/api/admin/sites/${siteId}/stats/daily?period=7`, { cookie });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: true; data: Array<{ date: string; impression: number; click: number; close: number }> };
+    expect(body.data).toHaveLength(7);
+    for (const point of body.data) expect(point).toMatchObject({ impression: 0, click: 0, close: 0 });
+    // 🔴 日付が重複せず、1日ずつ連続していること(穴あき・重複の両方を見る)
+    expect(new Set(body.data.map((p) => p.date)).size).toBe(7);
+  });
+
+  it("✅ period は 7/30/90 だけ。省略は既定の7(他人の所有者→404の検査が query 無しで呼ぶため)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "daily-period", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+
+    const noQuery = await call(`/api/admin/sites/${siteId}/stats/daily`, { cookie });
+    expect(noQuery.status).toBe(200);
+    expect(((await noQuery.json()) as { data: unknown[] }).data).toHaveLength(7);
+
+    const thirty = await call(`/api/admin/sites/${siteId}/stats/daily?period=30`, { cookie });
+    expect(((await thirty.json()) as { data: unknown[] }).data).toHaveLength(30);
+
+    const invalid = await call(`/api/admin/sites/${siteId}/stats/daily?period=8`, { cookie });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ ok: false, reason: "invalid", field: "period" });
+  });
+
+  it("🔴 DBの問い合わせ自体が失敗したら 500(ok:false, reason:upstream)。0件とは別のコード", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "daily-fail", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+
+    function makeFailing(stmt: ReturnType<typeof t.db.prepare>): ReturnType<typeof t.db.prepare> {
+      return new Proxy(stmt, {
+        get(target, prop) {
+          if (prop === "all") return () => Promise.reject(new Error("D1 unavailable"));
+          if (prop === "bind") {
+            return (...args: unknown[]) => makeFailing((target.bind as (...a: unknown[]) => typeof stmt)(...args));
+          }
+          const value = Reflect.get(target, prop);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+    const failingDb = new Proxy(t.db, {
+      get(target, prop) {
+        if (prop === "prepare") return (sql: string) => makeFailing((target.prepare as (s: string) => ReturnType<typeof t.db.prepare>)(sql));
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await call(`/api/admin/sites/${siteId}/stats/daily`, { cookie }, { ...env(), DB: failingDb as unknown as typeof t.db });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ ok: false, reason: "upstream" });
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("🔴 DBバインドが丸ごと無いのは 503(500とは別経路)", async () => {
+    const cookie = await login();
+    const site = await call("/api/admin/sites", { method: "POST", body: { name: "daily-noconfig", allowedOrigins: [] }, cookie });
+    const siteId = ((await site.json()) as { data: { id: string } }).data.id;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await call(`/api/admin/sites/${siteId}/stats/daily`, { cookie }, env({ DB: undefined }));
     expect(response.status).toBe(503);
     errors.mockRestore();
   });

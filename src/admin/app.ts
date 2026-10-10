@@ -301,6 +301,18 @@ export function createAdminApp(): Hono<AppEnv> {
     return fromResult(c, await admin.getPopupStats(c.env, c.get("ownerId"), siteId));
   });
 
+  // 🔴 ダッシュボードの推移グラフ(D-384)。日別・サイト単位の集計。`period` は 7/30/90 のみ
+  //   (それ以外・未指定は既定の7に揃える——所有者分離の検査は query 無しで呼ぶため、ここで
+  //   400 にすると「別の所有者→404」の検査より先に落ちてしまう。既定値に倒すのはそのため)。
+  app.get(`${API_PREFIX}/sites/:siteId/stats/daily`, async (c) => {
+    const siteId = param(c, "siteId");
+    if (siteId === null) return fail(c, 404, "not_found");
+    const raw = c.req.query("period");
+    const period = raw === undefined ? 7 : raw === "7" || raw === "30" || raw === "90" ? Number(raw) : null;
+    if (period === null) return fail(c, 400, "invalid", { field: "period" });
+    return fromResult(c, await admin.getDailySiteStats(c.env, c.get("ownerId"), siteId, period as admin.DailyStatsPeriod));
+  });
+
   app.post(`${API_PREFIX}/sites/:siteId/popups`, async (c) => {
     const siteId = param(c, "siteId");
     if (siteId === null) return fail(c, 404, "not_found");
