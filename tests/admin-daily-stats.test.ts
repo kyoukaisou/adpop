@@ -90,8 +90,10 @@ describe("admin.getDailySiteStats", () => {
     // 同じ日(2026-10-07)に、別のポップのイベントも合算される(単位=サイト全体)
     await insertEvent({ ownerId: OWNER_A, siteId: ids.site, popupId: ids.popupA, variantId: ids.variantA, kind: "close", occurredAt: "2026-10-07T12:00:00.000Z" });
     await insertEvent({ ownerId: OWNER_A, siteId: ids.site, popupId: ids.popupB, variantId: ids.variantB, kind: "close", occurredAt: "2026-10-07T13:00:00.000Z" });
-    // 数えない種類(fire・suppressed・conversion)
+    // 数えない種類(fire・suppressed・conversion)。3種類とも個別に1件ずつ差し込んで検算する
     await insertEvent({ ownerId: OWNER_A, siteId: ids.site, popupId: ids.popupA, variantId: null, kind: "fire", occurredAt: "2026-10-07T12:00:00.000Z" });
+    await insertEvent({ ownerId: OWNER_A, siteId: ids.site, popupId: ids.popupA, variantId: null, kind: "suppressed", occurredAt: "2026-10-07T12:00:00.000Z" });
+    await insertEvent({ ownerId: OWNER_A, siteId: ids.site, popupId: ids.popupA, variantId: null, kind: "conversion", occurredAt: "2026-10-07T12:00:00.000Z" });
   });
   afterAll(async () => {
     await t?.dispose();
