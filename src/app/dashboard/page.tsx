@@ -30,6 +30,7 @@ import { DailyChart } from "../_components/DailyChart";
 import { AddSiteModal } from "../_components/AddSiteModal";
 import { useRequireSession } from "../_lib/useRequireSession";
 import { nextLoadErrorState } from "../_lib/pageLoad";
+import { createLatestWinsGuard, fetchLatestWins } from "../_lib/latestWins";
 
 const PERIOD_LABEL: Record<DailyStatsPeriod, string> = { 7: "過去7日間", 30: "過去30日間", 90: "過去90日間" };
 
@@ -74,26 +75,34 @@ function DashboardContent() {
     }
   }, [siteId]);
 
+  /*
+    🔴 Codex指摘1: 期間を素早く切り替えると、後から出したリクエストより前のリクエストの応答が
+    遅れて返ることがある(90日→7日と素早く切り替え、90日の応答が後着する等)。
+    `fetchLatestWins`(`_lib/latestWins.ts`)で、**最後に発行したリクエストの応答だけ**を
+    state に反映する(古い応答は無視する。ロジック自体はDOM抜きでテスト済み=latestWins.test.ts)。
+    また、再取得の間は前の期間の数字を「最新」のまま出し続けない(`daily` を即座に null にし、
+    読み込み中の表示に倒す。タイルは「—」・グラフはLoadingになる)。
+  */
+  const dailyGuardRef = useRef(createLatestWinsGuard());
   const loadDaily = useCallback(async () => {
     if (siteId === "") return;
-    const result = await getJson<DailyStatsPoint[]>(`/sites/${siteId}/stats/daily?period=${period}`);
-    setDailyError(!result.ok);
-    setDaily(result.ok ? result.data : null);
+    await fetchLatestWins(
+      dailyGuardRef.current,
+      () => getJson<DailyStatsPoint[]>(`/sites/${siteId}/stats/daily?period=${period}`),
+      () => {
+        setDaily(null);
+        setDailyError(false);
+      },
+      (result) => {
+        setDailyError(!result.ok);
+        setDaily(result.ok ? result.data : null);
+      },
+    );
   }, [siteId, period]);
 
-  /*
-    🔴 `react-hooks/set-state-in-effect`: 1本の effect に「読み込み済みの async 関数を2つ `void` で
-    呼ぶ」形を置くと、2つ目の呼び出しだけを誤検知した。**確かめたのは次の2パターンだけ**
-    (①loadSite→loadDaily の順 ②その逆順)——どちらも後に書いた方だけが引っかかった。
-    「3つ以上」「他の形の組み合わせ」は試していないので、ここでの結論は上の2パターンに限る。
-    両方とも `getJson` の await の**後**で setState しており、effect 本体で同期的に setState
-    してはいない(ルールが本来守りたい形そのもの)。既知の誤検知として1行だけ抑止する
-    (ロジック自体は変えない)。
-  */
   useEffect(() => {
     if (sessionState !== "ready") return;
     void loadSite();
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 誤検知(上のコメント参照)
     void loadDaily();
   }, [sessionState, loadSite, loadDaily]);
 

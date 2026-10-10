@@ -12,6 +12,20 @@
 | `04-mobile-menu-open-390.png` | 390pxのハンバーガードロワー展開状態 | 390 |
 | `05-site-switcher-open-1280.png` | サイト切り替えの開いた状態(発注の確認事項1。未設計のため最小実装) | 1280 |
 | `06-popup-edit-1280.png` | ポップ編集(全体構成の中に統合) | 1280 |
+| `07-legacy-site-redirect-landed-1280.png` | 旧 `/site?id=...` → `/popups?site=...` の転送が実際に着地した状態(Codexレビュー1巡目 指摘2) | 1280 |
+| `08-sidebar-full-height-short-viewport-1280x600.png` | ビューポートより本文が長い状態でも、サイドバーの白背景がページの最後まで続く(Codexレビュー1巡目・本部のスクショ指摘) | 1280×600 |
+
+## Codexレビュー1巡目(Blocker 5件)で直した内容
+
+1. **期間切替の応答の逆転**: `_lib/latestWins.ts`(世代ガード)を新設し、最後に発行したリクエストの応答だけを反映。再取得中は `daily` を即座に null にし、古い期間の数字を「最新」のまま出し続けない
+2. **旧 `/site?id=...` の404**: `src/app/site/page.tsx` を転送専用の互換ページとして復活(`_lib/legacySiteRedirect.ts`)。CSPテストのルート一覧にも `/site` を戻した
+3. **グラフの空状態・少数値の軸の重複**: `chartHasData`(closeを数えない)・`niceTicks`(重複除去)を `_lib/dailyChart.ts` に切り出し
+4. **サイドバーの離脱ガード漏れ**: 判定ロジックを `_lib/guardedLink.ts`(`resolveGuardedClick`)に1本化。`<a>` タグは全部 `GuardedLink` コンポーネント経由(パンくず・ナビ3項目・「タグの設置」カード・「すべてのサイトを管理」)、サイト切替の候補一覧(`<button>`なのでGuardedLinkにはできない)だけ同じ `resolveGuardedClick` を直接呼ぶ形にして、判定ロジック自体が2箇所に分かれないようにした
+5. **テストの固定不足**: `new Date()` → `Date.now()` 経由に統一(`admin.ts`)。DailyChart・期間逆転・旧URL転送・サイドバー離脱導線のテストを追加
+
+## 本部が実物のスクリーンショットで見つけたサイドバーの高さの不具合
+
+`sr-only` を `<table>` に直接付けると、CSSの表レイアウトでは `width:1px;height:1px` が**最小値としてしか扱われず**、30行超の内容を持つ表は実際には240×768pxまで広がって描画されていた(`overflow:hidden`は自分の計算後の箱を基準に切り取るだけで、箱自体を縮めない)。これがページの `scrollHeight` を実際の見た目より大きくし、サイドバーの白背景が途中で止まって見えていた。`sr-only` は普通の `<div>` に付け、その中に生の `<table>` を置く形に直した(`DailyChart.tsx`)。`08-sidebar-full-height-short-viewport-1280x600.png` で直ったことを確認。
 
 ## 承認済み見本(2026-10-10-adpop-dashboard)との差分
 

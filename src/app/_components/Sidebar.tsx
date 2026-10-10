@@ -13,6 +13,7 @@
 import { useRef, useState } from "react";
 import { postJson } from "../_lib/api";
 import type { LeaveGuard } from "../_lib/unsavedChanges";
+import { GuardedLink } from "./GuardedLink";
 import { SiteSwitcher } from "./SiteSwitcher";
 
 export type NavKey = "dashboard" | "popups" | "tags";
@@ -69,32 +70,29 @@ function NavLink({
 }) {
   const href = item.href(siteId);
   return (
-    <a
+    <GuardedLink
       href={href}
       aria-current={active ? "page" : undefined}
-      onClick={(event) => {
-        onNavigate?.();
-        if (!onBeforeLeave) return;
-        event.preventDefault();
-        onBeforeLeave(() => {
-          window.location.href = href;
-          return true;
-        });
-      }}
+      onBeforeLeave={onBeforeLeave}
+      onBeforeNavigate={onNavigate}
       className={`flex h-11 items-center gap-2.5 rounded-lg px-3.5 text-sm font-semibold
                   focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink
                   ${active ? "bg-ink text-paper" : "text-ink/70 hover:bg-paper"}`}
     >
       {item.icon}
       {item.label}
-    </a>
+    </GuardedLink>
   );
 }
 
-function TagPromoCard({ siteId }: { siteId: string }) {
+// 🔴 D-384 Codexレビュー指摘4: このリンクが `onBeforeLeave` を受け取らず素の `<a>` のままだったため、
+//   ポップ編集中の未保存確認を通らずに離脱できてしまっていた。`GuardedLink` 経由にする。
+function TagPromoCard({ siteId, onBeforeLeave, onNavigate }: { siteId: string; onBeforeLeave?: LeaveGuard; onNavigate?: () => void }) {
   return (
-    <a
+    <GuardedLink
       href={`/tags?site=${siteId}`}
+      onBeforeLeave={onBeforeLeave}
+      onBeforeNavigate={onNavigate}
       className="mb-4 block rounded-xl border border-line bg-paper p-4 hover:bg-paper/70
                  focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
     >
@@ -106,7 +104,7 @@ function TagPromoCard({ siteId }: { siteId: string }) {
       </div>
       <p className="text-xs leading-relaxed text-ink/60">埋め込みタグをLPに貼ると、このサイトでポップの配信が始まります。</p>
       <div className="mt-2.5 text-xs font-semibold text-ink underline underline-offset-2">タグの設置を見る</div>
-    </a>
+    </GuardedLink>
   );
 }
 
@@ -203,7 +201,7 @@ export function SidebarContent({
 
       <div className="flex-1" />
 
-      {activeNav !== "tags" && <TagPromoCard siteId={siteId} />}
+      {activeNav !== "tags" && <TagPromoCard siteId={siteId} onBeforeLeave={onBeforeLeave} onNavigate={onNavigate} />}
       <AccountMenu onBeforeLeave={onBeforeLeave} />
     </div>
   );

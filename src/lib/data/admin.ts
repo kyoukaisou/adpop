@@ -863,7 +863,11 @@ export async function getDailySiteStats(
   const site = await db.prepare(`select 1 from sites where id = ?1 and owner_id = ?2`).bind(siteId, ownerId).first();
   if (site === null) return notFound();
 
-  const today = utcDateOnly(new Date());
+  // 🔴 Codexレビュー指摘5: `new Date()`(引数無し)はエンジンの時計を直接見るだけで、
+  //   `vi.spyOn(Date, "now")` では固定できない(`Date.now()` と`new Date()`は別の経路)。
+  //   「いま」の取り方は `getPopupStats` の `cutoff` 計算と同じく、必ず `Date.now()` を経由する
+  //   (テストがこの1箇所だけ押さえれば、日付をまたいでも固定した「今日」で検算できる)。
+  const today = utcDateOnly(new Date(Date.now()));
   const startDate = addUtcDays(today, -(period - 1));
   const cutoff = `${startDate}T00:00:00.000Z`;
 

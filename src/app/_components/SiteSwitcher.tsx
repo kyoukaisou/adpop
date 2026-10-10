@@ -14,6 +14,8 @@ import { usePathname } from "next/navigation";
 import { getJson } from "../_lib/api";
 import type { ApiSite } from "../_lib/types";
 import type { LeaveGuard } from "../_lib/unsavedChanges";
+import { resolveGuardedClick } from "../_lib/guardedLink";
+import { GuardedLink } from "./GuardedLink";
 
 export function SiteSwitcher({
   siteId,
@@ -73,15 +75,17 @@ export function SiteSwitcher({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
+  // 🔴 D-384 Codexレビュー指摘4: ここも `GuardedLink` と同じ `resolveGuardedClick` を呼ぶ
+  //   (ボタンなので `<a>` にできないが、ガードの判定ロジック自体は1か所のまま)。
   function navigate(targetSiteId: string) {
     const href = `${pathname}?site=${targetSiteId}`;
-    const go = () => {
-      window.location.href = href;
-      return true;
+    const go = (target: string) => {
+      window.location.href = target;
     };
     setOpen(false);
-    if (onBeforeLeave) onBeforeLeave(go);
-    else go();
+    const decision = resolveGuardedClick(href, onBeforeLeave, go);
+    if (decision.guarded) onBeforeLeave?.(decision.proceed);
+    else go(href); // ガード無し = ボタンなので既定のナビゲーションが無い。直接遷移させる
   }
 
   return (
@@ -148,13 +152,16 @@ export function SiteSwitcher({
           >
             + サイトを追加
           </button>
-          <a
+          {/* 🔴 D-384 Codexレビュー指摘4: 離脱ガードを通さない素の <a> になっていた。GuardedLink経由にする */}
+          <GuardedLink
             href="/sites"
+            onBeforeLeave={onBeforeLeave}
+            onBeforeNavigate={() => setOpen(false)}
             className="block rounded-md px-2.5 py-2 text-left text-sm text-ink/60 hover:bg-paper hover:text-ink
                        focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
             すべてのサイトを管理
-          </a>
+          </GuardedLink>
         </div>
       )}
     </div>

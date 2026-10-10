@@ -8,6 +8,7 @@
     クリック数=破線(ink/40)のモノクロ2系列(画面設計 §9-2 と同じ選択)。
 */
 import type { DailyStatsPoint } from "../_lib/stats";
+import { chartHasData, niceMax, niceTicks } from "../_lib/dailyChart";
 
 const WIDTH = 640;
 const HEIGHT = 220;
@@ -16,22 +17,13 @@ const PAD_RIGHT = 36;
 const PAD_TOP = 12;
 const PAD_BOTTOM = 24;
 
-/** 「きりのいい」最大値を作る(例: 187 → 200、42 → 50)。軸の目盛りが読みやすい値になるようにする。 */
-function niceMax(rawMax: number): number {
-  if (rawMax <= 0) return 4;
-  const magnitude = 10 ** Math.floor(Math.log10(rawMax));
-  const normalized = rawMax / magnitude;
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  return step * magnitude;
-}
-
 function formatDateLabel(dateOnly: string): string {
   const [, m, d] = dateOnly.split("-");
   return `${m}/${d}`;
 }
 
 export function DailyChart({ points }: { points: DailyStatsPoint[] }) {
-  const hasData = points.some((p) => p.impression > 0 || p.click > 0 || p.close > 0);
+  const hasData = chartHasData(points);
   const impressionMax = niceMax(Math.max(...points.map((p) => p.impression), 0));
   const clickMax = niceMax(Math.max(...points.map((p) => p.click), 0));
   const innerWidth = WIDTH - PAD_LEFT - PAD_RIGHT;
@@ -51,8 +43,8 @@ export function DailyChart({ points }: { points: DailyStatsPoint[] }) {
   const clickPath = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${yClick(p.click).toFixed(1)}`).join(" ");
 
   const tickCount = 4;
-  const impressionTicks = Array.from({ length: tickCount + 1 }, (_, i) => Math.round((impressionMax / tickCount) * i));
-  const clickTicks = Array.from({ length: tickCount + 1 }, (_, i) => Math.round((clickMax / tickCount) * i));
+  const impressionTicks = niceTicks(impressionMax, tickCount);
+  const clickTicks = niceTicks(clickMax, tickCount);
 
   // x軸ラベルは詰まりすぎないよう、最初・中間・最後の3つだけ出す(見本どおり)
   const labelIndexes = points.length > 2 ? [0, Math.floor((points.length - 1) / 2), points.length - 1] : points.map((_, i) => i);
@@ -80,9 +72,9 @@ export function DailyChart({ points }: { points: DailyStatsPoint[] }) {
       <div className="relative">
         <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-auto w-full" role="img" aria-label={summary}>
           {/* 横の目盛り線(左軸基準) */}
-          {impressionTicks.map((tick) => (
+          {impressionTicks.map((tick, i) => (
             <line
-              key={tick}
+              key={`line-${i}-${tick}`}
               x1={PAD_LEFT}
               x2={WIDTH - PAD_RIGHT}
               y1={yImpression(tick)}
@@ -92,14 +84,14 @@ export function DailyChart({ points }: { points: DailyStatsPoint[] }) {
             />
           ))}
           {/* 左軸(表示数)の数字 */}
-          {impressionTicks.map((tick) => (
-            <text key={`l-${tick}`} x={PAD_LEFT - 6} y={yImpression(tick) + 3} textAnchor="end" className="fill-ink/60 font-mono text-[9px]">
+          {impressionTicks.map((tick, i) => (
+            <text key={`l-${i}-${tick}`} x={PAD_LEFT - 6} y={yImpression(tick) + 3} textAnchor="end" className="fill-ink/60 font-mono text-[9px]">
               {tick.toLocaleString("ja-JP")}
             </text>
           ))}
           {/* 右軸(クリック数)の数字 */}
-          {clickTicks.map((tick) => (
-            <text key={`r-${tick}`} x={WIDTH - PAD_RIGHT + 6} y={yClick(tick) + 3} textAnchor="start" className="fill-ink/60 font-mono text-[9px]">
+          {clickTicks.map((tick, i) => (
+            <text key={`r-${i}-${tick}`} x={WIDTH - PAD_RIGHT + 6} y={yClick(tick) + 3} textAnchor="start" className="fill-ink/60 font-mono text-[9px]">
               {tick.toLocaleString("ja-JP")}
             </text>
           ))}
@@ -125,26 +117,38 @@ export function DailyChart({ points }: { points: DailyStatsPoint[] }) {
         )}
       </div>
 
-      {/* スクリーンリーダー向けの実データ(SVGは図として読めないため、同じ数字を表で補う) */}
-      <table className="sr-only">
-        <caption>表示数とクリック数の日別の内訳</caption>
-        <thead>
-          <tr>
-            <th scope="col">日付</th>
-            <th scope="col">表示数</th>
-            <th scope="col">クリック数</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((p) => (
-            <tr key={p.date}>
-              <td>{p.date}</td>
-              <td>{p.impression}</td>
-              <td>{p.click}</td>
+      {/*
+        スクリーンリーダー向けの実データ(SVGは図として読めないため、同じ数字を表で補う)。
+        🔴 本部が実物のスクリーンショットで発見: `sr-only` を `<table>` に直接付けると、
+          `width:1px;height:1px` は**表の自動レイアウトでは最小値としてしか扱われず**、
+          30行超の内容があるテーブルは実際には 240×768px まで広がって描画されていた
+          (overflow:hiddenは自分の計算後の箱を基準に切り取るだけで、箱自体を縮めない)。
+          結果、ページの実際の高さ(scrollHeight)だけが本来の見た目より大きくなり、
+          サイドバーの白背景(ビューポート高さぶんで止まる)の下に地の色が見えてしまっていた。
+          `sr-only` は**普通のdiv**に付け、その中に生のtableを置く(外側のdivがoverflow:hiddenで
+          確実に1×1pxへ切り取り、中のtableのサイズはページの高さに影響しなくなる)。
+      */}
+      <div className="sr-only">
+        <table>
+          <caption>表示数とクリック数の日別の内訳</caption>
+          <thead>
+            <tr>
+              <th scope="col">日付</th>
+              <th scope="col">表示数</th>
+              <th scope="col">クリック数</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {points.map((p) => (
+              <tr key={p.date}>
+                <td>{p.date}</td>
+                <td>{p.impression}</td>
+                <td>{p.click}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

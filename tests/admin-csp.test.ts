@@ -127,8 +127,8 @@ describe("管理画面の Worker(workerd で起動)が返す CSP", () => {
     expect(response.headers.get("x-frame-options")).toBe("DENY");
   });
 
-  it("ページが違えば中身(インラインscriptの中身)も違いうるが、名前のある7ルート(/, /login, /popup, /popups, /tags, /dashboard, /sites)はどれも自分のハッシュが served CSP に入る(⚠ _not-found/404 は未検査)", async () => {
-    for (const p of ["/", "/login", "/popup", "/popups", "/tags", "/dashboard", "/sites"]) {
+  it("ページが違えば中身(インラインscriptの中身)も違いうるが、名前のある8ルート(/, /login, /popup, /popups, /tags, /dashboard, /sites, /site=旧URL互換)はどれも自分のハッシュが served CSP に入る(⚠ _not-found/404 は未検査)", async () => {
+    for (const p of ["/", "/login", "/popup", "/popups", "/tags", "/dashboard", "/sites", "/site"]) {
       const response = await worker.fetch(`http://adpop.test${p}`);
       expect(response.status).toBe(200);
       const html = await response.text();

@@ -138,6 +138,22 @@ describe("admin.getDailySiteStats", () => {
     expect(result.find((p) => p.date === "2026-10-05")).toEqual({ date: "2026-10-05", impression: 0, click: 0, close: 0 });
   });
 
+  it("🔴 Codexレビュー指摘5: 「いま」は必ず Date.now() 経由(new Date() だと固定できず、実行日に依存する壊れ方をする)", async () => {
+    // 🔴 このテストの要点は「固定した日付が2026-10-10からどれだけ離れているか」ではなく、
+    //   実行する**実際の日付とは無関係に**常に通ることそのもの(実装が `new Date()` に退行すると、
+    //   この固定日("今日"を2031-03-01とみなす)と実行日が一致しない限りほぼ必ず落ちる)。
+    const FAR_FUTURE = new Date("2031-03-01T12:00:00.000Z").getTime();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(FAR_FUTURE);
+    try {
+      const result = value(await admin.getDailySiteStats(db, OWNER_A, ids.site, 7));
+      expect(result.map((p) => p.date)).toEqual([
+        "2031-02-23", "2031-02-24", "2031-02-25", "2031-02-26", "2031-02-27", "2031-02-28", "2031-03-01",
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("🔴 period=30/90 でも配列の長さが一致し、最初の日が period ぶん過去になる", async () => {
     const thirty = value(await withFixedNow(() => admin.getDailySiteStats(db, OWNER_A, ids.site, 30)));
     expect(thirty).toHaveLength(30);
